@@ -1,16 +1,19 @@
 package com.example.wifip2pchat
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
-import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
+import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 
 /**
  * Centralized manager for all Wi-Fi Direct operations:
@@ -27,6 +30,26 @@ class WiFiDirectManager(
 ) {
     companion object {
         private const val TAG = "WiFiDirectManager"
+
+        /**
+         * Returns true if the runtime permission required for Wi-Fi Direct peer
+         * discovery & connection is granted for the current Android version:
+         *  - Android 13+ (API 33+): NEARBY_WIFI_DEVICES
+         *  - Android 12 and below:  ACCESS_FINE_LOCATION
+         */
+        fun hasWifiP2pPermission(context: Context): Boolean {
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.NEARBY_WIFI_DEVICES
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+        }
     }
 
     interface WiFiDirectListener {
@@ -70,14 +93,18 @@ class WiFiDirectManager(
      * other operations, typically in Activity.onCreate().
      */
     fun initialize() {
-        manager = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
-        if (manager == null) {
-            Log.e(TAG, "Wi-Fi P2P is not supported on this device")
-            return
+        try {
+            manager = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
+            if (manager == null) {
+                Log.e(TAG, "Wi-Fi P2P is not supported on this device")
+                return
+            }
+            channel = manager?.initialize(context, context.mainLooper, null)
+            Log.d(TAG, "WiFi Direct manager initialized")
+            restoreConnectionState()
+        } catch (e: Exception) {
+            Log.e(TAG, "WiFi Direct initialization failed: ${e.message}")
         }
-        channel = manager!!.initialize(context, context.mainLooper, null)
-        Log.d(TAG, "WiFi Direct manager initialized")
-        restoreConnectionState()
     }
 
     /**
@@ -86,9 +113,14 @@ class WiFiDirectManager(
      * app is re-opened the broadcasts may never fire again — this restores
      * the session (chat server / client + open chat) from live state.
      */
+    @SuppressLint("MissingPermission")
     fun restoreConnectionState() {
         val mgr = manager ?: return
         val ch = channel ?: return
+        if (!hasWifiP2pPermission(context)) {
+            Log.d(TAG, "Skipping restoreConnectionState — Wi-Fi P2P permission not yet granted")
+            return
+        }
         try {
             mgr.requestConnectionInfo(ch) { info ->
                 if (info != null && info.groupFormed) {
@@ -98,6 +130,8 @@ class WiFiDirectManager(
                     Log.d(TAG, "No existing P2P group")
                 }
             }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "restoreConnectionState permission error: ${e.message}")
         } catch (e: Exception) {
             Log.e(TAG, "restoreConnectionState failed: ${e.message}")
         }
@@ -107,21 +141,37 @@ class WiFiDirectManager(
      * Start discovering peers. The system will send
      * WIFI_P2P_PEERS_CHANGED_ACTION broadcasts as peers are found.
      */
+    @SuppressLint("MissingPermission")
     fun startDiscovery() {
-        val mgr = manager ?: return
-        val ch = channel ?: return
+        val mgr = manager ?: run {
+            listener.onConnectionFailed("Wi-Fi Direct is not supported on this device")
+            return
+        }
+        val ch = channel ?: run {
+            listener.onConnectionFailed("Wi-Fi Direct channel unavailable")
+            return
+        }
+        if (!hasWifiP2pPermission(context)) {
+            listener.onConnectionFailed("Nearby Wi-Fi / Location permission required")
+            return
+        }
 
-        mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
-                Log.d(TAG, "Peer discovery started")
-            }
+        try {
+            mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    Log.d(TAG, "Peer discovery started")
+                }
 
-            override fun onFailure(reasonCode: Int) {
-                val reason = reasonToString(reasonCode)
-                Log.e(TAG, "Peer discovery failed: $reason")
-                listener.onConnectionFailed("Discovery failed: $reason")
-            }
-        })
+                override fun onFailure(reasonCode: Int) {
+                    val reason = reasonToString(reasonCode)
+                    Log.e(TAG, "Peer discovery failed: $reason")
+                    listener.onConnectionFailed("Discovery failed: $reason")
+                }
+            })
+        } catch (e: SecurityException) {
+            Log.e(TAG, "discoverPeers permission error: ${e.message}")
+            listener.onConnectionFailed("Discovery permission denied")
+        }
     }
 
     /**
@@ -145,9 +195,20 @@ class WiFiDirectManager(
     /**
      * Connect to the specified peer device.
      */
+    @SuppressLint("MissingPermission")
     fun connectToDevice(device: WifiP2pDevice) {
-        val mgr = manager ?: return
-        val ch = channel ?: return
+        val mgr = manager ?: run {
+            listener.onConnectionFailed("Wi-Fi Direct unavailable")
+            return
+        }
+        val ch = channel ?: run {
+            listener.onConnectionFailed("Wi-Fi Direct channel unavailable")
+            return
+        }
+        if (!hasWifiP2pPermission(context)) {
+            listener.onConnectionFailed("Nearby Wi-Fi / Location permission required")
+            return
+        }
 
         val config = WifiP2pConfig().apply {
             deviceAddress = device.deviceAddress
@@ -155,17 +216,22 @@ class WiFiDirectManager(
             groupOwnerIntent = 0
         }
 
-        mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
-                Log.d(TAG, "Connection initiated to ${device.deviceName}")
-            }
+        try {
+            mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    Log.d(TAG, "Connection initiated to ${device.deviceName}")
+                }
 
-            override fun onFailure(reasonCode: Int) {
-                val reason = reasonToString(reasonCode)
-                Log.e(TAG, "Connection failed: $reason")
-                listener.onConnectionFailed("Connection failed: $reason")
-            }
-        })
+                override fun onFailure(reasonCode: Int) {
+                    val reason = reasonToString(reasonCode)
+                    Log.e(TAG, "Connection failed: $reason")
+                    listener.onConnectionFailed("Connection failed: $reason")
+                }
+            })
+        } catch (e: SecurityException) {
+            Log.e(TAG, "connect permission error: ${e.message}")
+            listener.onConnectionFailed("Connection permission denied")
+        }
     }
 
     /**
@@ -195,13 +261,17 @@ class WiFiDirectManager(
      * Ask the framework for a fresh peer list. Used right after a group is
      * formed to resolve the connected peer's identity (MAC + name).
      */
+    @SuppressLint("MissingPermission")
     fun refreshPeers() {
         val mgr = manager ?: return
         val ch = channel ?: return
+        if (!hasWifiP2pPermission(context)) return
         try {
             mgr.requestPeers(ch) { list ->
                 onPeersChanged(list.deviceList.toList())
             }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "refreshPeers permission error: ${e.message}")
         } catch (e: Exception) {
             Log.e(TAG, "refreshPeers failed: ${e.message}")
         }

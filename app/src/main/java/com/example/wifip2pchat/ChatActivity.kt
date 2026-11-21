@@ -7,14 +7,14 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.snackbar.Snackbar
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * One conversation thread with one contact device — or the Group Chat
@@ -42,19 +42,10 @@ class ChatActivity : AppCompatActivity() {
     private lateinit var tvAvatar: TextView
 
     private val messageAdapter = MessageAdapter()
-    private val chatDb by lazy { ChatDatabase.get(this) }
+    private val chatRepository by lazy { ChatRepository.get(this) }
 
     private val peerId: String? by lazy { intent.getStringExtra(EXTRA_PEER_ID) }
-    private val peerName: String by lazy {
-        if (peerId == Constants.GROUP_PEER_ID) {
-            return@lazy Constants.GROUP_PEER_NAME
-        }
-        intent.getStringExtra(EXTRA_PEER_NAME)
-            ?: chatDb.peerNameFor(peerId)
-            ?: PeerRegistry.nameFor(peerId ?: "")
-            ?: peerId
-            ?: "Device"
-    }
+    private var peerName: String = "Device"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,8 +61,28 @@ class ChatActivity : AppCompatActivity() {
         tvPeerStatus = findViewById(R.id.tvChatPeerStatus)
         tvAvatar = findViewById(R.id.tvChatAvatar)
 
+        peerName = if (peerId == Constants.GROUP_PEER_ID) {
+            Constants.GROUP_PEER_NAME
+        } else {
+            intent.getStringExtra(EXTRA_PEER_NAME)
+                ?: PeerRegistry.nameFor(peerId ?: "")
+                ?: peerId
+                ?: "Device"
+        }
+
         tvPeerName.text = peerName
         tvAvatar.text = peerName.trim().take(1).uppercase()
+
+        if (peerId != Constants.GROUP_PEER_ID && intent.getStringExtra(EXTRA_PEER_NAME) == null) {
+            lifecycleScope.launch {
+                val resolved = chatRepository.peerNameFor(peerId)
+                if (!resolved.isNullOrBlank()) {
+                    peerName = resolved
+                    tvPeerName.text = resolved
+                    tvAvatar.text = resolved.trim().take(1).uppercase()
+                }
+            }
+        }
 
         // Group Chat: different avatar, hide the call buttons (calls are 1:1)
         val isGroupChat = peerId == Constants.GROUP_PEER_ID
@@ -92,21 +103,13 @@ class ChatActivity : AppCompatActivity() {
         btnVideoCall.setOnClickListener { startCall(video = true) }
         btnSend.setOnClickListener { sendCurrentMessage() }
 
-        // Mark this thread as the active one and listen for live events
+        // Mark this thread as the active one and observe Room Flow
         ChatBus.activeChatPeerId = peerId
-        ChatBus.onMessageSaved = { message, savedPeerId ->
-            if (savedPeerId == peerId) {
-                runOnUiThread {
-                    messageAdapter.addMessage(message)
-                    scrollToBottom()
-                }
-            }
-        }
         ChatBus.onConnectionStateChanged = {
             runOnUiThread { updateConnectionUi() }
         }
 
-        loadHistory()
+        observeHistory()
         updateConnectionUi()
     }
 
@@ -125,11 +128,14 @@ class ChatActivity : AppCompatActivity() {
 
     // ======================== History ========================
 
-    private fun loadHistory() {
+    private fun observeHistory() {
         lifecycleScope.launch {
-            val history = withContext(Dispatchers.IO) { chatDb.loadHistory(peerId) }
-            messageAdapter.setMessages(history)
-            rvMessages.post { scrollToBottom() }
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                chatRepository.observeHistory(peerId).collect { history ->
+                    messageAdapter.setMessages(history)
+                    rvMessages.post { scrollToBottom() }
+                }
+            }
         }
     }
 
@@ -175,14 +181,10 @@ class ChatActivity : AppCompatActivity() {
             return
         }
 
-        // Show, persist to this contact's thread, clear input
+        // Persist to this contact's thread (Room Flow updates RecyclerView), clear input
         val message = ChatMessage(text, isSentByMe = true)
-        messageAdapter.addMessage(message)
-        scrollToBottom()
         lifecycleScope.launch {
-            withContext(Dispatchers.IO) {
-                chatDb.insertMessage(message, peerId, peerName)
-            }
+            chatRepository.insertMessage(message, peerId, peerName)
         }
         etMessage.text.clear()
     }

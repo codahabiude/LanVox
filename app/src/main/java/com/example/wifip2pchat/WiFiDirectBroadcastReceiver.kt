@@ -1,5 +1,6 @@
 package com.example.wifip2pchat
 
+import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -7,6 +8,7 @@ import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pDeviceList
 import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
+import android.os.Build
 import android.util.Log
 
 /**
@@ -28,6 +30,7 @@ class WiFiDirectBroadcastReceiver(
         private const val TAG = "WiFiP2PReceiver"
     }
 
+    @SuppressLint("MissingPermission")
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
@@ -39,35 +42,55 @@ class WiFiDirectBroadcastReceiver(
 
             WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
                 Log.d(TAG, "Peers changed — requesting peer list")
-                manager.requestPeers(channel) { peers: WifiP2pDeviceList ->
-                    wifiDirectManager.onPeersChanged(peers.deviceList.toList())
+                if (!WiFiDirectManager.hasWifiP2pPermission(context)) {
+                    Log.w(TAG, "Cannot request peers — missing Wi-Fi P2P permission")
+                    return
+                }
+                try {
+                    manager.requestPeers(channel) { peers: WifiP2pDeviceList ->
+                        wifiDirectManager.onPeersChanged(peers.deviceList.toList())
+                    }
+                } catch (e: SecurityException) {
+                    Log.e(TAG, "requestPeers permission error: ${e.message}")
                 }
             }
 
             WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                 Log.d(TAG, "Connection changed")
-                val info = intent.getParcelableExtra<WifiP2pInfo>(
+                val info = intent.getParcelableExtraCompat<WifiP2pInfo>(
                     WifiP2pManager.EXTRA_WIFI_P2P_INFO
                 )
-                val device = intent.getParcelableExtra<WifiP2pDevice>(
+                val device = intent.getParcelableExtraCompat<WifiP2pDevice>(
                     WifiP2pManager.EXTRA_WIFI_P2P_DEVICE
                 )
                 wifiDirectManager.onConnectionChanged(info, device)
                 if (info != null && info.groupFormed) {
-                    // If we are connected, request connection info for details
-                    manager.requestConnectionInfo(channel) { connectionInfo ->
-                        wifiDirectManager.onConnectionInfoAvailable(connectionInfo)
+                    try {
+                        manager.requestConnectionInfo(channel) { connectionInfo ->
+                            wifiDirectManager.onConnectionInfoAvailable(connectionInfo)
+                        }
+                    } catch (e: SecurityException) {
+                        Log.e(TAG, "requestConnectionInfo permission error: ${e.message}")
                     }
                 }
             }
 
             WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
-                val device = intent.getParcelableExtra<WifiP2pDevice>(
+                val device = intent.getParcelableExtraCompat<WifiP2pDevice>(
                     WifiP2pManager.EXTRA_WIFI_P2P_DEVICE
                 )
                 Log.d(TAG, "This device changed: ${device?.deviceName}")
                 wifiDirectManager.onThisDeviceChanged(device)
             }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private inline fun <reified T : android.os.Parcelable> Intent.getParcelableExtraCompat(key: String): T? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getParcelableExtra(key, T::class.java)
+        } else {
+            getParcelableExtra(key)
         }
     }
 }

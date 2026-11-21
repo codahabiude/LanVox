@@ -511,12 +511,14 @@ class CallListenerService : Service() {
         val mac = LastSession.peerMac(this)?.takeIf { it.isNotBlank() } ?: "unknown"
         val name = LastSession.peerName(this)?.takeIf { it.isNotBlank() } ?: "Unknown device"
 
-        // Persist so the conversation is complete when the app is opened
-        try {
-            ChatDatabase.get(applicationContext)
-                .insertMessage(ChatMessage(text, isSentByMe = false), mac, name)
-        } catch (e: Exception) {
-            Log.e(TAG, "Could not persist standby message: ${e.message}")
+        // Persist via Room so the conversation is complete when the app is opened
+        scope.launch {
+            try {
+                ChatRepository.get(applicationContext)
+                    .insertMessage(ChatMessage(text, isSentByMe = false), mac, name)
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not persist standby message: ${e.message}")
+            }
         }
 
         val openThread = PendingIntent.getActivity(

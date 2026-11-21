@@ -6,14 +6,14 @@ import android.view.View
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Chats list — one row per contact device PLUS a "Group Chat" row at the top
@@ -27,7 +27,7 @@ class ChatsActivity : AppCompatActivity() {
     private lateinit var groupChatRow: View
     private lateinit var tvGroupChatSubtitle: TextView
 
-    private val chatDb by lazy { ChatDatabase.get(this) }
+    private val chatRepository by lazy { ChatRepository.get(this) }
 
     private var registryListenerToken: (() -> Unit)? = null
 
@@ -61,11 +61,23 @@ class ChatsActivity : AppCompatActivity() {
         }
 
         registryListenerToken = PeerRegistry.addListener { updateGroupChatRow() }
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                chatRepository.observeConversations().collect { conversations ->
+                    val oneToOne = conversations.filter { it.peerId != Constants.GROUP_PEER_ID }
+                    chatsAdapter.submit(oneToOne)
+                    val hasGroupHistory = conversations.any { it.peerId == Constants.GROUP_PEER_ID }
+                    tvEmpty.visibility =
+                        if (oneToOne.isEmpty() && !hasGroupHistory) View.VISIBLE else View.GONE
+                    rvChats.visibility = if (oneToOne.isEmpty()) View.GONE else View.VISIBLE
+                }
+            }
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        loadChats()
         updateGroupChatRow()
     }
 
@@ -81,20 +93,6 @@ class ChatsActivity : AppCompatActivity() {
             "$memberCount members · broadcast"
         } else {
             "Broadcast to all group members"
-        }
-    }
-
-    private fun loadChats() {
-        lifecycleScope.launch {
-            val conversations = withContext(Dispatchers.IO) { chatDb.getConversations() }
-            val oneToOne = conversations.filter { it.peerId != Constants.GROUP_PEER_ID }
-            chatsAdapter.submit(oneToOne)
-            val hasGroupHistory = withContext(Dispatchers.IO) {
-                chatDb.count(Constants.GROUP_PEER_ID) > 0
-            }
-            tvEmpty.visibility =
-                if (oneToOne.isEmpty() && !hasGroupHistory) View.VISIBLE else View.GONE
-            rvChats.visibility = if (oneToOne.isEmpty()) View.GONE else View.VISIBLE
         }
     }
 
@@ -116,8 +114,7 @@ class ChatsActivity : AppCompatActivity() {
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Delete") { _, _ ->
                 lifecycleScope.launch {
-                    withContext(Dispatchers.IO) { chatDb.clearConversation(conversation.peerId) }
-                    loadChats()
+                    chatRepository.clearConversation(conversation.peerId)
                     Snackbar.make(rootLayout, "Conversation deleted", Snackbar.LENGTH_SHORT).show()
                 }
             }

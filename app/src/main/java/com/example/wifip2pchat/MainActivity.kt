@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
@@ -12,22 +13,30 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Log
 import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -52,7 +61,6 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
     companion object {
         private const val TAG = "MainActivity"
-        private const val PERMISSION_REQUEST_CODE = 1001
 
         // Static reference for IncomingCallActivity to send control messages
         private var staticInstance: MainActivity? = null
@@ -137,9 +145,12 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private lateinit var tvStatus: TextView
     private lateinit var tvDeviceInfo: TextView
     private lateinit var btnDiscover: MaterialButton
+    private lateinit var btnToggleDevices: MaterialButton
     private lateinit var btnDisconnect: MaterialButton
     private lateinit var btnAudioCall: MaterialButton
     private lateinit var btnVideoCall: MaterialButton
+    private lateinit var scannerPanel: LinearLayout
+    private lateinit var tvScanHint: TextView
     private lateinit var rvPeers: RecyclerView
     private lateinit var tvPeersEmpty: TextView
     private lateinit var progressConnecting: View
@@ -147,9 +158,18 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private lateinit var btnChats: ImageView
     private lateinit var btnExportChat: ImageView
     private lateinit var btnClearHistory: ImageView
+    private lateinit var tvActiveChatTitle: TextView
+    private lateinit var tvActiveChatSubtitle: TextView
+    private lateinit var rvMessages: RecyclerView
+    private lateinit var llMessagesEmpty: LinearLayout
+    private lateinit var etMessage: EditText
+    private lateinit var btnSend: MaterialButton
 
     // --- Radar ---
     private var radarView: RadarView? = null
+    private var isScannerExpanded = false
+    private var latestPeers: List<WifiP2pDevice> = emptyList()
+    private var peerPickerSheet: PeerPickerBottomSheet? = null
 
     // --- Adapters ---
     private val peerAdapter = PeerAdapter(
@@ -157,9 +177,10 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         onCallClick = { device -> onPeerCallClicked(device) },
         onVideoClick = { device -> onPeerVideoClicked(device) }
     )
+    private val messageAdapter = MessageAdapter()
 
     // --- WiFi Direct ---
-    private lateinit var wifiManager: WiFiDirectManager
+    private val wifiManager: WiFiDirectManager by lazy { WiFiDirectManager(this, this) }
     private var broadcastReceiver: WiFiDirectBroadcastReceiver? = null
 
     // --- Chat channel ---
@@ -169,9 +190,45 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     // --- Peer resolution / chat opening ---
     private var pendingChatOpen = false
     private var resolvingPeer = false
+    private var pendingDiscoveryAfterPermission = false
+    private var pendingConnectDeviceAfterPermission: WifiP2pDevice? = null
 
-    // --- Persistent storage ---
-    private val chatDb by lazy { ChatDatabase.get(this) }
+    // --- Runtime permission launcher ---
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        if (WiFiDirectManager.hasWifiP2pPermission(this)) {
+            wifiManager.restoreConnectionState()
+            if (pendingDiscoveryAfterPermission) {
+                pendingDiscoveryAfterPermission = false
+                startDiscoveryIfReady()
+            }
+            pendingConnectDeviceAfterPermission?.let { device ->
+                pendingConnectDeviceAfterPermission = null
+                connectToPeer(device)
+            }
+        } else {
+            val wasPendingP2p = pendingDiscoveryAfterPermission || pendingConnectDeviceAfterPermission != null
+            pendingDiscoveryAfterPermission = false
+            pendingConnectDeviceAfterPermission = null
+            if (wasPendingP2p || results.any { (perm, granted) ->
+                    !granted && (perm == Manifest.permission.NEARBY_WIFI_DEVICES ||
+                        perm == Manifest.permission.ACCESS_FINE_LOCATION)
+                }
+            ) {
+                showSnackbar(
+                    getString(R.string.permission_rationale),
+                    "Settings"
+                ) { openAppPermissionSettings() }
+            } else if (results.values.any { !it }) {
+                showSnackbar("Some permissions denied — features may not work")
+            }
+        }
+    }
+
+    // --- Persistent storage (Room) ---
+    private val chatRepository by lazy { ChatRepository.get(this) }
+    private val activeThreadPeerIdFlow = MutableStateFlow(Constants.GROUP_PEER_ID)
     private var storedCount = 0
 
     // --- PeerRegistry listener token (so we can unsubscribe in onDestroy) ---
@@ -179,6 +236,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
     // ======================== Lifecycle ========================
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -187,6 +245,27 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         initViews()
         initWiFiDirect()
         checkPermissions()
+
+        // Observe Room-persisted messages and message count reactively
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    chatRepository.observeTotalCount().collect { count ->
+                        storedCount = count
+                        updateStoragePill()
+                    }
+                }
+                launch {
+                    activeThreadPeerIdFlow
+                        .flatMapLatest { threadId -> chatRepository.observeHistory(threadId) }
+                        .collect { history ->
+                            messageAdapter.setMessages(history)
+                            updateEmptyMessagesState()
+                            scrollMessagesToBottom()
+                        }
+                }
+            }
+        }
 
         // Whenever the peer registry changes (a new client HELLOs, a client
         // drops, or the GO broadcasts a PEERS list), refresh the empty-state
@@ -211,6 +290,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         staticInstance = this
         registerReceiver()
         updateCallButtons()
+        updateActiveChatHeader()
+        loadMainChatHistory()
         refreshStoredCount()
     }
 
@@ -223,6 +304,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         staticInstance = null
         peerRegistryListener?.let { PeerRegistry.removeListener(it) }
         peerRegistryListener = null
+        peerPickerSheet?.dismiss()
+        peerPickerSheet = null
         super.onDestroy()
         wifiManager.stopDiscovery()
         chatClient?.disconnect()
@@ -237,9 +320,12 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         tvStatus = findViewById(R.id.tvStatus)
         tvDeviceInfo = findViewById(R.id.tvDeviceInfo)
         btnDiscover = findViewById(R.id.btnDiscover)
+        btnToggleDevices = findViewById(R.id.btnToggleDevices)
         btnDisconnect = findViewById(R.id.btnDisconnect)
         btnAudioCall = findViewById(R.id.btnAudioCall)
         btnVideoCall = findViewById(R.id.btnVideoCall)
+        scannerPanel = findViewById(R.id.scannerPanel)
+        tvScanHint = findViewById(R.id.tvScanHint)
         rvPeers = findViewById(R.id.rvPeers)
         tvPeersEmpty = findViewById(R.id.tvPeersEmpty)
         progressConnecting = findViewById(R.id.progressConnecting)
@@ -247,9 +333,21 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         btnChats = findViewById(R.id.btnChats)
         btnExportChat = findViewById(R.id.btnExportChat)
         btnClearHistory = findViewById(R.id.btnClearHistory)
+        tvActiveChatTitle = findViewById(R.id.tvActiveChatTitle)
+        tvActiveChatSubtitle = findViewById(R.id.tvActiveChatSubtitle)
+        rvMessages = findViewById(R.id.rvMessages)
+        llMessagesEmpty = findViewById(R.id.llMessagesEmpty)
+        etMessage = findViewById(R.id.etMessage)
+        btnSend = findViewById(R.id.btnSend)
 
         rvPeers.layoutManager = LinearLayoutManager(this)
         rvPeers.adapter = peerAdapter
+
+        val chatLayoutManager = LinearLayoutManager(this).apply {
+            stackFromEnd = true
+        }
+        rvMessages.layoutManager = chatLayoutManager
+        rvMessages.adapter = messageAdapter
 
         // Radar view
         radarView = findViewById(R.id.radarView)
@@ -260,38 +358,52 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             overridePendingTransition(R.anim.slide_up, android.R.anim.fade_out)
         }
         btnDiscover.setOnClickListener { toggleDiscovery() }
+        btnToggleDevices.setOnClickListener { showPeerPickerBottomSheet() }
         btnDisconnect.setOnClickListener { disconnect() }
         btnAudioCall.setOnClickListener { startAudioCall() }
         btnVideoCall.setOnClickListener { startVideoCall() }
         btnExportChat.setOnClickListener { exportChatToFile() }
         btnClearHistory.setOnClickListener { confirmClearHistory() }
+        btnSend.setOnClickListener { sendCurrentMessage() }
+        etMessage.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEND) {
+                sendCurrentMessage()
+                true
+            } else {
+                false
+            }
+        }
 
+        setScannerExpanded(false)
         updateCallButtons()
+        updateActiveChatHeader()
+        loadMainChatHistory()
         refreshStoredCount()
     }
 
     private fun initWiFiDirect() {
-        wifiManager = WiFiDirectManager(this, this)
         wifiManager.initialize()
     }
 
     // ======================== Permissions ========================
 
+    private fun requiredWifiP2pPermissions(): List<String> {
+        val permissions = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
+        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        return permissions
+    }
+
     private fun checkPermissions() {
         val needed = mutableListOf<String>()
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED
-        ) needed.add(Manifest.permission.ACCESS_FINE_LOCATION)
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED
-        ) needed.add(Manifest.permission.ACCESS_COARSE_LOCATION)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES)
-                != PackageManager.PERMISSION_GRANTED
-            ) needed.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        requiredWifiP2pPermissions().forEach { perm ->
+            if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(perm)
+            }
         }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
@@ -310,19 +422,55 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
 
         if (needed.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSION_REQUEST_CODE)
+            permissionLauncher.launch(needed.toTypedArray())
         }
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-            if (!allGranted) {
-                showSnackbar("Some permissions denied — features may not work")
-            }
+    private fun ensureWifiP2pPermissions(onGranted: () -> Unit): Boolean {
+        if (WiFiDirectManager.hasWifiP2pPermission(this)) {
+            onGranted()
+            return true
+        }
+
+        val missing = requiredWifiP2pPermissions().filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            onGranted()
+            return true
+        }
+
+        val shouldShowRationale = missing.any {
+            ActivityCompat.shouldShowRequestPermissionRationale(this, it)
+        }
+        if (shouldShowRationale) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Permissions required")
+                .setMessage(getString(R.string.permission_rationale))
+                .setNegativeButton("Cancel") { _, _ ->
+                    pendingDiscoveryAfterPermission = false
+                    pendingConnectDeviceAfterPermission = null
+                }
+                .setPositiveButton("Allow") { _, _ ->
+                    permissionLauncher.launch(missing.toTypedArray())
+                }
+                .show()
+        } else {
+            permissionLauncher.launch(missing.toTypedArray())
+        }
+        return false
+    }
+
+    private fun openAppPermissionSettings() {
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", packageName, null)
+                )
+            )
+        } catch (_: Exception) {
+            showSnackbar("Open Settings → Apps → LANVOX → Permissions")
         }
     }
 
@@ -351,7 +499,16 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
         }
 
-        registerReceiver(broadcastReceiver, intentFilter)
+        try {
+            ContextCompat.registerReceiver(
+                this,
+                broadcastReceiver,
+                intentFilter,
+                ContextCompat.RECEIVER_EXPORTED
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not register Wi-Fi Direct receiver: ${e.message}")
+        }
     }
 
     private fun unregisterReceiver() {
@@ -364,25 +521,76 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     // ======================== Discovery ========================
 
     private fun toggleDiscovery() {
-        if (!wifiManager.isP2pEnabled) {
-            showSnackbar("Enable Wi-Fi first", "Open Settings") {
-                startActivity(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
-            }
-            return
-        }
-
         if (isDiscovering) {
             wifiManager.stopDiscovery()
             isDiscovering = false
             btnDiscover.text = getString(R.string.btn_discover)
-            tvStatus.text = getString(R.string.status_enabled)
-            statusIndicator.setBackgroundResource(R.drawable.circle_green)
-        } else {
-            wifiManager.startDiscovery()
-            isDiscovering = true
-            btnDiscover.text = "Stop"
-            tvStatus.text = getString(R.string.status_discovering)
-            statusIndicator.setBackgroundResource(R.drawable.circle_orange)
+            tvStatus.text = if (wifiManager.isP2pEnabled) {
+                getString(R.string.status_enabled)
+            } else {
+                getString(R.string.status_disabled)
+            }
+            tvScanHint.text = tvStatus.text
+            statusIndicator.setBackgroundResource(
+                if (wifiManager.isP2pEnabled) R.drawable.circle_green else R.drawable.circle_red
+            )
+            refreshPeerPickerBottomSheet()
+            return
+        }
+
+        pendingDiscoveryAfterPermission = true
+        ensureWifiP2pPermissions {
+            pendingDiscoveryAfterPermission = false
+            startDiscoveryIfReady()
+        }
+    }
+
+    private fun startDiscoveryIfReady() {
+        if (!wifiManager.isP2pEnabled) {
+            showSnackbar("Enable Wi-Fi first", "Open Settings") {
+                startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+            }
+            return
+        }
+
+        wifiManager.startDiscovery()
+        isDiscovering = true
+        btnDiscover.text = "Stop"
+        tvStatus.text = getString(R.string.status_discovering)
+        tvScanHint.text = getString(R.string.status_discovering)
+        statusIndicator.setBackgroundResource(R.drawable.circle_orange)
+        showPeerPickerBottomSheet()
+    }
+
+    private fun showPeerPickerBottomSheet() {
+        val sheet = peerPickerSheet ?: PeerPickerBottomSheet(
+            context = this,
+            onPeerSelected = { device -> onPeerClicked(device) },
+            onPeerAudioCall = { device -> onPeerCallClicked(device) },
+            onPeerVideoCall = { device -> onPeerVideoClicked(device) },
+            onToggleScan = { toggleDiscovery() },
+            onDisconnect = { disconnect() }
+        ).also { peerPickerSheet = it }
+        sheet.show(latestPeers, isDiscovering, wifiManager.isConnected)
+    }
+
+    private fun refreshPeerPickerBottomSheet() {
+        peerPickerSheet?.takeIf { it.isShowing() }
+            ?.updateState(latestPeers, isDiscovering, wifiManager.isConnected)
+    }
+
+    private fun setScannerExpanded(expanded: Boolean) {
+        isScannerExpanded = expanded
+        scannerPanel.visibility = if (expanded) View.VISIBLE else View.GONE
+        updateToggleDevicesLabel()
+    }
+
+    private fun updateToggleDevicesLabel() {
+        val peerCount = peerAdapter.itemCount
+        btnToggleDevices.text = when {
+            isScannerExpanded -> "Hide"
+            peerCount > 0 -> "Devices ($peerCount)"
+            else -> getString(R.string.btn_devices)
         }
     }
 
@@ -401,6 +609,15 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             return
         }
 
+        pendingConnectDeviceAfterPermission = device
+        ensureWifiP2pPermissions {
+            pendingConnectDeviceAfterPermission = null
+            connectToPeer(device)
+        }
+    }
+
+    private fun connectToPeer(device: WifiP2pDevice) {
+        val name = device.deviceName.ifBlank { device.deviceAddress }
         progressConnecting.visibility = View.VISIBLE
         showSnackbar("Connecting to $name…")
         wifiManager.connectToDevice(device)
@@ -439,6 +656,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         pendingChatOpen = false
         resolvingPeer = false
         ChatBus.notifyConnectionChanged(false)
+        updateActiveChatHeader()
+        loadMainChatHistory()
     }
 
     /**
@@ -568,20 +787,17 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         } else {
             senderName
         }
-        val message = ChatMessage(text, isSentByMe = false)
+        val displaySender = if (recipientId == Constants.RECIPIENT_BROADCAST) senderName else null
+        val message = ChatMessage(text, isSentByMe = false, senderName = displaySender)
 
         lifecycleScope.launch {
-            val newCount = withContext(Dispatchers.IO) {
-                chatDb.insertMessage(message, threadPeerId, threadPeerName)
-                chatDb.count()
-            }
-            storedCount = newCount
-            updateStoragePill()
+            chatRepository.insertMessage(message, threadPeerId, threadPeerName)
         }
 
         ChatBus.notifyMessageSaved(message, threadPeerId)
 
         if (ChatBus.activeChatPeerId != threadPeerId &&
+            threadPeerId != activeThreadPeerId() &&
             lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
         ) {
             val from = if (recipientId == Constants.RECIPIENT_BROADCAST) {
@@ -590,6 +806,67 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 senderName
             }
             showSnackbar("New message from $from")
+        }
+    }
+
+    // ======================== MainActivity Chat UI ========================
+
+    private fun activeThreadPeerId(): String = currentPeerId ?: Constants.GROUP_PEER_ID
+
+    private fun activeThreadPeerName(): String = currentPeerName ?: getString(R.string.label_group_chat)
+
+    private fun loadMainChatHistory() {
+        activeThreadPeerIdFlow.value = activeThreadPeerId()
+    }
+
+    private fun sendCurrentMessage() {
+        val text = etMessage.text.toString().trim()
+        if (text.isEmpty()) return
+
+        val threadPeerId = activeThreadPeerId()
+        val threadPeerName = activeThreadPeerName()
+        val recipient = if (threadPeerId == Constants.GROUP_PEER_ID) {
+            Constants.RECIPIENT_BROADCAST
+        } else {
+            threadPeerId
+        }
+
+        if (wifiManager.isConnected) {
+            val sent = transmitText(recipient, text)
+            if (!sent) {
+                showSnackbar("Failed to transmit — saved locally")
+            }
+        }
+
+        val message = ChatMessage(text, isSentByMe = true)
+        etMessage.text.clear()
+
+        lifecycleScope.launch {
+            chatRepository.insertMessage(message, threadPeerId, threadPeerName)
+        }
+
+        ChatBus.notifyMessageSaved(message, threadPeerId)
+    }
+
+    private fun updateEmptyMessagesState() {
+        llMessagesEmpty.visibility = if (messageAdapter.itemCount == 0) View.VISIBLE else View.GONE
+    }
+
+    private fun scrollMessagesToBottom() {
+        val count = messageAdapter.itemCount
+        if (count > 0) {
+            rvMessages.post {
+                rvMessages.smoothScrollToPosition(count - 1)
+            }
+        }
+    }
+
+    private fun updateActiveChatHeader() {
+        tvActiveChatTitle.text = activeThreadPeerName()
+        tvActiveChatSubtitle.text = if (wifiManager.isConnected) {
+            getString(R.string.label_online_encrypted)
+        } else {
+            getString(R.string.label_offline_local)
         }
     }
 
@@ -673,9 +950,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             currentPeerName = peer.deviceName.ifBlank { peer.deviceAddress }
             LastSession.savePeer(this, currentPeerId, currentPeerName)
 
-            if (ChatBus.activeChatPeerId != currentPeerId) {
-                openChat(currentPeerId!!, currentPeerName!!)
-            }
+            updateActiveChatHeader()
+            loadMainChatHistory()
+            setScannerExpanded(false)
             ChatBus.notifyConnectionChanged(true)
         } else if (resolvingPeer) {
             // refreshPeers() already in flight — wait for it
@@ -691,7 +968,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     /** Refresh the "N messages saved" pill (covers sends made in ChatActivity). */
     private fun refreshStoredCount() {
         lifecycleScope.launch {
-            storedCount = withContext(Dispatchers.IO) { chatDb.count() }
+            storedCount = chatRepository.count()
             updateStoragePill()
         }
     }
@@ -726,8 +1003,10 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Delete") { _, _ ->
                 lifecycleScope.launch {
-                    withContext(Dispatchers.IO) { chatDb.clearAll() }
+                    chatRepository.clearAll()
                     storedCount = 0
+                    messageAdapter.clear()
+                    updateEmptyMessagesState()
                     updateStoragePill()
                     showSnackbar("Chat history deleted")
                 }
@@ -742,12 +1021,12 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
      */
     private fun exportChatToFile() {
         lifecycleScope.launch {
-            val conversations = withContext(Dispatchers.IO) { chatDb.getConversations() }
+            val conversations = chatRepository.getConversations()
             if (conversations.isEmpty()) {
                 showSnackbar("Nothing to export yet")
                 return@launch
             }
-            val result = withContext(Dispatchers.IO) { writeExportFile(conversations) }
+            val result = writeExportFile(conversations)
             result.onSuccess { path ->
                 showSnackbar("Chats saved to $path", "Open") {
                     openStorageSettings()
@@ -758,7 +1037,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
     }
 
-    private fun writeExportFile(conversations: List<Conversation>): Result<String> {
+    private suspend fun writeExportFile(conversations: List<Conversation>): Result<String> {
         val fullFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         val fileName = "LANVOX_chats_$stamp.txt"
@@ -774,7 +1053,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 val name = conversation.peerName?.takeIf { it.isNotBlank() } ?: conversation.peerId
                 appendLine()
                 appendLine("===== $name =====")
-                val history = chatDb.loadHistory(conversation.peerId, Int.MAX_VALUE)
+                val history = chatRepository.loadHistory(conversation.peerId, Int.MAX_VALUE)
                 history.forEach { m ->
                     val who = if (m.isSentByMe) "Me" else name
                     appendLine("[${fullFormat.format(Date(m.timestamp))}] $who: ${m.text}")
@@ -782,7 +1061,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             }
         }
 
-        return try {
+        return withContext(Dispatchers.IO) {
+            try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 // Scoped storage — write straight into the public Downloads folder
                 val values = ContentValues().apply {
@@ -805,6 +1085,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             }
         } catch (e: Exception) {
             Result.failure(e)
+        }
         }
     }
 
@@ -886,12 +1167,17 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             statusIndicator.setBackgroundResource(R.drawable.circle_red)
             isDiscovering = false
             btnDiscover.text = getString(R.string.btn_discover)
+            refreshPeerPickerBottomSheet()
         }
     }
 
     override fun onPeersUpdated(peers: List<WifiP2pDevice>) {
+        latestPeers = peers
         peerAdapter.updatePeers(peers)
+        tvPeersEmpty.visibility = if (peers.isEmpty()) View.VISIBLE else View.GONE
         radarView?.setBlipCount(peers.size)
+        updateToggleDevicesLabel()
+        refreshPeerPickerBottomSheet()
 
         // Peer identity may have just been resolved — finish opening the chat
         if (pendingChatOpen) {
@@ -950,6 +1236,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             btnDiscover.text = getString(R.string.btn_discover)
         }
 
+        refreshPeerPickerBottomSheet()
         showSnackbar("Connected to peer")
     }
 
@@ -962,10 +1249,25 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         chatClient = null
         clearCurrentPeer()
         LastSession.clearRole(this)
+        refreshPeerPickerBottomSheet()
     }
 
     override fun onConnectionFailed(reason: String) {
         progressConnecting.visibility = View.GONE
+        if (isDiscovering) {
+            isDiscovering = false
+            btnDiscover.text = getString(R.string.btn_discover)
+            tvStatus.text = if (wifiManager.isP2pEnabled) {
+                getString(R.string.status_enabled)
+            } else {
+                getString(R.string.status_disabled)
+            }
+            tvScanHint.text = tvStatus.text
+            statusIndicator.setBackgroundResource(
+                if (wifiManager.isP2pEnabled) R.drawable.circle_green else R.drawable.circle_red
+            )
+        }
+        refreshPeerPickerBottomSheet()
         showSnackbar(reason, "Retry") { toggleDiscovery() }
     }
 }
