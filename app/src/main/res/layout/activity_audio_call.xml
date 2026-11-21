@@ -118,6 +118,7 @@
                     android:id="@+id/btnMute"
                     android:layout_width="56dp"
                     android:layout_height="56dp"
+                    android:contentDescription="@string/mute"
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
                     android:insetLeft="0dp"
@@ -153,6 +154,7 @@
                     android:id="@+id/btnSpeaker"
                     android:layout_width="56dp"
                     android:layout_height="56dp"
+                    android:contentDescription="@string/speaker_on"
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
                     android:insetLeft="0dp"
@@ -161,7 +163,7 @@
                     app:backgroundTint="@color/call_mute_bg"
                     app:strokeColor="@color/glass_border_active"
                     app:strokeWidth="1.5dp"
-                    app:icon="@drawable/ic_volume"
+                    app:icon="@drawable/ic_volume_off"
                     app:iconGravity="textStart"
                     app:iconPadding="0dp"
                     app:iconTint="@color/brand_secondary"
@@ -176,47 +178,13 @@
                     android:textColor="@color/text_secondary"
                     android:layout_marginTop="6dp" />
             </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical"
-                android:gravity="center">
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnVideo"
-                    android:layout_width="56dp"
-                    android:layout_height="56dp"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:insetLeft="0dp"
-                    android:insetRight="0dp"
-                    app:cornerRadius="28dp"
-                    app:backgroundTint="@color/call_mute_bg"
-                    app:strokeColor="@color/glass_border_active"
-                    app:strokeWidth="1.5dp"
-                    app:icon="@drawable/ic_videocam"
-                    app:iconGravity="textStart"
-                    app:iconPadding="0dp"
-                    app:iconTint="@color/brand_secondary"
-                    app:iconSize="24dp" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Video"
-                    android:textSize="11sp"
-                    android:fontFamily="@font/space_grotesk"
-                    android:textColor="@color/text_secondary"
-                    android:layout_marginTop="6dp" />
-            </LinearLayout>
         </LinearLayout>
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnEndCall"
             android:layout_width="match_parent"
             android:layout_height="54dp"
+            android:contentDescription="@string/end_call"
             android:text="@string/end_call"
             android:textAllCaps="false"
             android:textSize="16sp"

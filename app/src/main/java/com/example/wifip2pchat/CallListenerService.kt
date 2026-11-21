@@ -113,9 +113,20 @@ class CallListenerService : Service() {
          * peer over the standby channel. Used by IncomingCallActivity when
          * the main app is not alive.
          */
-        fun sendControl(text: String): Boolean {
+        fun sendControl(text: String, recipientId: String? = null): Boolean {
             val inst = serviceInstance ?: return false
-            return inst.writeLine(text)
+            val target = recipientId ?: LastSession.peerMac(inst) ?: Constants.RECIPIENT_BROADCAST
+            val line = if (PeerRegistry.selfId != "UNKNOWN" && !text.startsWith(Constants.ENVELOPE_PREFIX + Constants.ENVELOPE_DELIM)) {
+                Envelope.build(
+                    senderId = PeerRegistry.selfId,
+                    senderName = PeerRegistry.selfName,
+                    recipientId = target,
+                    payload = text
+                )
+            } else {
+                text
+            }
+            return inst.writeLine(line)
         }
 
         /** The incoming call was answered or declined — stop ringing UI. */
@@ -380,35 +391,94 @@ class CallListenerService : Service() {
         // Give the live app the first chance to consume the line
         if (MainActivity.handleStandbyLine(line)) return
 
+        val env = Envelope.parse(line)
+        val payload = env?.payload ?: line
+        val senderId = env?.senderId?.takeIf { it.isNotBlank() && it != "legacy" }
+            ?: LastSession.peerMac(this)?.takeIf { it.isNotBlank() }
+            ?: "unknown"
+        val senderName = env?.senderName?.takeIf { it.isNotBlank() && it != "Unknown" }
+            ?: LastSession.peerName(this)?.takeIf { it.isNotBlank() }
+            ?: "LANVOX contact"
+        val recipientId = env?.recipientId ?: Constants.RECIPIENT_BROADCAST
+
         when {
-            line.startsWith(Constants.MSG_TYPE_CALL_REQUEST) -> {
-                onIncomingCall(line.removePrefix(Constants.MSG_TYPE_CALL_REQUEST))
+            payload == Constants.PAYLOAD_HELLO || payload == Constants.PAYLOAD_BYE -> {
+                if (payload == Constants.PAYLOAD_HELLO && env != null) {
+                    PeerRegistry.upsert(PeerRegistry.Peer(senderId, senderName, isGroupOwner = false))
+                }
             }
-            line.startsWith(Constants.MSG_TYPE_CALL_END) -> {
-                // Caller cancelled before anyone answered
+            payload.startsWith(Constants.PAYLOAD_PEERS) -> {
+                if (env != null) {
+                    PeerRegistry.replaceAll(
+                        PeerRegistry.parsePeersPayload(payload, env.senderId, env.senderName)
+                    )
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_CALL_REQUEST) -> {
+                onIncomingCall(
+                    callType = payload.removePrefix(Constants.MSG_TYPE_CALL_REQUEST),
+                    peerId = senderId,
+                    callerName = senderName
+                )
+            }
+            payload.startsWith(Constants.MSG_TYPE_CALL_END) -> {
                 if (pendingCallType != null) endIncomingCallLocally()
             }
-            line.startsWith(Constants.MSG_TYPE_CALL_ACCEPT) -> {
+            payload.startsWith(Constants.MSG_TYPE_CALL_ACCEPT) -> {
                 Log.d(TAG, "Peer accepted (app closed) — ignoring")
             }
-            line.startsWith(Constants.MSG_TYPE_CALL_REJECT) -> {
+            payload.startsWith(Constants.MSG_TYPE_CALL_REJECT) -> {
                 Log.d(TAG, "Peer declined (app closed) — ignoring")
             }
-            else -> onIncomingText(line)
+            payload.startsWith(Constants.MSG_TYPE_ACK) -> {
+                val scopeSuffix = payload.removePrefix(Constants.MSG_TYPE_ACK)
+                val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
+                    Constants.GROUP_PEER_ID
+                } else {
+                    senderId
+                }
+                scope.launch {
+                    runCatching { ChatRepository.get(applicationContext).markThreadDelivered(targetThread) }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_READ) -> {
+                val scopeSuffix = payload.removePrefix(Constants.MSG_TYPE_READ)
+                val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
+                    Constants.GROUP_PEER_ID
+                } else {
+                    senderId
+                }
+                scope.launch {
+                    runCatching { ChatRepository.get(applicationContext).markThreadRead(targetThread) }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_TEXT) -> {
+                val cleanText = payload.removePrefix(Constants.MSG_TYPE_TEXT)
+                onIncomingText(cleanText, senderId, senderName, recipientId)
+            }
+            else -> {
+                if (env == null) {
+                    onIncomingText(payload, senderId, senderName, recipientId)
+                } else {
+                    Log.d(TAG, "Unhandled standby payload: $payload")
+                }
+            }
         }
     }
 
     // ======================== Incoming call ========================
 
-    private fun onIncomingCall(callType: String) {
+    private fun onIncomingCall(
+        callType: String,
+        peerId: String,
+        callerName: String
+    ) {
         if (pendingCallType != null) {
             Log.d(TAG, "Already ringing — ignoring second call request")
             return
         }
         pendingCallType = callType
 
-        val callerName = LastSession.peerName(this)
-            ?.takeIf { it.isNotBlank() } ?: "LANVOX contact"
         val callLabel =
             if (callType == Constants.CALL_TYPE_VIDEO) "video call" else "audio call"
 
@@ -430,6 +500,7 @@ class CallListenerService : Service() {
                     LastSession.groupOwnerAddress(this@CallListenerService)
                 )
                 putExtra(IncomingCallActivity.EXTRA_CALLER_NAME, callerName)
+                putExtra(IncomingCallActivity.EXTRA_PEER_ID, peerId)
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 )
@@ -507,15 +578,33 @@ class CallListenerService : Service() {
 
     // ======================== Incoming text ========================
 
-    private fun onIncomingText(text: String) {
-        val mac = LastSession.peerMac(this)?.takeIf { it.isNotBlank() } ?: "unknown"
-        val name = LastSession.peerName(this)?.takeIf { it.isNotBlank() } ?: "Unknown device"
+    private fun onIncomingText(
+        text: String,
+        senderId: String,
+        senderName: String,
+        recipientId: String
+    ) {
+        val threadId = if (recipientId == Constants.RECIPIENT_BROADCAST && senderId != "unknown") {
+            Constants.GROUP_PEER_ID
+        } else {
+            senderId
+        }
+        val threadName = if (threadId == Constants.GROUP_PEER_ID) {
+            Constants.GROUP_PEER_NAME
+        } else {
+            senderName
+        }
+        val displaySender = if (threadId == Constants.GROUP_PEER_ID) senderName else null
 
         // Persist via Room so the conversation is complete when the app is opened
         scope.launch {
             try {
                 ChatRepository.get(applicationContext)
-                    .insertMessage(ChatMessage(text, isSentByMe = false), mac, name)
+                    .insertMessage(
+                        ChatMessage(text, isSentByMe = false, senderName = displaySender),
+                        threadId,
+                        threadName
+                    )
             } catch (e: Exception) {
                 Log.e(TAG, "Could not persist standby message: ${e.message}")
             }
@@ -524,21 +613,21 @@ class CallListenerService : Service() {
         val openThread = PendingIntent.getActivity(
             this, 1004,
             Intent(this, ChatActivity::class.java)
-                .putExtra(ChatActivity.EXTRA_PEER_ID, mac)
-                .putExtra(ChatActivity.EXTRA_PEER_NAME, name)
+                .putExtra(ChatActivity.EXTRA_PEER_ID, threadId)
+                .putExtra(ChatActivity.EXTRA_PEER_NAME, threadName)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val notification = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle(name)
+            .setContentTitle(senderName)
             .setContentText(text)
             .setContentIntent(openThread)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .build()
         try {
-            notificationManager?.notify(NOTIF_MSG_ID_BASE + (mac.hashCode() and 0x3FF), notification)
+            notificationManager?.notify(NOTIF_MSG_ID_BASE + (threadId.hashCode() and 0x3FF), notification)
         } catch (_: Exception) {}
     }
 

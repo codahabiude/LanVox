@@ -101,6 +101,7 @@
         <activity
             android:name=".AudioCallActivity"
             android:exported="false"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.Lanvox.Call"
             android:screenOrientation="portrait"
             android:showOnLockScreen="true"
@@ -110,6 +111,7 @@
         <activity
             android:name=".VideoCallActivity"
             android:exported="false"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.Lanvox.Call"
             android:screenOrientation="portrait"
             android:showOnLockScreen="true"

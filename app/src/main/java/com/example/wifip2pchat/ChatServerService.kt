@@ -67,7 +67,16 @@ class ChatServerService : Service() {
         val writer: OutputStreamWriter,
         @Volatile var peerId: String? = null,
         @Volatile var peerName: String = "Unknown"
-    )
+    ) {
+        private val writeLock = Any()
+
+        fun writeLine(line: String) {
+            synchronized(writeLock) {
+                writer.write(line)
+                writer.flush()
+            }
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -205,8 +214,7 @@ class ChatServerService : Service() {
         clients.values.forEach { c ->
             if (c.peerId != null && c.peerId != env.senderId && c !== origin) {
                 try {
-                    c.writer.write(line)
-                    c.writer.flush()
+                    c.writeLine(line)
                 } catch (e: Exception) {
                     Log.w(TAG, "Forward to ${c.peerId} failed: ${e.message}")
                 }
@@ -221,8 +229,7 @@ class ChatServerService : Service() {
             return
         }
         try {
-            target.writer.write(line)
-            target.writer.flush()
+            target.writeLine(line)
         } catch (e: Exception) {
             Log.w(TAG, "Forward to ${env.recipientId} failed: ${e.message}")
         }
@@ -249,8 +256,7 @@ class ChatServerService : Service() {
                 return@launch
             }
             try {
-                target.writer.write(line)
-                target.writer.flush()
+                target.writeLine(line)
             } catch (e: Exception) {
                 Log.e(TAG, "sendTo error: ${e.message}")
             }
@@ -268,8 +274,7 @@ class ChatServerService : Service() {
             clients.values.forEach { c ->
                 if (c.peerId != null) {
                     try {
-                        c.writer.write(line)
-                        c.writer.flush()
+                        c.writeLine(line)
                     } catch (e: Exception) {
                         Log.w(TAG, "broadcast to ${c.peerId} failed: ${e.message}")
                     }
@@ -296,8 +301,7 @@ class ChatServerService : Service() {
         clients.values.forEach { c ->
             if (c.peerId != null) {
                 try {
-                    c.writer.write(line)
-                    c.writer.flush()
+                    c.writeLine(line)
                 } catch (e: Exception) {
                     Log.w(TAG, "PEERS broadcast to ${c.peerId} failed: ${e.message}")
                 }

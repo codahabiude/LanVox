@@ -30,6 +30,7 @@ class ChatClient(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var socket: Socket? = null
     private var writer: OutputStreamWriter? = null
+    private val writeLock = Any()
     private var readJob: Job? = null
     private var reconnectJob: Job? = null
     private var hostAddress: String? = null
@@ -89,11 +90,20 @@ class ChatClient(private val context: Context) {
             payload = Constants.PAYLOAD_HELLO
         ) + "\n"
         try {
-            writer?.write(line)
-            writer?.flush()
-            Log.d(TAG, "Sent HELLO as ${PeerRegistry.selfId} (${PeerRegistry.selfName})")
+            if (writeSynchronized(line)) {
+                Log.d(TAG, "Sent HELLO as ${PeerRegistry.selfId} (${PeerRegistry.selfName})")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "HELLO send failed: ${e.message}")
+        }
+    }
+
+    private fun writeSynchronized(line: String): Boolean {
+        synchronized(writeLock) {
+            val w = writer ?: return false
+            w.write(line)
+            w.flush()
+            return true
         }
     }
 
@@ -109,11 +119,11 @@ class ChatClient(private val context: Context) {
                 payload = payload
             ) + "\n"
             try {
-                writer?.apply {
-                    write(line)
-                    flush()
+                if (writeSynchronized(line)) {
                     Log.d(TAG, "Sent to $recipientId: $payload")
-                } ?: Log.w(TAG, "sendTo: not connected")
+                } else {
+                    Log.w(TAG, "sendTo: not connected")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "sendTo failed: ${e.message}")
             }
@@ -130,11 +140,11 @@ class ChatClient(private val context: Context) {
                 payload = payload
             ) + "\n"
             try {
-                writer?.apply {
-                    write(line)
-                    flush()
+                if (writeSynchronized(line)) {
                     Log.d(TAG, "Broadcast: $payload")
-                } ?: Log.w(TAG, "sendBroadcast: not connected")
+                } else {
+                    Log.w(TAG, "sendBroadcast: not connected")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "sendBroadcast failed: ${e.message}")
             }
@@ -224,8 +234,7 @@ class ChatClient(private val context: Context) {
                 recipientId = "GO",
                 payload = Constants.PAYLOAD_BYE
             ) + "\n"
-            writer?.write(line)
-            writer?.flush()
+            writeSynchronized(line)
         } catch (_: Exception) {}
         reconnectJob?.cancel()
         reconnectJob = null

@@ -7,32 +7,33 @@
     android:orientation="vertical"
     android:background="@color/brand_primary">
 
-    <!-- Futuristic Obsidian Glass HUD Header -->
+    <!-- Clean Two-Row Obsidian Glass HUD Header -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:background="@drawable/top_bar_bg"
-        android:paddingHorizontal="16dp"
-        android:paddingTop="12dp"
-        android:paddingBottom="12dp">
+        android:paddingTop="8dp"
+        android:paddingBottom="10dp">
 
-        <!-- Brand & Glass Utility Controls -->
+        <!-- Row 1: Brand + Live Status + Borderless App Bar Icons -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:gravity="center_vertical">
+            android:gravity="center_vertical"
+            android:paddingStart="16dp"
+            android:paddingEnd="6dp">
 
             <FrameLayout
                 android:layout_width="36dp"
                 android:layout_height="36dp"
-                android:layout_marginEnd="10dp"
+                android:layout_marginEnd="11dp"
                 android:background="@drawable/circle_outline_green">
 
                 <ImageView
-                    android:layout_width="20dp"
-                    android:layout_height="20dp"
+                    android:layout_width="19dp"
+                    android:layout_height="19dp"
                     android:layout_gravity="center"
                     android:src="@drawable/ic_brand_logo"
                     android:contentDescription="LANVOX" />
@@ -44,55 +45,81 @@
                 android:layout_weight="1"
                 android:orientation="vertical">
 
-                <TextView
+                <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="LANVOX"
-                    android:textSize="19sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/text_primary"
-                    android:fontFamily="@font/space_grotesk"
-                    android:letterSpacing="0.16" />
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="LANVOX"
+                        android:textSize="18sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/text_primary"
+                        android:fontFamily="@font/space_grotesk"
+                        android:letterSpacing="0.12" />
+
+                    <View
+                        android:id="@+id/statusIndicator"
+                        android:layout_width="7dp"
+                        android:layout_height="7dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/circle_red" />
+
+                    <com.google.android.material.progressindicator.CircularProgressIndicator
+                        android:id="@+id/progressConnecting"
+                        android:layout_width="14dp"
+                        android:layout_height="14dp"
+                        android:layout_marginStart="6dp"
+                        android:indeterminate="true"
+                        android:visibility="gone"
+                        app:indicatorColor="@color/brand_secondary"
+                        app:trackColor="@color/encrypted_bg"
+                        app:trackThickness="2dp"
+                        app:indicatorSize="14dp" />
+                </LinearLayout>
 
                 <TextView
-                    android:layout_width="wrap_content"
+                    android:id="@+id/tvStatus"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="P2P MESH · ZERO SERVER"
-                    android:textSize="9sp"
-                    android:textColor="@color/brand_secondary"
+                    android:text="@string/status_disabled"
+                    android:textSize="11sp"
                     android:fontFamily="@font/jetbrains_mono"
-                    android:letterSpacing="0.1" />
+                    android:textColor="@color/text_secondary"
+                    android:maxLines="1"
+                    android:ellipsize="end" />
             </LinearLayout>
 
             <ImageView
                 android:id="@+id/btnChats"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:layout_marginEnd="6dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
                 android:src="@drawable/ic_chats"
                 android:contentDescription="Open chats list"
-                android:background="@drawable/bg_glass_circle"
                 android:padding="13dp"
                 android:tint="@color/brand_secondary" />
 
             <ImageView
-                android:id="@+id/btnExportChat"
+                android:id="@+id/btnSearchMessages"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:layout_marginEnd="6dp"
-                android:src="@drawable/ic_save"
-                android:contentDescription="Export chat history to file"
-                android:background="@drawable/bg_glass_circle"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_search"
+                android:contentDescription="@string/cd_search_messages"
                 android:padding="13dp"
                 android:tint="@color/text_secondary" />
 
             <ImageView
-                android:id="@+id/btnClearHistory"
+                android:id="@+id/btnMoreOptions"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:src="@drawable/ic_delete"
-                android:contentDescription="Clear chat history"
-                android:background="@drawable/bg_glass_circle"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_more"
+                android:contentDescription="@string/cd_more_options"
                 android:padding="13dp"
                 android:tint="@color/text_secondary" />
 
@@ -100,97 +127,38 @@
                 android:id="@+id/tvDeviceInfo"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
-                android:textSize="10sp"
-                android:fontFamily="@font/jetbrains_mono"
-                android:textColor="@color/text_tertiary"
                 android:visibility="gone" />
         </LinearLayout>
 
-        <!-- Compact Telemetry Status + Local Storage Pill -->
+        <!-- Row 2: Compact Peer & Call Command Bar -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/bg_glass_card"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="7dp">
-
-            <View
-                android:id="@+id/statusIndicator"
-                android:layout_width="8dp"
-                android:layout_height="8dp"
-                android:background="@drawable/circle_red" />
-
-            <TextView
-                android:id="@+id/tvStatus"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginStart="8dp"
-                android:layout_marginEnd="8dp"
-                android:text="@string/status_disabled"
-                android:textSize="11sp"
-                android:fontFamily="@font/jetbrains_mono"
-                android:textColor="@color/text_secondary"
-                android:maxLines="1"
-                android:ellipsize="end" />
-
-            <com.google.android.material.progressindicator.CircularProgressIndicator
-                android:id="@+id/progressConnecting"
-                android:layout_width="16dp"
-                android:layout_height="16dp"
-                android:layout_marginEnd="8dp"
-                android:indeterminate="true"
-                android:visibility="gone"
-                app:indicatorColor="@color/brand_secondary"
-                app:trackColor="@color/encrypted_bg"
-                app:trackThickness="2dp"
-                app:indicatorSize="16dp" />
-
-            <TextView
-                android:id="@+id/tvStoragePill"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/status_offline_mode"
-                android:textSize="10sp"
-                android:textColor="@color/brand_secondary"
-                android:fontFamily="@font/jetbrains_mono"
-                android:background="@drawable/pill_green_small"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="3dp" />
-        </LinearLayout>
-
-        <!-- Action Command Strip -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginTop="10dp">
+            android:layout_marginTop="4dp"
+            android:paddingHorizontal="16dp">
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnDiscover"
-                android:layout_width="0dp"
+                android:layout_width="wrap_content"
                 android:layout_height="48dp"
-                android:layout_weight="1.25"
+                android:minWidth="92dp"
                 android:layout_marginEnd="8dp"
-                android:text="@string/btn_discover"
+                android:text="@string/btn_scan_short"
                 android:textAllCaps="false"
                 android:textSize="13sp"
                 android:textStyle="bold"
                 android:textColor="@color/text_on_primary"
                 android:fontFamily="@font/space_grotesk"
-                android:insetTop="2dp"
-                android:insetBottom="2dp"
-                android:paddingHorizontal="12dp"
+                android:insetTop="4dp"
+                android:insetBottom="4dp"
+                android:paddingHorizontal="14dp"
                 app:cornerRadius="999dp"
                 app:backgroundTint="@color/brand_secondary"
                 app:icon="@drawable/ic_search"
                 app:iconGravity="textStart"
-                app:iconSize="17dp"
+                app:iconSize="16dp"
                 app:iconPadding="6dp"
                 app:iconTint="@color/text_on_primary" />
 
@@ -199,20 +167,24 @@
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="wrap_content"
                 android:layout_height="48dp"
-                android:layout_marginEnd="8dp"
                 android:text="@string/btn_devices"
                 android:textAllCaps="false"
-                android:textSize="12sp"
+                android:textSize="12.5sp"
                 android:textColor="@color/brand_secondary"
                 android:fontFamily="@font/space_grotesk"
                 android:contentDescription="@string/cd_toggle_scanner"
-                android:insetTop="2dp"
-                android:insetBottom="2dp"
+                android:insetTop="4dp"
+                android:insetBottom="4dp"
                 android:paddingHorizontal="14dp"
                 app:backgroundTint="@color/encrypted_bg"
                 app:cornerRadius="999dp"
                 app:strokeColor="@color/glass_border_active"
                 app:strokeWidth="1.2dp" />
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnAudioCall"
@@ -221,11 +193,11 @@
                 android:layout_marginEnd="6dp"
                 android:contentDescription="@string/btn_audio_call"
                 android:enabled="false"
-                android:insetTop="2dp"
-                android:insetBottom="2dp"
-                android:insetLeft="0dp"
-                android:insetRight="0dp"
-                app:cornerRadius="24dp"
+                android:insetTop="4dp"
+                android:insetBottom="4dp"
+                android:insetLeft="2dp"
+                android:insetRight="2dp"
+                app:cornerRadius="22dp"
                 app:backgroundTint="@color/surface_elevated"
                 app:strokeColor="@color/glass_border_active"
                 app:strokeWidth="1dp"
@@ -241,11 +213,11 @@
                 android:layout_height="48dp"
                 android:contentDescription="@string/btn_video_call"
                 android:enabled="false"
-                android:insetTop="2dp"
-                android:insetBottom="2dp"
-                android:insetLeft="0dp"
-                android:insetRight="0dp"
-                app:cornerRadius="24dp"
+                android:insetTop="4dp"
+                android:insetBottom="4dp"
+                android:insetLeft="2dp"
+                android:insetRight="2dp"
+                app:cornerRadius="22dp"
                 app:backgroundTint="@color/surface_elevated"
                 app:strokeColor="@color/glass_border_active"
                 app:strokeWidth="1dp"
@@ -255,6 +227,70 @@
                 app:iconSize="18dp"
                 app:iconTint="@color/brand_secondary" />
         </LinearLayout>
+    </LinearLayout>
+
+    <!-- Slim Integrated Active Channel Context Strip (does not overlap chat messages) -->
+    <LinearLayout
+        android:id="@+id/activeChatHeader"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="36dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/bg_thread_strip"
+        android:foreground="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="7dp">
+
+        <ImageView
+            android:layout_width="13dp"
+            android:layout_height="13dp"
+            android:src="@drawable/ic_lock"
+            android:contentDescription="@string/encrypted"
+            android:tint="@color/brand_secondary"
+            android:layout_marginEnd="7dp" />
+
+        <TextView
+            android:id="@+id/tvActiveChatTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/label_group_chat"
+            android:textSize="12.5sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_primary"
+            android:fontFamily="@font/space_grotesk"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:layout_marginEnd="8dp" />
+
+        <TextView
+            android:id="@+id/tvActiveChatSubtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/label_offline_local"
+            android:textSize="10.5sp"
+            android:textColor="@color/brand_secondary"
+            android:fontFamily="@font/jetbrains_mono" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=" · "
+            android:textSize="10.5sp"
+            android:textColor="@color/text_tertiary"
+            android:fontFamily="@font/jetbrains_mono" />
+
+        <TextView
+            android:id="@+id/tvStoragePill"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0 saved"
+            android:textSize="10.5sp"
+            android:textColor="@color/text_secondary"
+            android:fontFamily="@font/jetbrains_mono" />
     </LinearLayout>
 
     <!-- Collapsible Radar & Nearby Devices Panel -->
@@ -381,7 +417,7 @@
                     android:layout_height="wrap_content"
                     android:layout_gravity="center"
                     android:gravity="center"
-                    android:text="No devices nearby yet.\nTap Discover to scan."
+                    android:text="No devices nearby yet.\nTap Scan to discover."
                     android:textSize="13sp"
                     android:textColor="@color/text_tertiary"
                     android:lineSpacingExtra="3dp" />
@@ -429,7 +465,7 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:paddingHorizontal="6dp"
-            android:paddingTop="68dp"
+            android:paddingTop="12dp"
             android:paddingBottom="88dp"
             android:clipToPadding="false"
             android:clipChildren="false"
@@ -531,7 +567,7 @@
                 android:textColor="@color/text_secondary" />
         </LinearLayout>
 
-        <!-- Floating Frosted Glass Active Channel & Search Overlay -->
+        <!-- Floating Frosted Glass Search Overlay (visible only when search is open) -->
         <LinearLayout
             android:id="@+id/topOverlayContainer"
             android:layout_width="match_parent"
@@ -543,66 +579,9 @@
             android:clipChildren="false">
 
             <LinearLayout
-                android:id="@+id/activeChatHeader"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:background="@drawable/bg_glass_thread_bar"
-                android:paddingStart="14dp"
-                android:paddingEnd="4dp"
-                android:paddingVertical="4dp">
-
-                <ImageView
-                    android:layout_width="15dp"
-                    android:layout_height="15dp"
-                    android:src="@drawable/ic_lock"
-                    android:contentDescription="@string/encrypted"
-                    android:tint="@color/brand_secondary"
-                    android:layout_marginEnd="8dp" />
-
-                <TextView
-                    android:id="@+id/tvActiveChatTitle"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="@string/label_group_chat"
-                    android:textSize="14sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/text_primary"
-                    android:fontFamily="@font/space_grotesk"
-                    android:maxLines="1"
-                    android:ellipsize="end" />
-
-                <TextView
-                    android:id="@+id/tvActiveChatSubtitle"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/label_offline_local"
-                    android:textSize="10sp"
-                    android:textColor="@color/brand_secondary"
-                    android:fontFamily="@font/jetbrains_mono"
-                    android:background="@drawable/pill_green_small"
-                    android:paddingHorizontal="9dp"
-                    android:paddingVertical="3dp" />
-
-                <ImageView
-                    android:id="@+id/btnSearchMessages"
-                    android:layout_width="48dp"
-                    android:layout_height="48dp"
-                    android:layout_marginStart="2dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="@string/cd_search_messages"
-                    android:padding="14dp"
-                    android:src="@drawable/ic_search"
-                    android:tint="@color/brand_secondary" />
-            </LinearLayout>
-
-            <LinearLayout
                 android:id="@+id/searchBarContainer"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
                 android:background="@drawable/bg_glass_thread_bar"

@@ -1,5 +1,6 @@
 package com.example.wifip2pchat
 
+import android.net.Uri
 import android.util.Log
 
 /**
@@ -118,9 +119,11 @@ object PeerRegistry {
         body.split(',').forEach { entry ->
             val parts = entry.split(':', limit = 2)
             if (parts.size == 2 && parts[0].isNotBlank()) {
+                val decodedId = Uri.decode(parts[0])
+                val decodedName = Uri.decode(parts[1]).ifBlank { decodedId }
                 out += Peer(
-                    id = parts[0],
-                    name = parts[1].ifBlank { parts[0] },
+                    id = decodedId,
+                    name = decodedName,
                     isGroupOwner = false
                 )
             }
@@ -131,7 +134,7 @@ object PeerRegistry {
     /** Build a PEERS: payload from the current peer list, for the GO to broadcast. */
     fun buildPeersPayload(): String {
         val list = synchronized(peers) {
-            peers.values.map { "${it.id}:${it.name}" }
+            peers.values.map { "${Uri.encode(it.id)}:${Uri.encode(it.name)}" }
         }
         return Constants.PAYLOAD_PEERS + list.joinToString(",")
     }

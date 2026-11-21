@@ -1,376 +1,630 @@
 package com.example.wifip2pchat
 
-import android.app.*
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Intent
-import android.media.audiofx.AcousticEchoCanceler
-import android.media.audiofx.AutomaticGainControl
-import android.media.audiofx.NoiseSuppressor
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.*
-import java.io.*
-import java.net.*
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+import org.webrtc.IceCandidate
+import org.webrtc.SessionDescription
+import java.io.BufferedReader
+import java.io.BufferedWriter
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Foreground service that handles audio calling over WiFi Direct.
+ * Foreground service (`foregroundServiceType="microphone"`) that hosts the
+ * WebRTC P2P audio stack for stable background voice streaming over Wi-Fi Direct.
  *
- * Architecture:
- *   Group Owner: listens on [Constants.AUDIO_PORT], accepts one connection
- *   Client: connects to GO's address on [Constants.AUDIO_PORT]
- *
- * Audio flow:
- *   Mic (AudioRecord) → OutputStream → [WiFi Direct] → InputStream → Speaker (AudioTrack)
- *
- * v4.1 latency fixes:
- *   - TCP_NODELAY on both sockets (kills Nagle's ~40ms batching delay)
- *   - AudioRecord/AudioTrack Builders with PERFORMANCE_MODE_LOW_LATENCY (API 26+)
- *   - Small playback buffer (~16ms) instead of the ~150ms default
- *   - Echo cancellation + noise suppression + AGC attached (zero extra latency)
+ * Key architecture:
+ *  - Uses [WebRtcAudioCallManager] (`org.webrtc.PeerConnection`, `JavaAudioDeviceModule`,
+ *    hardware AEC/NS/AGC, Opus RTP/SRTP transport & NetEQ adaptive jitter buffer)
+ *  - Exchanges WebRTC SDP Offer/Answer and ICE candidates as newline-delimited JSON
+ *    over a dedicated TCP signaling link on [Constants.AUDIO_PORT]
+ *  - Holds [PowerManager.PARTIAL_WAKE_LOCK] and a high-perf / low-latency [WifiManager.WifiLock]
+ *    so WebRTC audio keeps streaming cleanly when the screen locks or app is backgrounded
+ *  - Exposes an ongoing call notification with return-to-call tap target, Mute/Unmute,
+ *    and End Call actions synchronized with [CallSessionBus]
  */
-class AudioCallService : Service() {
+class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
 
     companion object {
         private const val TAG = "AudioCallService"
         private const val NOTIFICATION_ID = 2001
         private const val CHANNEL_ID = "audio_call_channel"
 
+        const val EXTRA_IS_GROUP_OWNER = "extra_is_group_owner"
+        const val EXTRA_HOST_ADDRESS = "extra_host_address"
+        const val EXTRA_NOTIFY_CALL_BUS = "extra_notify_call_bus"
+        const val EXTRA_PEER_ID = "extra_peer_id"
+        const val EXTRA_PEER_NAME = "extra_peer_name"
+
+        private const val ACTION_TOGGLE_MUTE = "com.example.lanvox.ACTION_CALL_TOGGLE_MUTE"
+        private const val ACTION_END_CALL = "com.example.lanvox.ACTION_CALL_END"
+        private const val WAKE_LOCK_TIMEOUT_MS = 4 * 60 * 60 * 1000L
+
+        @Volatile
         var isRunning = false
             private set
-        var onRemoteAudioData: ((ByteArray, Int) -> Unit)? = null
+
+        @Volatile
+        var isMuted = false
+            private set
 
         private var instance: AudioCallService? = null
-        fun sendAudio(data: ByteArray, length: Int) {
-            instance?.sendAudioInternal(data, length)
+
+        fun setMuted(muted: Boolean) {
+            isMuted = muted
+            CallSessionBus.notifyMuteChanged(muted)
+            instance?.onMuteUpdated(muted)
         }
+
         fun endCall() {
-            instance?.endCallInternal()
+            instance?.endCallInternal(notifyBus = false, sendBye = true, reason = "Call ended")
         }
-        fun startAsGroupOwner() {
-            instance?.startAsGroupOwnerInternal()
+
+        fun startAsGroupOwner(notifyBus: Boolean = true) {
+            instance?.startSessionInternal(
+                isGroupOwner = true,
+                hostAddress = null,
+                notifyBus = notifyBus,
+                peerId = null,
+                peerName = null
+            )
         }
-        fun connectToGroupOwner(hostAddress: String) {
-            instance?.connectToGroupOwnerInternal(hostAddress)
+
+        fun connectToGroupOwner(hostAddress: String, notifyBus: Boolean = true) {
+            instance?.startSessionInternal(
+                isGroupOwner = false,
+                hostAddress = hostAddress,
+                notifyBus = notifyBus,
+                peerId = null,
+                peerName = null
+            )
         }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val sessionStarted = AtomicBoolean(false)
+    private val terminating = AtomicBoolean(false)
+    private val signalWriteLock = Any()
 
-    private var serverSocket: ServerSocket? = null
-    private var socket: Socket? = null
-    private var outputStream: OutputStream? = null
-    private var inputStream: InputStream? = null
+    @Volatile private var serverSocket: ServerSocket? = null
+    @Volatile private var signalingSocket: Socket? = null
+    @Volatile private var signalWriter: BufferedWriter? = null
+    private val pendingOutgoingSignals = mutableListOf<String>()
 
-    private var audioRecorder: android.media.AudioRecord? = null
-    private var audioTrack: android.media.AudioTrack? = null
-    private var isRecording = false
-    private var isPlaying = false
+    private var webRtcManager: WebRtcAudioCallManager? = null
+    private var connectJob: Job? = null
+    private var readJob: Job? = null
 
-    private var recordJob: Job? = null
-    private var playJob: Job? = null
-    private val audioEffects = mutableListOf<android.media.audiofx.AudioEffect>()
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    @Volatile private var notifyCallBus = true
+    @Volatile private var isGroupOwnerRole = false
+    @Volatile private var peerId: String? = null
+    @Volatile private var peerName: String = "Peer"
+    @Volatile private var isWebRtcConnected = false
+    @Volatile private var isReconnecting = false
+    @Volatile private var connectedSinceMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         isRunning = true
+        isMuted = false
+        terminating.set(false)
         instance = this
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Audio call active"))
-        Log.d(TAG, "Audio call service created")
+
+        val hasMicPermission = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasMicPermission) {
+            Log.e(TAG, "RECORD_AUDIO permission missing — stopping AudioCallService")
+            CallSessionBus.notifyEnded("Microphone permission required")
+            stopSelf()
+            return
+        }
+
+        try {
+            val notification = buildNotification(getString(R.string.call_notif_connecting))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (se: SecurityException) {
+            Log.e(TAG, "Cannot start microphone foreground service: ${se.message}")
+            CallSessionBus.notifyEnded("Microphone permission denied")
+            stopSelf()
+            return
+        }
+
+        acquireBackgroundLocks()
+        Log.d(TAG, "WebRTC AudioCallService created")
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_TOGGLE_MUTE -> {
+                setMuted(!isMuted)
+                return START_NOT_STICKY
+            }
+            ACTION_END_CALL -> {
+                val hangupType = if (notifyCallBus) Constants.CALL_TYPE_AUDIO else Constants.CALL_TYPE_VIDEO
+                val hangupPayload = Constants.MSG_TYPE_CALL_END + hangupType
+                if (!MainActivity.sendControlToPeerStatic(peerId, hangupPayload)) {
+                    CallListenerService.sendControl(hangupPayload, peerId)
+                }
+                endCallInternal(notifyBus = true, sendBye = true, reason = "Call ended")
+                return START_NOT_STICKY
+            }
+        }
+
+        if (intent != null && intent.hasExtra(EXTRA_IS_GROUP_OWNER)) {
+            val isGo = intent.getBooleanExtra(EXTRA_IS_GROUP_OWNER, false)
+            val host = intent.getStringExtra(EXTRA_HOST_ADDRESS)
+            val notify = intent.getBooleanExtra(EXTRA_NOTIFY_CALL_BUS, true)
+            val targetPeerId = intent.getStringExtra(EXTRA_PEER_ID)
+            val targetPeerName = intent.getStringExtra(EXTRA_PEER_NAME)
+            startSessionInternal(isGo, host, notify, targetPeerId, targetPeerName)
+        }
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         isRunning = false
+        isMuted = false
         instance = null
-        stopAudio()
-        closeSockets()
+        connectJob?.cancel()
+        readJob?.cancel()
+        webRtcManager?.dispose()
+        webRtcManager = null
+        closeSignalingSockets()
+        releaseBackgroundLocks()
         scope.cancel()
         super.onDestroy()
-        Log.d(TAG, "Audio call service destroyed")
+        Log.d(TAG, "WebRTC AudioCallService destroyed")
     }
 
-    // ======================== Server/Client Setup ========================
+    // ======================== Session Lifecycle ========================
 
-    fun startAsGroupOwnerInternal() {
-        scope.launch {
+    private fun startSessionInternal(
+        isGroupOwner: Boolean,
+        hostAddress: String?,
+        notifyBus: Boolean,
+        peerId: String?,
+        peerName: String?
+    ) {
+        if (!isRunning) return
+        if (!sessionStarted.compareAndSet(false, true)) return
+
+        notifyCallBus = notifyBus
+        isGroupOwnerRole = isGroupOwner
+        this.peerId = peerId
+        this.peerName = peerName?.takeIf { it.isNotBlank() } ?: "Peer"
+
+        webRtcManager = WebRtcAudioCallManager(this, this)
+        refreshNotification()
+
+        if (isGroupOwner) {
+            startSignalingServer()
+        } else if (!hostAddress.isNullOrBlank()) {
+            connectSignalingClient(hostAddress)
+        } else {
+            Log.e(TAG, "Missing hostAddress for client WebRTC audio call")
+            if (notifyCallBus) CallSessionBus.notifyEnded("Missing peer address")
+            stopSelf()
+        }
+    }
+
+    private fun startSignalingServer() {
+        connectJob = scope.launch {
             try {
-                serverSocket = ServerSocket(Constants.AUDIO_PORT)
-                Log.d(TAG, "Audio server listening on port ${Constants.AUDIO_PORT}")
-                val conn = serverSocket?.accept() ?: return@launch
-                // Kill Nagle's algorithm — biggest single latency win for TCP audio.
-                conn.tcpNoDelay = true
-                socket = conn
-                outputStream = conn.getOutputStream()
-                inputStream = conn.getInputStream()
-                Log.d(TAG, "Audio client connected")
-                startAudioStreaming()
-                startAudioPlayback()
+                val srv = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(Constants.AUDIO_PORT))
+                }
+                serverSocket = srv
+                Log.d(TAG, "WebRTC audio signaling server listening on port ${Constants.AUDIO_PORT}")
+                val conn = srv.accept()
+                onSignalingSocketReady(conn)
             } catch (e: Exception) {
-                if (scope.isActive) Log.e(TAG, "GO audio error: ${e.message}")
+                if (scope.isActive && !terminating.get()) {
+                    Log.e(TAG, "GO WebRTC signaling error: ${e.message}")
+                    endCallInternal(
+                        notifyBus = true,
+                        sendBye = false,
+                        reason = "Audio connection lost"
+                    )
+                }
             }
         }
     }
 
-    fun connectToGroupOwnerInternal(hostAddress: String) {
-        scope.launch {
+    private fun connectSignalingClient(hostAddress: String) {
+        connectJob = scope.launch {
             repeat(30) { attempt ->
-                if (!isRunning) return@launch
+                if (!isRunning || terminating.get() || !isActive) return@launch
                 try {
                     val conn = Socket()
-                    // Kill Nagle's algorithm — biggest single latency win for TCP audio.
                     conn.tcpNoDelay = true
                     conn.connect(InetSocketAddress(hostAddress, Constants.AUDIO_PORT), 3_000)
-                    socket = conn
-                    outputStream = conn.getOutputStream()
-                    inputStream = conn.getInputStream()
-                    Log.d(TAG, "Connected to GO audio at $hostAddress:${Constants.AUDIO_PORT}")
-                    startAudioStreaming()
-                    startAudioPlayback()
+                    Log.d(TAG, "Connected to GO WebRTC signaling at $hostAddress:${Constants.AUDIO_PORT}")
+                    onSignalingSocketReady(conn)
                     return@launch
                 } catch (e: Exception) {
-                    Log.d(TAG, "Audio connect attempt ${attempt + 1} failed: ${e.message}")
+                    Log.d(TAG, "WebRTC signaling connect attempt ${attempt + 1} failed: ${e.message}")
                     delay(1_000)
                 }
             }
-            Log.e(TAG, "Could not reach peer audio port after 30 attempts")
+            Log.e(TAG, "Could not reach peer audio signaling port after 30 attempts")
+            endCallInternal(notifyBus = true, sendBye = false, reason = "Peer did not answer")
         }
     }
 
-    // ======================== Audio Recording (Mic → Socket) ========================
+    private fun onSignalingSocketReady(conn: Socket) {
+        conn.tcpNoDelay = true
+        conn.keepAlive = true
+        signalingSocket = conn
 
-    private fun startAudioStreaming() {
-        val minBuf = android.media.AudioRecord.getMinBufferSize(
-            Constants.AUDIO_SAMPLE_RATE,
-            Constants.AUDIO_CHANNEL_CONFIG,
-            Constants.AUDIO_FORMAT
-        )
-
-        if (minBuf == android.media.AudioRecord.ERROR || minBuf == android.media.AudioRecord.ERROR_BAD_VALUE || minBuf <= 0) {
-            Log.e(TAG, "Invalid AudioRecord buffer size")
-            return
+        synchronized(signalWriteLock) {
+            val writer = BufferedWriter(OutputStreamWriter(conn.getOutputStream(), Charsets.UTF_8))
+            signalWriter = writer
+            if (pendingOutgoingSignals.isNotEmpty()) {
+                pendingOutgoingSignals.forEach { msg ->
+                    writer.write(msg)
+                    writer.newLine()
+                }
+                writer.flush()
+                pendingOutgoingSignals.clear()
+            }
         }
 
-        audioRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            android.media.AudioRecord.Builder()
-                .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
-                .setAudioFormat(
-                    android.media.AudioFormat.Builder()
-                        .setSampleRate(Constants.AUDIO_SAMPLE_RATE)
-                        .setChannelMask(Constants.AUDIO_CHANNEL_CONFIG)
-                        .setEncoding(Constants.AUDIO_FORMAT)
-                        .build()
-                )
-                .setBufferSizeInBytes(minBuf * 2)
-                .build()
-        } else {
-            android.media.AudioRecord(
-                android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                Constants.AUDIO_SAMPLE_RATE,
-                Constants.AUDIO_CHANNEL_CONFIG,
-                Constants.AUDIO_FORMAT,
-                minBuf * 2
-            )
-        }
+        // Start WebRTC engine; Group Owner sends the initial SDP offer
+        webRtcManager?.initialize(isOfferer = isGroupOwnerRole)
+        startSignalingReader(conn)
+    }
 
-        if (audioRecorder?.state != android.media.AudioRecord.STATE_INITIALIZED) {
-            Log.e(TAG, "AudioRecord not initialized")
-            return
-        }
-
-        attachAudioEffects(audioRecorder?.audioSessionId ?: 0)
-
-        audioRecorder?.startRecording()
-        isRecording = true
-        Log.d(TAG, "Audio recording started")
-
-        val buffer = ByteArray(Constants.AUDIO_BUFFER_SIZE)
-        recordJob = scope.launch {
-            while (isRecording && isActive) {
-                val read = audioRecorder?.read(buffer, 0, buffer.size) ?: -1
-                if (read > 0) {
-                    sendAudioInternal(buffer, read)
+    private fun startSignalingReader(conn: Socket) {
+        readJob = scope.launch {
+            try {
+                val reader = BufferedReader(InputStreamReader(conn.getInputStream(), Charsets.UTF_8))
+                while (isActive && !terminating.get()) {
+                    val line = reader.readLine() ?: break
+                    if (line.isBlank()) continue
+                    handleSignalingMessage(line)
+                }
+                if (!terminating.get()) {
+                    Log.d(TAG, "Peer closed WebRTC signaling socket")
+                    endCallInternal(notifyBus = true, sendBye = false, reason = "Call ended")
+                }
+            } catch (e: Exception) {
+                if (scope.isActive && !terminating.get()) {
+                    Log.w(TAG, "WebRTC signaling reader ended: ${e.message}")
+                    endCallInternal(notifyBus = true, sendBye = false, reason = "Call ended")
                 }
             }
         }
     }
 
-    private fun attachAudioEffects(sessionId: Int) {
+    private fun handleSignalingMessage(rawJson: String) {
         try {
-            if (AcousticEchoCanceler.isAvailable()) {
-                AcousticEchoCanceler.create(sessionId)?.let {
-                    it.enabled = true
-                    audioEffects.add(it)
+            val json = JSONObject(rawJson)
+            when (json.optString("type")) {
+                "offer" -> {
+                    val sdp = json.getString("sdp")
+                    Log.d(TAG, "Received WebRTC SDP offer")
+                    webRtcManager?.onRemoteOfferReceived(sdp)
                 }
-            }
-            if (NoiseSuppressor.isAvailable()) {
-                NoiseSuppressor.create(sessionId)?.let {
-                    it.enabled = true
-                    audioEffects.add(it)
+                "answer" -> {
+                    val sdp = json.getString("sdp")
+                    Log.d(TAG, "Received WebRTC SDP answer")
+                    webRtcManager?.onRemoteAnswerReceived(sdp)
                 }
-            }
-            if (AutomaticGainControl.isAvailable()) {
-                AutomaticGainControl.create(sessionId)?.let {
-                    it.enabled = true
-                    audioEffects.add(it)
+                "ice" -> {
+                    val sdpMid = json.optString("sdpMid")
+                    val mLineIndex = json.optInt("sdpMLineIndex", 0)
+                    val candidate = json.getString("candidate")
+                    webRtcManager?.onRemoteIceCandidateReceived(sdpMid, mLineIndex, candidate)
+                }
+                "bye" -> {
+                    Log.d(TAG, "Peer sent WebRTC bye")
+                    endCallInternal(notifyBus = true, sendBye = false, reason = "Call ended")
                 }
             }
         } catch (e: Exception) {
-            Log.d(TAG, "Audio effects skipped: ${e.message}")
+            Log.w(TAG, "Ignoring malformed signaling payload: ${e.message}")
         }
     }
 
-    // ======================== Audio Playback (Socket → Speaker) ========================
-
-    private fun startAudioPlayback() {
-        val minBuf = android.media.AudioTrack.getMinBufferSize(
-            Constants.AUDIO_SAMPLE_RATE,
-            android.media.AudioFormat.CHANNEL_OUT_MONO,
-            Constants.AUDIO_FORMAT
-        )
-
-        if (minBuf <= 0) {
-            Log.e(TAG, "Invalid AudioTrack buffer size")
-            return
-        }
-
-        val targetFrames = 256  // ~16ms at 16 kHz
-        val bufBytes = maxOf(targetFrames * 2, minBuf / 2)
-
-        audioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            android.media.AudioTrack.Builder()
-                .setAudioAttributes(
-                    android.media.AudioAttributes.Builder()
-                        .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setAudioFormat(
-                    android.media.AudioFormat.Builder()
-                        .setSampleRate(Constants.AUDIO_SAMPLE_RATE)
-                        .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
-                        .setEncoding(Constants.AUDIO_FORMAT)
-                        .build()
-                )
-                .setBufferSizeInBytes(bufBytes)
-                .setTransferMode(android.media.AudioTrack.MODE_STREAM)
-                .apply {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        setPerformanceMode(android.media.AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-                    }
-                }
-                .build()
-        } else {
-            android.media.AudioTrack(
-                android.media.AudioManager.STREAM_VOICE_CALL,
-                Constants.AUDIO_SAMPLE_RATE,
-                android.media.AudioFormat.CHANNEL_OUT_MONO,
-                Constants.AUDIO_FORMAT,
-                bufBytes,
-                android.media.AudioTrack.MODE_STREAM
-            )
-        }
-
-        if (audioTrack?.state != android.media.AudioTrack.STATE_INITIALIZED) {
-            Log.e(TAG, "AudioTrack not initialized")
-            return
-        }
-
-        audioTrack?.play()
-        isPlaying = true
-        Log.d(TAG, "Audio playback started")
-
-        val buffer = ByteArray(Constants.AUDIO_BUFFER_SIZE)
-        playJob = scope.launch {
+    private fun sendSignalingJson(json: JSONObject) {
+        val serialized = json.toString()
+        scope.launch {
+            if (terminating.get()) return@launch
             try {
-                while (isPlaying && isActive) {
-                    val read = inputStream?.read(buffer) ?: -1
-                    if (read > 0) {
-                        audioTrack?.write(buffer, 0, read)
-                        onRemoteAudioData?.invoke(buffer, read)
-                    } else if (read == -1) {
-                        break
+                synchronized(signalWriteLock) {
+                    val writer = signalWriter
+                    if (writer == null) {
+                        pendingOutgoingSignals.add(serialized)
+                    } else {
+                        writer.write(serialized)
+                        writer.newLine()
+                        writer.flush()
                     }
                 }
             } catch (e: Exception) {
-                if (scope.isActive) Log.e(TAG, "Playback error: ${e.message}")
+                if (!terminating.get()) {
+                    Log.w(TAG, "Failed to write signaling message: ${e.message}")
+                }
             }
         }
     }
 
-    // ======================== Send Audio Data ========================
+    // ======================== WebRtcAudioCallManager.Listener ========================
 
-    private fun sendAudioInternal(data: ByteArray, length: Int) {
-        try {
-            outputStream?.write(data, 0, length)
-            outputStream?.flush()
-        } catch (e: Exception) {
-            Log.e(TAG, "Audio send error: ${e.message}")
+    override fun onLocalOffer(sdp: SessionDescription) {
+        sendSignalingJson(JSONObject().apply {
+            put("type", "offer")
+            put("sdp", sdp.description)
+        })
+    }
+
+    override fun onLocalAnswer(sdp: SessionDescription) {
+        sendSignalingJson(JSONObject().apply {
+            put("type", "answer")
+            put("sdp", sdp.description)
+        })
+    }
+
+    override fun onLocalIceCandidate(candidate: IceCandidate) {
+        sendSignalingJson(JSONObject().apply {
+            put("type", "ice")
+            put("sdpMid", candidate.sdpMid ?: "")
+            put("sdpMLineIndex", candidate.sdpMLineIndex)
+            put("candidate", candidate.sdp)
+        })
+    }
+
+    override fun onConnected() {
+        isWebRtcConnected = true
+        isReconnecting = false
+        if (connectedSinceMs == 0L) {
+            connectedSinceMs = System.currentTimeMillis()
+        }
+        refreshNotification()
+        if (notifyCallBus && !terminating.get()) {
+            CallSessionBus.notifyConnected()
         }
     }
 
-    // ======================== Cleanup ========================
-
-    private fun stopAudio() {
-        isRecording = false
-        isPlaying = false
-        recordJob?.cancel()
-        playJob?.cancel()
-
-        audioEffects.forEach { runCatching { it.enabled = false; it.release() } }
-        audioEffects.clear()
-
-        try { audioRecorder?.stop() } catch (_: Exception) {}
-        try { audioRecorder?.release() } catch (_: Exception) {}
-        audioRecorder = null
-
-        try { audioTrack?.stop() } catch (_: Exception) {}
-        try { audioTrack?.release() } catch (_: Exception) {}
-        audioTrack = null
+    override fun onReconnecting() {
+        isReconnecting = true
+        refreshNotification()
+        if (notifyCallBus && !terminating.get()) {
+            CallSessionBus.notifyReconnecting()
+        }
     }
 
-    private fun closeSockets() {
-        try { outputStream?.close() } catch (_: Exception) {}
-        try { inputStream?.close() } catch (_: Exception) {}
-        try { socket?.close() } catch (_: Exception) {}
+    override fun onDisconnected(reason: String) {
+        endCallInternal(notifyBus = true, sendBye = false, reason = reason)
+    }
+
+    override fun onError(message: String) {
+        Log.e(TAG, "WebRTC error: $message")
+        endCallInternal(notifyBus = true, sendBye = true, reason = message)
+    }
+
+    // ======================== Mute & Cleanup ========================
+
+    private fun onMuteUpdated(muted: Boolean) {
+        webRtcManager?.setMuted(muted)
+        refreshNotification()
+    }
+
+    private fun closeSignalingSockets() {
+        synchronized(signalWriteLock) {
+            pendingOutgoingSignals.clear()
+            try { signalWriter?.close() } catch (_: Exception) {}
+            signalWriter = null
+        }
+        try { signalingSocket?.close() } catch (_: Exception) {}
         try { serverSocket?.close() } catch (_: Exception) {}
-        outputStream = null
-        inputStream = null
-        socket = null
+        signalingSocket = null
         serverSocket = null
     }
 
-    private fun endCallInternal() {
-        stopAudio()
-        closeSockets()
+    private fun endCallInternal(notifyBus: Boolean, sendBye: Boolean, reason: String) {
+        if (!terminating.compareAndSet(false, true)) return
+        if (notifyBus && notifyCallBus) {
+            CallSessionBus.notifyEnded(reason)
+        }
+        connectJob?.cancel()
+        readJob?.cancel()
+        webRtcManager?.dispose()
+        webRtcManager = null
+
+        val writerSnapshot = synchronized(signalWriteLock) {
+            val w = signalWriter
+            signalWriter = null
+            pendingOutgoingSignals.clear()
+            w
+        }
+        val sockSnapshot = signalingSocket
+        val srvSnapshot = serverSocket
+        signalingSocket = null
+        serverSocket = null
+
+        Thread({
+            if (sendBye && writerSnapshot != null) {
+                try {
+                    writerSnapshot.write(JSONObject().put("type", "bye").toString())
+                    writerSnapshot.newLine()
+                    writerSnapshot.flush()
+                } catch (_: Exception) {}
+            }
+            try { writerSnapshot?.close() } catch (_: Exception) {}
+            try { sockSnapshot?.close() } catch (_: Exception) {}
+            try { srvSnapshot?.close() } catch (_: Exception) {}
+        }, "LanvoxCallBye").start()
+
+        releaseBackgroundLocks()
         stopSelf()
     }
 
-    // ======================== Notification ========================
+    // ======================== Wake & Wi-Fi Locks ========================
+
+    @Suppress("DEPRECATION")
+    private fun acquireBackgroundLocks() {
+        try {
+            val pm = getSystemService(POWER_SERVICE) as? PowerManager
+            wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "lanvox:webrtc_audio_wake")?.apply {
+                setReferenceCounted(false)
+                acquire(WAKE_LOCK_TIMEOUT_MS)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire CPU wake lock: ${e.message}")
+        }
+
+        try {
+            val wm = applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wifiLock = wm?.createWifiLock(mode, "lanvox:webrtc_wifi_lock")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire Wi-Fi lock: ${e.message}")
+        }
+    }
+
+    private fun releaseBackgroundLocks() {
+        try {
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+        } catch (_: Exception) {}
+        wakeLock = null
+
+        try {
+            if (wifiLock?.isHeld == true) wifiLock?.release()
+        } catch (_: Exception) {}
+        wifiLock = null
+    }
+
+    // ======================== Ongoing Foreground Notification ========================
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Audio Call",
+                getString(R.string.call_notif_channel_name),
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Audio call in progress"
+                description = getString(R.string.call_notif_channel_desc)
                 setSound(null, null)
             }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun refreshNotification() {
+        if (!isRunning || terminating.get()) return
+        val statusText = when {
+            isReconnecting -> getString(R.string.call_notif_reconnecting, peerName)
+            isMuted && isWebRtcConnected -> getString(R.string.call_notif_muted, peerName)
+            isWebRtcConnected -> getString(R.string.call_notif_active, peerName)
+            else -> getString(R.string.call_notif_connecting)
+        }
+        getSystemService(NotificationManager::class.java)
+            ?.notify(NOTIFICATION_ID, buildNotification(statusText))
+    }
+
+    private fun buildNotification(statusText: String): Notification {
+        val targetClass = if (notifyCallBus) AudioCallActivity::class.java else VideoCallActivity::class.java
+        val openCallIntent = Intent(this, targetClass).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(AudioCallActivity.EXTRA_PEER_ID, peerId)
+            putExtra(AudioCallActivity.EXTRA_PEER_NAME, peerName)
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            this,
+            100,
+            openCallIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val muteIntent = PendingIntent.getService(
+            this,
+            101,
+            Intent(this, AudioCallService::class.java).setAction(ACTION_TOGGLE_MUTE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val endIntent = PendingIntent.getService(
+            this,
+            102,
+            Intent(this, AudioCallService::class.java).setAction(ACTION_END_CALL),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val muteLabel = if (isMuted) getString(R.string.unmute) else getString(R.string.mute)
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("LANVOX")
-            .setContentText(text)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(contentPendingIntent)
+            .addAction(
+                if (isMuted) R.drawable.ic_mic else R.drawable.ic_mic_off,
+                muteLabel,
+                muteIntent
+            )
+            .addAction(R.drawable.ic_phone_off, getString(R.string.end_call), endIntent)
+            .apply {
+                if (isWebRtcConnected && connectedSinceMs > 0L) {
+                    setUsesChronometer(true)
+                    setWhen(connectedSinceMs)
+                }
+            }
             .build()
     }
 }

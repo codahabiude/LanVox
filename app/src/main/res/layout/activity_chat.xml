@@ -13,8 +13,9 @@
         android:orientation="horizontal"
         android:gravity="center_vertical"
         android:background="@drawable/top_bar_bg"
-        android:paddingHorizontal="10dp"
-        android:paddingVertical="10dp">
+        android:paddingStart="6dp"
+        android:paddingEnd="6dp"
+        android:paddingVertical="8dp">
 
         <ImageView
             android:id="@+id/btnChatBack"
@@ -22,30 +23,30 @@
             android:layout_height="48dp"
             android:src="@drawable/ic_back"
             android:contentDescription="Back"
-            android:background="@drawable/bg_glass_circle"
+            android:background="?attr/selectableItemBackgroundBorderless"
             android:padding="13dp"
             android:tint="@color/text_primary"
-            android:layout_marginEnd="10dp" />
+            android:layout_marginEnd="4dp" />
 
         <FrameLayout
-            android:layout_width="42dp"
-            android:layout_height="42dp"
-            android:layout_marginEnd="12dp">
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginEnd="10dp">
 
             <TextView
                 android:id="@+id/tvChatAvatar"
-                android:layout_width="42dp"
-                android:layout_height="42dp"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
                 android:gravity="center"
-                android:textSize="16sp"
+                android:textSize="15sp"
                 android:textStyle="bold"
                 android:textColor="@color/text_on_primary"
                 android:fontFamily="@font/space_grotesk"
                 android:background="@drawable/circle_green_avatar" />
 
             <View
-                android:layout_width="11dp"
-                android:layout_height="11dp"
+                android:layout_width="10dp"
+                android:layout_height="10dp"
                 android:layout_gravity="bottom|end"
                 android:background="@drawable/online_dot" />
         </FrameLayout>
@@ -54,7 +55,8 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:orientation="vertical">
+            android:orientation="vertical"
+            android:layout_marginEnd="4dp">
 
             <TextView
                 android:id="@+id/tvChatPeerName"
@@ -71,7 +73,7 @@
                 android:id="@+id/tvChatPeerStatus"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
+                android:layout_marginTop="1dp"
                 android:textSize="11sp"
                 android:fontFamily="@font/jetbrains_mono"
                 android:textColor="@color/brand_secondary"
@@ -85,10 +87,9 @@
             android:layout_height="48dp"
             android:src="@drawable/ic_search"
             android:contentDescription="@string/cd_search_messages"
-            android:background="@drawable/bg_glass_circle"
+            android:background="?attr/selectableItemBackgroundBorderless"
             android:padding="13dp"
-            android:tint="@color/brand_secondary"
-            android:layout_marginEnd="6dp" />
+            android:tint="@color/text_secondary" />
 
         <ImageView
             android:id="@+id/btnChatAudioCall"
@@ -96,10 +97,9 @@
             android:layout_height="48dp"
             android:src="@drawable/ic_phone"
             android:contentDescription="Audio call"
-            android:background="@drawable/bg_glass_circle"
+            android:background="?attr/selectableItemBackgroundBorderless"
             android:padding="13dp"
-            android:tint="@color/brand_secondary"
-            android:layout_marginEnd="6dp" />
+            android:tint="@color/brand_secondary" />
 
         <ImageView
             android:id="@+id/btnChatVideoCall"
@@ -107,7 +107,7 @@
             android:layout_height="48dp"
             android:src="@drawable/ic_videocam"
             android:contentDescription="Video call"
-            android:background="@drawable/bg_glass_circle"
+            android:background="?attr/selectableItemBackgroundBorderless"
             android:padding="13dp"
             android:tint="@color/brand_secondary" />
     </LinearLayout>

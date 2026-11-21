@@ -1,11 +1,19 @@
 package com.example.wifip2pchat
 
-import android.app.*
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.graphics.ImageFormat
-import android.graphics.SurfaceTexture
-import android.hardware.camera2.*
-import android.hardware.camera2.params.StreamConfigurationMap
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
@@ -14,74 +22,112 @@ import android.os.IBinder
 import android.util.Log
 import android.view.Surface
 import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.*
-import java.io.*
-import java.net.*
-import java.nio.ByteBuffer
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.EOFException
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Foreground service that handles video calling over WiFi Direct.
+ * Foreground service that handles bidirectional JPEG-over-TCP video streaming over Wi-Fi Direct.
  *
- * Architecture:
- *   Group Owner: listens on [Constants.VIDEO_PORT], accepts one connection
- *   Client: connects to GO's address on [Constants.VIDEO_PORT]
- *
- * Video flow:
- *   Camera2 → ImageReader → JPEG bytes → OutputStream → [WiFi Direct]
- *   → InputStream → decode JPEG → display on remote SurfaceView
- *
- * Also starts [AudioCallService] for simultaneous audio.
+ * Key engineering improvements:
+ *  - Single conflated frame sender channel + reused DataOutputStream (eliminates TCP frame
+ *    interleaving / protocol desync and OOM spikes when network bandwidth dips)
+ *  - FPS pacing (~15 FPS) in OnImageAvailableListener
+ *  - Sensor-aware JPEG_ORIENTATION + continuous-video autofocus
+ *  - Dynamic [attachLocalPreviewSurface] handling late or recreated PiP surfaces safely
+ *  - Serialized camera switching on [cameraHandler] and proper HandlerThread shutdown
+ *  - SO_REUSEADDR, TCP_NODELAY, Android 14 foreground permission guard, and [CallSessionBus] events
  */
 class VideoCallService : Service() {
 
     companion object {
         private const val TAG = "VideoCallService"
-        private const val NOTIFICATION_ID = 3001
+        private const val NOTIFICATION_ID = 3002
         private const val CHANNEL_ID = "video_call_channel"
 
+        const val EXTRA_IS_GROUP_OWNER = "extra_is_group_owner"
+        const val EXTRA_HOST_ADDRESS = "extra_host_address"
+
+        private val MIN_FRAME_INTERVAL_MS = 1000L / Constants.VIDEO_FPS.coerceAtLeast(1)
+
+        @Volatile
         var isRunning = false
             private set
 
-        /** Callback to deliver received video frames for display */
+        /** Callback to deliver received JPEG frames for decoding/display. */
         var onRemoteVideoFrame: ((ByteArray) -> Unit)? = null
 
-        /** Surface for local camera preview — set by VideoCallActivity */
+        /** Surface for local camera preview — set dynamically by VideoCallActivity. */
+        @Volatile
         var localPreviewSurface: Surface? = null
 
         private var instance: VideoCallService? = null
+
+        fun attachLocalPreviewSurface(surface: Surface?) {
+            localPreviewSurface = surface
+            instance?.reconfigureSessionForPreviewSurface()
+        }
+
         fun endCall() {
-            instance?.endCallInternal()
+            instance?.endCallInternal(notifyBus = false, reason = "Call ended")
         }
+
         fun startAsGroupOwner() {
-            instance?.startAsGroupOwnerInternal()
+            instance?.startSessionInternal(isGroupOwner = true, hostAddress = null)
         }
+
         fun connectToGroupOwner(hostAddress: String) {
-            instance?.connectToGroupOwnerInternal(hostAddress)
+            instance?.startSessionInternal(isGroupOwner = false, hostAddress = hostAddress)
         }
+
         fun switchCamera() {
             instance?.switchCameraInternal()
         }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val sessionStarted = AtomicBoolean(false)
+    private val terminating = AtomicBoolean(false)
+    private val isSwitchingCamera = AtomicBoolean(false)
+    private val cameraLock = Any()
 
     // Network
-    private var serverSocket: ServerSocket? = null
-    private var socket: Socket? = null
-    private var outputStream: OutputStream? = null
-    private var inputStream: InputStream? = null
+    @Volatile private var serverSocket: ServerSocket? = null
+    @Volatile private var socket: Socket? = null
+    @Volatile private var outputStream: OutputStream? = null
+    @Volatile private var inputStream: InputStream? = null
+    private val outgoingFrameChannel = Channel<ByteArray>(Channel.CONFLATED)
 
     // Camera
     private var cameraManager: CameraManager? = null
-    private var cameraDevice: CameraDevice? = null
-    private var captureSession: CameraCaptureSession? = null
-    private var imageReader: ImageReader? = null
+    @Volatile private var cameraDevice: CameraDevice? = null
+    @Volatile private var captureSession: CameraCaptureSession? = null
+    @Volatile private var imageReader: ImageReader? = null
     private var cameraHandler: Handler? = null
     private var cameraThread: HandlerThread? = null
-    private var isUsingFrontCamera = true
-    private var isStreaming = false
+    @Volatile private var isUsingFrontCamera = true
+    @Volatile private var activeCameraId: String? = null
+    @Volatile private var lastFrameSentAtMs = 0L
 
-    // Playback
+    // Jobs
+    private var connectJob: Job? = null
+    private var sendJob: Job? = null
     private var playJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -89,20 +135,62 @@ class VideoCallService : Service() {
     override fun onCreate() {
         super.onCreate()
         isRunning = true
+        terminating.set(false)
         instance = this
-        cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
+        cameraManager = getSystemService(CAMERA_SERVICE) as? CameraManager
         setupCameraThread()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Video call active"))
+
+        val hasCamera = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        val hasMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+        if (!hasCamera || !hasMic) {
+            Log.e(TAG, "Missing CAMERA/RECORD_AUDIO permissions — stopping VideoCallService")
+            CallSessionBus.notifyEnded("Camera & mic permissions required")
+            stopSelf()
+            return
+        }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification("Video call active"),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification("Video call active"))
+            }
+        } catch (se: SecurityException) {
+            Log.e(TAG, "Cannot start camera foreground service: ${se.message}")
+            CallSessionBus.notifyEnded("Camera permission denied")
+            stopSelf()
+        }
         Log.d(TAG, "Video call service created")
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent != null && intent.hasExtra(EXTRA_IS_GROUP_OWNER)) {
+            val isGo = intent.getBooleanExtra(EXTRA_IS_GROUP_OWNER, false)
+            val host = intent.getStringExtra(EXTRA_HOST_ADDRESS)
+            startSessionInternal(isGo, host)
+        }
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         isRunning = false
         instance = null
+        connectJob?.cancel()
+        sendJob?.cancel()
+        outgoingFrameChannel.close()
         stopStreaming()
         closeCamera()
         closeSockets()
+        quitCameraThread()
         scope.cancel()
         super.onDestroy()
         Log.d(TAG, "Video call service destroyed")
@@ -110,41 +198,64 @@ class VideoCallService : Service() {
 
     // ======================== Server/Client Setup ========================
 
-    fun startAsGroupOwnerInternal() {
-        scope.launch {
+    private fun startSessionInternal(isGroupOwner: Boolean, hostAddress: String?) {
+        if (!isRunning) return
+        if (!sessionStarted.compareAndSet(false, true)) return
+
+        if (isGroupOwner) {
+            startAsGroupOwnerInternal()
+        } else if (!hostAddress.isNullOrBlank()) {
+            connectToGroupOwnerInternal(hostAddress)
+        } else {
+            Log.e(TAG, "Missing hostAddress for client video call")
+            CallSessionBus.notifyEnded("Missing peer address")
+            stopSelf()
+        }
+    }
+
+    private fun startAsGroupOwnerInternal() {
+        connectJob = scope.launch {
             try {
-                serverSocket = ServerSocket(Constants.VIDEO_PORT)
+                val srv = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(Constants.VIDEO_PORT))
+                }
+                serverSocket = srv
                 Log.d(TAG, "Video server listening on port ${Constants.VIDEO_PORT}")
-                val conn = serverSocket?.accept() ?: return@launch
+                val conn = srv.accept()
+                conn.tcpNoDelay = true
                 socket = conn
                 outputStream = conn.getOutputStream()
                 inputStream = conn.getInputStream()
                 Log.d(TAG, "Video client connected")
+                CallSessionBus.notifyConnected()
+                startVideoSender()
                 openCameraAndStream()
                 startVideoPlayback()
             } catch (e: Exception) {
-                if (scope.isActive) Log.e(TAG, "GO video error: ${e.message}")
+                if (scope.isActive && !terminating.get()) {
+                    Log.e(TAG, "GO video error: ${e.message}")
+                    CallSessionBus.notifyEnded("Video connection lost")
+                    endCallInternal(notifyBus = false, reason = "GO video error")
+                }
             }
         }
     }
 
-    /**
-     * Connect as client to the Group Owner's video server.
-     * The peer may still be answering the call (its video server socket is
-     * only bound after the user taps Accept), so we retry patiently
-     * instead of failing after a single 5-second attempt.
-     */
-    fun connectToGroupOwnerInternal(hostAddress: String) {
-        scope.launch {
+    private fun connectToGroupOwnerInternal(hostAddress: String) {
+        connectJob = scope.launch {
             repeat(30) { attempt ->
-                if (!isRunning) return@launch
+                if (!isRunning || terminating.get() || !isActive) return@launch
                 try {
                     val conn = Socket()
+                    conn.tcpNoDelay = true
                     conn.connect(InetSocketAddress(hostAddress, Constants.VIDEO_PORT), 3_000)
                     socket = conn
                     outputStream = conn.getOutputStream()
                     inputStream = conn.getInputStream()
                     Log.d(TAG, "Connected to GO video at $hostAddress:${Constants.VIDEO_PORT}")
+                    CallSessionBus.notifyConnected()
+                    startVideoSender()
                     openCameraAndStream()
                     startVideoPlayback()
                     return@launch
@@ -154,26 +265,39 @@ class VideoCallService : Service() {
                 }
             }
             Log.e(TAG, "Could not reach peer video port after 30 attempts")
+            if (!terminating.get()) {
+                CallSessionBus.notifyEnded("Peer did not answer")
+            }
+            endCallInternal(notifyBus = false, reason = "Connect timeout")
         }
     }
 
     // ======================== Camera Setup ========================
 
     private fun setupCameraThread() {
-        cameraThread = HandlerThread("CameraThread").apply { start() }
-        cameraHandler = Handler(cameraThread!!.looper)
+        val thread = HandlerThread("CameraThread").apply { start() }
+        cameraThread = thread
+        cameraHandler = Handler(thread.looper)
+    }
+
+    private fun quitCameraThread() {
+        try {
+            cameraThread?.quitSafely()
+        } catch (_: Exception) {}
+        cameraThread = null
+        cameraHandler = null
     }
 
     private fun getCameraId(front: Boolean): String? {
         try {
-            val ids = cameraManager?.cameraIdList ?: return null
+            val mgr = cameraManager ?: return null
+            val ids = mgr.cameraIdList
             for (id in ids) {
-                val chars = cameraManager?.getCameraCharacteristics(id) ?: continue
+                val chars = mgr.getCameraCharacteristics(id)
                 val facing = chars.get(CameraCharacteristics.LENS_FACING)
                 if (front && facing == CameraCharacteristics.LENS_FACING_FRONT) return id
                 if (!front && facing == CameraCharacteristics.LENS_FACING_BACK) return id
             }
-            // Fallback to first camera
             return ids.firstOrNull()
         } catch (e: Exception) {
             Log.e(TAG, "Error finding camera: ${e.message}")
@@ -182,86 +306,145 @@ class VideoCallService : Service() {
     }
 
     private fun openCameraAndStream() {
+        if (!isRunning || terminating.get()) return
         val cameraId = getCameraId(isUsingFrontCamera) ?: run {
             Log.e(TAG, "No camera available")
+            isSwitchingCamera.set(false)
             return
         }
+        activeCameraId = cameraId
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                cameraManager?.openCamera(cameraId, cameraStateCallback, cameraHandler)
-            } else {
-                @Suppress("DEPRECATION")
-                cameraManager?.openCamera(cameraId, cameraStateCallback, cameraHandler)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error opening camera: ${e.message}")
+            cameraManager?.openCamera(cameraId, cameraStateCallback, cameraHandler)
         } catch (se: SecurityException) {
             Log.e(TAG, "Camera permission not granted: ${se.message}")
+            isSwitchingCamera.set(false)
+            CallSessionBus.notifyEnded("Camera permission denied")
+            endCallInternal(notifyBus = false, reason = "Camera permission denied")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error opening camera: ${e.message}")
+            isSwitchingCamera.set(false)
         }
     }
 
     private val cameraStateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
-            cameraDevice = camera
-            Log.d(TAG, "Camera opened")
+            if (!isRunning || terminating.get()) {
+                camera.close()
+                isSwitchingCamera.set(false)
+                return
+            }
+            synchronized(cameraLock) {
+                cameraDevice = camera
+            }
+            isSwitchingCamera.set(false)
+            Log.d(TAG, "Camera opened ($activeCameraId)")
             startCaptureSession()
         }
 
         override fun onDisconnected(camera: CameraDevice) {
+            synchronized(cameraLock) {
+                if (cameraDevice === camera) cameraDevice = null
+            }
             camera.close()
-            cameraDevice = null
+            isSwitchingCamera.set(false)
         }
 
         override fun onError(camera: CameraDevice, error: Int) {
             Log.e(TAG, "Camera error: $error")
+            synchronized(cameraLock) {
+                if (cameraDevice === camera) cameraDevice = null
+            }
             camera.close()
-            cameraDevice = null
+            isSwitchingCamera.set(false)
+        }
+    }
+
+    private fun reconfigureSessionForPreviewSurface() {
+        val handler = cameraHandler ?: return
+        handler.post {
+            synchronized(cameraLock) {
+                if (cameraDevice != null && isRunning && !terminating.get()) {
+                    startCaptureSessionLocked()
+                }
+            }
         }
     }
 
     private fun startCaptureSession() {
+        val handler = cameraHandler ?: return
+        handler.post {
+            synchronized(cameraLock) {
+                startCaptureSessionLocked()
+            }
+        }
+    }
+
+    private fun startCaptureSessionLocked() {
         val device = cameraDevice ?: return
+        if (!isRunning || terminating.get()) return
 
-        // ImageReader for capturing frames to send over network
-        imageReader = ImageReader.newInstance(
-            Constants.VIDEO_WIDTH, Constants.VIDEO_HEIGHT,
-            ImageFormat.JPEG, 2
+        // Tear down any prior capture session and reader cleanly before reconfiguring
+        try { captureSession?.stopRepeating() } catch (_: Exception) {}
+        try { captureSession?.close() } catch (_: Exception) {}
+        captureSession = null
+        try { imageReader?.close() } catch (_: Exception) {}
+        imageReader = null
+
+        val reader = ImageReader.newInstance(
+            Constants.VIDEO_WIDTH,
+            Constants.VIDEO_HEIGHT,
+            ImageFormat.JPEG,
+            2
         )
-
-        imageReader?.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+        reader.setOnImageAvailableListener({ r ->
+            val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-                val buffer = image.planes[0].buffer
-                val bytes = ByteArray(buffer.remaining())
-                buffer.get(bytes)
-                sendVideoFrame(bytes)
+                val now = System.currentTimeMillis()
+                if (now - lastFrameSentAtMs >= MIN_FRAME_INTERVAL_MS && isRunning && !terminating.get()) {
+                    lastFrameSentAtMs = now
+                    val buffer = image.planes[0].buffer
+                    val bytes = ByteArray(buffer.remaining())
+                    buffer.get(bytes)
+                    outgoingFrameChannel.trySend(bytes)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Frame read error: ${e.message}")
             } finally {
                 image.close()
             }
         }, cameraHandler)
+        imageReader = reader
 
-        val surfaces = mutableListOf<Surface>()
-        surfaces.add(imageReader!!.surface)
-        localPreviewSurface?.let { surfaces.add(it) }
+        val surfaces = mutableListOf(reader.surface)
+        val preview = localPreviewSurface
+        if (preview != null && preview.isValid) {
+            surfaces.add(preview)
+        }
 
         try {
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             surfaces.forEach { builder.addTarget(it) }
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            computeJpegOrientation()?.let { orientation ->
+                builder.set(CaptureRequest.JPEG_ORIENTATION, orientation)
+            }
 
+            @Suppress("DEPRECATION")
             device.createCaptureSession(
                 surfaces,
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
-                        captureSession = session
-                        isStreaming = true
+                        if (!isRunning || terminating.get() || cameraDevice !== device) {
+                            try { session.close() } catch (_: Exception) {}
+                            return
+                        }
+                        synchronized(cameraLock) {
+                            captureSession = session
+                        }
                         try {
-                            session.setRepeatingRequest(
-                                builder.build(), null, cameraHandler
-                            )
-                            Log.d(TAG, "Video capture started")
+                            session.setRepeatingRequest(builder.build(), null, cameraHandler)
+                            Log.d(TAG, "Video capture started (surfaces=${surfaces.size})")
                         } catch (e: Exception) {
                             Log.e(TAG, "Repeating request error: ${e.message}")
                         }
@@ -278,25 +461,60 @@ class VideoCallService : Service() {
         }
     }
 
-    /** Switch between front and back camera. */
-    fun switchCameraInternal() {
-        closeCamera()
-        isUsingFrontCamera = !isUsingFrontCamera
-        openCameraAndStream()
+    private fun computeJpegOrientation(): Int? {
+        return try {
+            val id = activeCameraId ?: return null
+            val chars = cameraManager?.getCameraCharacteristics(id) ?: return null
+            val sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+            val facing = chars.get(CameraCharacteristics.LENS_FACING)
+            // VideoCallActivity is locked to portrait (display rotation 0°),
+            // so sensorOrientation aligns the JPEG output upright for remote peers.
+            if (facing == CameraCharacteristics.LENS_FACING_FRONT) {
+                (sensorOrientation + 360) % 360
+            } else {
+                sensorOrientation % 360
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
-    // ======================== Send Video ========================
+    /** Switch between front and back camera safely on the camera thread. */
+    private fun switchCameraInternal() {
+        if (!isRunning || terminating.get()) return
+        if (!isSwitchingCamera.compareAndSet(false, true)) return
 
-    private fun sendVideoFrame(jpegBytes: ByteArray) {
-        scope.launch {
+        val handler = cameraHandler
+        if (handler == null) {
+            isSwitchingCamera.set(false)
+            return
+        }
+        handler.post {
+            stopStreaming()
+            closeCamera()
+            isUsingFrontCamera = !isUsingFrontCamera
+            openCameraAndStream()
+        }
+    }
+
+    // ======================== Send Video (Single Conflated Writer) ========================
+
+    private fun startVideoSender() {
+        sendJob?.cancel()
+        sendJob = scope.launch {
+            val out = outputStream ?: return@launch
+            val dos = DataOutputStream(out)
             try {
-                val dos = DataOutputStream(outputStream ?: return@launch)
-                // Write frame length + frame data (length-prefixed protocol)
-                dos.writeInt(jpegBytes.size)
-                dos.write(jpegBytes)
-                dos.flush()
+                for (frame in outgoingFrameChannel) {
+                    if (!isRunning || terminating.get() || !isActive) break
+                    dos.writeInt(frame.size)
+                    dos.write(frame)
+                    dos.flush()
+                }
             } catch (e: Exception) {
-                if (scope.isActive) Log.e(TAG, "Video send error: ${e.message}")
+                if (scope.isActive && !terminating.get()) {
+                    Log.w(TAG, "Video send stopped: ${e.message}")
+                }
             }
         }
     }
@@ -304,35 +522,34 @@ class VideoCallService : Service() {
     // ======================== Receive Video ========================
 
     private fun startVideoPlayback() {
+        playJob?.cancel()
         playJob = scope.launch {
             try {
                 val dis = DataInputStream(inputStream ?: return@launch)
-                // IMPORTANT: do NOT gate this loop on `isStreaming`.
-                // `isStreaming` only flips to true later, when the async camera
-                // open finishes and the capture session is configured. If we
-                // checked it here the loop would exit immediately and nobody
-                // would ever read incoming video frames — which is exactly the
-                // "I can only see my own video" bug.
-                while (isActive) {
+                while (isActive && !terminating.get()) {
                     val frameSize = dis.readInt()
-                    // JPEG frames at 640×480 can be 50–250 KB. Accept up to
-                    // VIDEO_BUFFER_SIZE (256 KB); anything larger is a
-                    // protocol desync, so log & bail rather than spin.
                     if (frameSize <= 0 || frameSize > Constants.VIDEO_BUFFER_SIZE) {
                         Log.w(TAG, "Invalid frame size: $frameSize (max=${Constants.VIDEO_BUFFER_SIZE})")
                         break
                     }
                     val frameBytes = ByteArray(frameSize)
                     dis.readFully(frameBytes)
-                    withContext(Dispatchers.Main) {
-                        onRemoteVideoFrame?.invoke(frameBytes)
-                    }
+                    onRemoteVideoFrame?.invoke(frameBytes)
                 }
-            } catch (e: java.io.EOFException) {
-                // Peer hung up cleanly — not an error.
+            } catch (_: EOFException) {
                 Log.d(TAG, "Video stream ended by peer")
+                if (!terminating.get()) {
+                    CallSessionBus.notifyEnded("Video call ended")
+                }
             } catch (e: Exception) {
-                if (scope.isActive) Log.e(TAG, "Video playback error: ${e.message}")
+                if (scope.isActive && !terminating.get()) {
+                    Log.e(TAG, "Video playback error: ${e.message}")
+                    CallSessionBus.notifyEnded("Video call ended")
+                }
+            } finally {
+                if (!terminating.get()) {
+                    endCallInternal(notifyBus = false, reason = "Playback ended")
+                }
             }
         }
     }
@@ -340,18 +557,21 @@ class VideoCallService : Service() {
     // ======================== Cleanup ========================
 
     private fun stopStreaming() {
-        isStreaming = false
         playJob?.cancel()
-        try { captureSession?.stopRepeating() } catch (_: Exception) {}
-        try { captureSession?.close() } catch (_: Exception) {}
-        captureSession = null
+        synchronized(cameraLock) {
+            try { captureSession?.stopRepeating() } catch (_: Exception) {}
+            try { captureSession?.close() } catch (_: Exception) {}
+            captureSession = null
+        }
     }
 
     private fun closeCamera() {
-        try { imageReader?.close() } catch (_: Exception) {}
-        try { cameraDevice?.close() } catch (_: Exception) {}
-        imageReader = null
-        cameraDevice = null
+        synchronized(cameraLock) {
+            try { imageReader?.close() } catch (_: Exception) {}
+            try { cameraDevice?.close() } catch (_: Exception) {}
+            imageReader = null
+            cameraDevice = null
+        }
     }
 
     private fun closeSockets() {
@@ -365,7 +585,14 @@ class VideoCallService : Service() {
         serverSocket = null
     }
 
-    private fun endCallInternal() {
+    private fun endCallInternal(notifyBus: Boolean, reason: String) {
+        if (!terminating.compareAndSet(false, true)) return
+        if (notifyBus) {
+            CallSessionBus.notifyEnded(reason)
+        }
+        connectJob?.cancel()
+        sendJob?.cancel()
+        outgoingFrameChannel.close()
         stopStreaming()
         closeCamera()
         closeSockets()
@@ -377,14 +604,14 @@ class VideoCallService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID, "Video Call",
+                CHANNEL_ID,
+                "Video Call",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Video call in progress"
                 setSound(null, null)
             }
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
     }
 

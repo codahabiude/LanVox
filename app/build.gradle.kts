@@ -68,4 +68,7 @@ dependencies {
     implementation("androidx.room:room-runtime:$roomVersion")
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
+
+    // WebRTC for peer-to-peer background audio streaming
+    implementation("io.github.webrtc-sdk:android:137.7151.01")
 }

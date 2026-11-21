@@ -56,4 +56,24 @@
     <string name="hint_search_messages">Search text or time (e.g. 14:30, Nov 21)…</string>
     <string name="search_empty_title">No matching messages</string>
     <string name="search_empty_subtitle">Try a different keyword, date, or time.</string>
+    <string name="call_reconnecting">Reconnecting WebRTC…</string>
+    <string name="call_connected_webrtc">Connected · WebRTC Opus</string>
+    <string name="call_notif_channel_name">Audio Call</string>
+    <string name="call_notif_channel_desc">Ongoing peer-to-peer WebRTC audio call</string>
+    <string name="call_notif_connecting">Connecting WebRTC audio…</string>
+    <string name="call_notif_active">WebRTC audio active with %1$s</string>
+    <string name="call_notif_muted">Microphone muted · Call with %1$s</string>
+    <string name="call_notif_reconnecting">Reconnecting audio with %1$s…</string>
+    <string name="cd_more_options">More options</string>
+    <string name="btn_scan_short">Scan</string>
+    <string name="sheet_actions_title">Channel &amp; Data</string>
+    <string name="action_export_chats">Export Chat History</string>
+    <string name="action_export_chats_sub">Save all conversations as a .txt file</string>
+    <string name="action_toggle_radar">Show Inline Radar</string>
+    <string name="action_hide_radar">Hide Inline Radar</string>
+    <string name="action_toggle_radar_sub">Inspect live signal radar &amp; peer list</string>
+    <string name="action_disconnect_peer">Disconnect Peer</string>
+    <string name="action_disconnect_peer_sub">Close the active Wi-Fi Direct session</string>
+    <string name="action_clear_history">Delete All Chat History</string>
+    <string name="action_clear_history_sub">Permanently wipe saved messages from this phone</string>
 </resources>

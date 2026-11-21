@@ -180,16 +180,21 @@ class WiFiDirectManager(
     fun stopDiscovery() {
         val mgr = manager ?: return
         val ch = channel ?: return
+        if (!hasWifiP2pPermission(context)) return
 
-        mgr.stopPeerDiscovery(ch, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
-                Log.d(TAG, "Peer discovery stopped")
-            }
+        try {
+            mgr.stopPeerDiscovery(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    Log.d(TAG, "Peer discovery stopped")
+                }
 
-            override fun onFailure(reasonCode: Int) {
-                Log.e(TAG, "Stop discovery failed: ${reasonToString(reasonCode)}")
-            }
-        })
+                override fun onFailure(reasonCode: Int) {
+                    Log.e(TAG, "Stop discovery failed: ${reasonToString(reasonCode)}")
+                }
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "stopDiscovery error: ${e.message}")
+        }
     }
 
     /**
@@ -292,31 +297,42 @@ class WiFiDirectManager(
 
     fun onConnectionChanged(info: WifiP2pInfo?, device: WifiP2pDevice?) {
         if (info != null && info.groupFormed) {
+            val newAddr = info.groupOwnerAddress?.hostAddress
+            val changed = !isConnected || isGroupOwner != info.isGroupOwner || groupOwnerAddress != newAddr
             isConnected = true
             isGroupOwner = info.isGroupOwner
-            groupOwnerAddress = info.groupOwnerAddress.hostAddress
+            groupOwnerAddress = newAddr
             if (device != null && device.status == WifiP2pDevice.CONNECTED) {
                 connectedDevice = device
             }
-            listener.onConnected(info)
+            if (changed) {
+                listener.onConnected(info)
+            }
         } else {
+            val wasConnected = isConnected
             isConnected = false
             isGroupOwner = false
             groupOwnerAddress = null
             connectedDevice = null
-            listener.onDisconnected()
+            if (wasConnected) {
+                listener.onDisconnected()
+            }
         }
     }
 
     fun onConnectionInfoAvailable(info: WifiP2pInfo) {
         if (info.groupFormed) {
+            val newAddr = info.groupOwnerAddress?.hostAddress
+            val changed = !isConnected || isGroupOwner != info.isGroupOwner || groupOwnerAddress != newAddr
             isConnected = true
             isGroupOwner = info.isGroupOwner
-            groupOwnerAddress = info.groupOwnerAddress.hostAddress
+            groupOwnerAddress = newAddr
             Log.d(TAG, "Group formed — GO=$isGroupOwner, addr=$groupOwnerAddress")
             // Peer identity is not in WifiP2pInfo — pull a fresh peer list
             if (connectedDevice == null) refreshPeers()
-            listener.onConnected(info)
+            if (changed) {
+                listener.onConnected(info)
+            }
         }
     }
 

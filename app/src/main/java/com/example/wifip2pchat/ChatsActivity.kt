@@ -50,6 +50,18 @@ class ChatsActivity : AppCompatActivity() {
         rvChats.adapter = chatsAdapter
 
         findViewById<ImageView>(R.id.btnChatsBack).setOnClickListener { finish() }
+        findViewById<ImageView>(R.id.btnChatsMore).setOnClickListener {
+            lifecycleScope.launch {
+                val total = chatRepository.count()
+                MainActionsBottomSheet.show(
+                    context = this@ChatsActivity,
+                    storedMessageCount = total,
+                    isConnected = MainActivity.isConnectedStatic(),
+                    onExportChats = null,
+                    onClearAllHistory = { confirmClearAll(total) }
+                )
+            }
+        }
 
         groupChatRow.setOnClickListener {
             startActivity(
@@ -116,6 +128,24 @@ class ChatsActivity : AppCompatActivity() {
                 lifecycleScope.launch {
                     chatRepository.clearConversation(conversation.peerId)
                     Snackbar.make(rootLayout, "Conversation deleted", Snackbar.LENGTH_SHORT).show()
+                }
+            }
+            .show()
+    }
+
+    private fun confirmClearAll(totalCount: Int) {
+        if (totalCount == 0) {
+            Snackbar.make(rootLayout, "No saved messages to delete", Snackbar.LENGTH_SHORT).show()
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Delete all chat history?")
+            .setMessage("All $totalCount stored messages will be permanently deleted from this phone.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ ->
+                lifecycleScope.launch {
+                    chatRepository.clearAll()
+                    Snackbar.make(rootLayout, "All chat history deleted", Snackbar.LENGTH_SHORT).show()
                 }
             }
             .show()

@@ -146,6 +146,14 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             inst.sendControlMessage(message)
             return true
         }
+
+        /** Send a control line addressed to a specific peer (e.g. CALL_ACCEPT / CALL_REJECT / CALL_END). */
+        fun sendControlToPeerStatic(peerId: String?, message: String): Boolean {
+            val inst = staticInstance ?: return false
+            if (!inst.wifiManager.isConnected) return false
+            inst.sendControlMessage(message, peerId)
+            return true
+        }
     }
 
     // --- UI ---
@@ -165,8 +173,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private lateinit var progressConnecting: View
     private lateinit var tvStoragePill: TextView
     private lateinit var btnChats: ImageView
-    private lateinit var btnExportChat: ImageView
-    private lateinit var btnClearHistory: ImageView
+    private lateinit var btnMoreOptions: ImageView
+    private lateinit var activeChatHeader: View
     private lateinit var tvActiveChatTitle: TextView
     private lateinit var tvActiveChatSubtitle: TextView
     private lateinit var topOverlayContainer: LinearLayout
@@ -208,11 +216,37 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private var resolvingPeer = false
     private var pendingDiscoveryAfterPermission = false
     private var pendingConnectDeviceAfterPermission: WifiP2pDevice? = null
+    private var pendingCallVideoAfterPermission: Boolean? = null
 
     // --- Runtime permission launcher ---
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
+        // Handle pending call permission grant/denial first
+        pendingCallVideoAfterPermission?.let { needsVideo ->
+            val hasAudio = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            val hasCamera = !needsVideo || ContextCompat.checkSelfPermission(
+                this, Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (hasAudio && hasCamera) {
+                pendingCallVideoAfterPermission = null
+                if (needsVideo) launchVideoCall() else launchAudioCall()
+            } else if (results.keys.any {
+                    it == Manifest.permission.RECORD_AUDIO || it == Manifest.permission.CAMERA
+                }
+            ) {
+                pendingCallVideoAfterPermission = null
+                val neededLabel = if (needsVideo) "microphone and camera" else "microphone"
+                showSnackbar(
+                    "Allow $neededLabel permission to place calls",
+                    "Settings"
+                ) { openAppPermissionSettings() }
+            }
+        }
+
         if (WiFiDirectManager.hasWifiP2pPermission(this)) {
             wifiManager.restoreConnectionState()
             if (pendingDiscoveryAfterPermission) {
@@ -373,8 +407,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         progressConnecting = findViewById(R.id.progressConnecting)
         tvStoragePill = findViewById(R.id.tvStoragePill)
         btnChats = findViewById(R.id.btnChats)
-        btnExportChat = findViewById(R.id.btnExportChat)
-        btnClearHistory = findViewById(R.id.btnClearHistory)
+        btnMoreOptions = findViewById(R.id.btnMoreOptions)
+        activeChatHeader = findViewById(R.id.activeChatHeader)
         tvActiveChatTitle = findViewById(R.id.tvActiveChatTitle)
         tvActiveChatSubtitle = findViewById(R.id.tvActiveChatSubtitle)
         topOverlayContainer = findViewById(R.id.topOverlayContainer)
@@ -415,11 +449,15 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             }
         }
 
-        // Keep top padding of message list synchronized with the floating header + search bar height
+        // Keep top padding of message list synchronized with the floating search overlay height
         topOverlayContainer.addOnLayoutChangeListener { _, _, top, _, bottom, _, _, _, _ ->
             val overlayHeight = (bottom - top).coerceAtLeast(0)
-            val extraGapPx = (18 * resources.displayMetrics.density).toInt()
-            val desiredTopPadding = overlayHeight + extraGapPx
+            val baseTopPx = (12 * resources.displayMetrics.density).toInt()
+            val desiredTopPadding = if (overlayHeight > 0) {
+                overlayHeight + (18 * resources.displayMetrics.density).toInt()
+            } else {
+                baseTopPx
+            }
             if (rvMessages.paddingTop != desiredTopPadding) {
                 rvMessages.setPadding(
                     rvMessages.paddingLeft,
@@ -438,7 +476,6 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         GlassEffects.applyAmbientBlur(findViewById(R.id.ambientOrb1), 64f)
         GlassEffects.applyAmbientBlur(findViewById(R.id.ambientOrb2), 72f)
         GlassEffects.applyAmbientBlur(findViewById(R.id.ambientOrb3), 64f)
-        GlassEffects.applyGlowElevation(findViewById(R.id.activeChatHeader), R.color.glow_bubble_received, 8f)
         GlassEffects.applyGlowElevation(searchBarContainer, R.color.glow_bubble_sent, 10f)
         GlassEffects.applyGlowElevation(findViewById(R.id.composerDock), R.color.glow_bubble_sent, 12f)
 
@@ -465,17 +502,18 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             }
         }
 
-        btnChats.setOnClickListener {
+        val openChannelsScreen: () -> Unit = {
             startActivity(Intent(this, ChatsActivity::class.java))
             overridePendingTransition(R.anim.slide_up, android.R.anim.fade_out)
         }
+        btnChats.setOnClickListener { openChannelsScreen() }
+        activeChatHeader.setOnClickListener { openChannelsScreen() }
+        btnMoreOptions.setOnClickListener { showMoreActionsSheet() }
         btnDiscover.setOnClickListener { toggleDiscovery() }
         btnToggleDevices.setOnClickListener { showPeerPickerBottomSheet() }
         btnDisconnect.setOnClickListener { disconnect() }
         btnAudioCall.setOnClickListener { startAudioCall() }
         btnVideoCall.setOnClickListener { startVideoCall() }
-        btnExportChat.setOnClickListener { exportChatToFile() }
-        btnClearHistory.setOnClickListener { confirmClearHistory() }
         btnSend.setOnClickListener { sendCurrentMessage() }
         etMessage.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEND) {
@@ -636,7 +674,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         if (isDiscovering) {
             wifiManager.stopDiscovery()
             isDiscovering = false
-            btnDiscover.text = getString(R.string.btn_discover)
+            btnDiscover.text = getString(R.string.btn_scan_short)
             tvStatus.text = if (wifiManager.isP2pEnabled) {
                 getString(R.string.status_enabled)
             } else {
@@ -689,6 +727,19 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private fun refreshPeerPickerBottomSheet() {
         peerPickerSheet?.takeIf { it.isShowing() }
             ?.updateState(latestPeers, isDiscovering, wifiManager.isConnected)
+    }
+
+    private fun showMoreActionsSheet() {
+        MainActionsBottomSheet.show(
+            context = this,
+            storedMessageCount = storedCount,
+            isConnected = wifiManager.isConnected,
+            isScannerExpanded = isScannerExpanded,
+            onExportChats = { exportChatToFile() },
+            onToggleRadar = { setScannerExpanded(!isScannerExpanded) },
+            onDisconnect = { disconnect() },
+            onClearAllHistory = { confirmClearHistory() }
+        )
     }
 
     private fun setScannerExpanded(expanded: Boolean) {
@@ -826,16 +877,21 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         when {
             payload.startsWith(Constants.MSG_TYPE_CALL_REQUEST) -> {
                 val callType = payload.removePrefix(Constants.MSG_TYPE_CALL_REQUEST)
-                handleIncomingCallRequest(callType, env.senderName)
+                handleIncomingCallRequest(callType, env.senderId, env.senderName)
             }
             payload.startsWith(Constants.MSG_TYPE_CALL_ACCEPT) -> {
                 Log.d(TAG, "Call accepted by ${env.senderName}")
+                CallSessionBus.notifyAccepted()
             }
             payload.startsWith(Constants.MSG_TYPE_CALL_REJECT) -> {
+                CallSessionBus.notifyEnded("Call declined by ${env.senderName}")
                 showSnackbar("Call declined by ${env.senderName}")
             }
             payload.startsWith(Constants.MSG_TYPE_CALL_END) -> {
                 Log.d(TAG, "${env.senderName} ended the call")
+                CallRingtoneManager.stopRinging()
+                IncomingCallActivity.dismiss()
+                CallSessionBus.notifyEnded("${env.senderName} ended the call")
             }
             payload.startsWith(Constants.MSG_TYPE_TEXT) -> {
                 val text = payload.removePrefix(Constants.MSG_TYPE_TEXT)
@@ -1164,13 +1220,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
     }
 
-    /** Update the "N messages saved" pill in the top bar. */
+    /** Update the compact stored-message counter in the channel context strip. */
     private fun updateStoragePill() {
-        tvStoragePill.text = if (storedCount == 1) {
-            "1 message saved • Offline Mode"
-        } else {
-            "$storedCount messages saved • Offline Mode"
-        }
+        tvStoragePill.text = if (storedCount == 1) "1 saved" else "$storedCount saved"
     }
 
     /** Enable/disable the call buttons based on connection state. */
@@ -1299,12 +1351,21 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             showSnackbar("Connect to a peer first")
             return
         }
+        ensureCallPermissions(video = false) { launchAudioCall() }
+    }
 
-        sendControlMessage(Constants.MSG_TYPE_CALL_REQUEST + Constants.CALL_TYPE_AUDIO)
+    private fun launchAudioCall() {
+        if (!wifiManager.isConnected) return
+        val targetPeerId = currentPeerId
+        val targetPeerName = currentPeerName ?: activeThreadPeerName()
+        sendControlMessage(Constants.MSG_TYPE_CALL_REQUEST + Constants.CALL_TYPE_AUDIO, targetPeerId)
 
         val intent = Intent(this, AudioCallActivity::class.java).apply {
             putExtra(AudioCallActivity.EXTRA_IS_GROUP_OWNER, wifiManager.isGroupOwner)
             putExtra(AudioCallActivity.EXTRA_HOST_ADDRESS, wifiManager.groupOwnerAddress)
+            putExtra(AudioCallActivity.EXTRA_PEER_ID, targetPeerId)
+            putExtra(AudioCallActivity.EXTRA_PEER_NAME, targetPeerName)
+            putExtra(AudioCallActivity.EXTRA_IS_OUTGOING, true)
         }
         startActivity(intent)
         overridePendingTransition(R.anim.slide_up, android.R.anim.fade_out)
@@ -1315,27 +1376,78 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             showSnackbar("Connect to a peer first")
             return
         }
+        ensureCallPermissions(video = true) { launchVideoCall() }
+    }
 
-        sendControlMessage(Constants.MSG_TYPE_CALL_REQUEST + Constants.CALL_TYPE_VIDEO)
+    private fun launchVideoCall() {
+        if (!wifiManager.isConnected) return
+        val targetPeerId = currentPeerId
+        val targetPeerName = currentPeerName ?: activeThreadPeerName()
+        sendControlMessage(Constants.MSG_TYPE_CALL_REQUEST + Constants.CALL_TYPE_VIDEO, targetPeerId)
 
         val intent = Intent(this, VideoCallActivity::class.java).apply {
             putExtra(VideoCallActivity.EXTRA_IS_GROUP_OWNER, wifiManager.isGroupOwner)
             putExtra(VideoCallActivity.EXTRA_HOST_ADDRESS, wifiManager.groupOwnerAddress)
+            putExtra(VideoCallActivity.EXTRA_PEER_ID, targetPeerId)
+            putExtra(VideoCallActivity.EXTRA_PEER_NAME, targetPeerName)
+            putExtra(VideoCallActivity.EXTRA_IS_OUTGOING, true)
         }
         startActivity(intent)
         overridePendingTransition(R.anim.slide_up, android.R.anim.fade_out)
+    }
+
+    private fun ensureCallPermissions(video: Boolean, onGranted: () -> Unit) {
+        val needed = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (video) needed.add(Manifest.permission.CAMERA)
+
+        val missing = needed.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            onGranted()
+            return
+        }
+
+        pendingCallVideoAfterPermission = video
+        val shouldShowRationale = missing.any {
+            ActivityCompat.shouldShowRequestPermissionRationale(this, it)
+        }
+        if (shouldShowRationale) {
+            val detail = if (video) {
+                "LANVOX needs microphone and camera permissions to place a video call."
+            } else {
+                "LANVOX needs microphone permission to place an audio call."
+            }
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Call permission required")
+                .setMessage(detail)
+                .setNegativeButton("Cancel") { _, _ ->
+                    pendingCallVideoAfterPermission = null
+                }
+                .setPositiveButton("Allow") { _, _ ->
+                    permissionLauncher.launch(missing.toTypedArray())
+                }
+                .show()
+        } else {
+            permissionLauncher.launch(missing.toTypedArray())
+        }
     }
 
     /**
      * Handle an incoming call — show the IncomingCallActivity
      * with accept/decline UI instead of auto-accepting.
      */
-    private fun handleIncomingCallRequest(callType: String, callerName: String) {
+    private fun handleIncomingCallRequest(callType: String, callerId: String, callerName: String) {
         runOnUiThread {
+            if (IncomingCallActivity.isShowing() || CallSessionBus.isCallActive()) {
+                Log.d(TAG, "Ignoring incoming call while another call UI is active")
+                return@runOnUiThread
+            }
             val intent = Intent(this, IncomingCallActivity::class.java).apply {
                 putExtra(IncomingCallActivity.EXTRA_CALL_TYPE, callType)
                 putExtra(IncomingCallActivity.EXTRA_IS_GROUP_OWNER, wifiManager.isGroupOwner)
                 putExtra(IncomingCallActivity.EXTRA_HOST_ADDRESS, wifiManager.groupOwnerAddress)
+                putExtra(IncomingCallActivity.EXTRA_PEER_ID, callerId)
                 putExtra(
                     IncomingCallActivity.EXTRA_CALLER_NAME,
                     callerName.ifBlank { currentPeerName ?: "Peer" }
@@ -1358,7 +1470,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             tvStatus.text = getString(R.string.status_disabled)
             statusIndicator.setBackgroundResource(R.drawable.circle_red)
             isDiscovering = false
-            btnDiscover.text = getString(R.string.btn_discover)
+            btnDiscover.text = getString(R.string.btn_scan_short)
             refreshPeerPickerBottomSheet()
         }
     }
@@ -1425,7 +1537,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         if (isDiscovering) {
             wifiManager.stopDiscovery()
             isDiscovering = false
-            btnDiscover.text = getString(R.string.btn_discover)
+            btnDiscover.text = getString(R.string.btn_scan_short)
         }
 
         refreshPeerPickerBottomSheet()
@@ -1448,7 +1560,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         progressConnecting.visibility = View.GONE
         if (isDiscovering) {
             isDiscovering = false
-            btnDiscover.text = getString(R.string.btn_discover)
+            btnDiscover.text = getString(R.string.btn_scan_short)
             tvStatus.text = if (wifiManager.isP2pEnabled) {
                 getString(R.string.status_enabled)
             } else {

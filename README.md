@@ -11,8 +11,8 @@ A peer-to-peer communication app that uses **Wi-Fi Direct (P2P)** to connect two
 | 📡 **Peer Picker Bottom Sheet** | Interactive `PeerPickerBottomSheet` with live radar sweep, scanning status, discovered peer list, and one-tap connect/disconnect |
 | 🔐 **Wi-Fi P2P Runtime Permissions** | Android 13+ `NEARBY_WIFI_DEVICES` and Android 7–12 `ACCESS_FINE_LOCATION` permission flow with rationale dialog and Settings fallback |
 | 💾 **Room Database Persistence** | Every message auto-saved locally via **Room** (`LanvoxDatabase`, `ChatMessageEntity`, `ChatMessageDao`, `ChatRepository`) + reactive Kotlin `Flow` — history survives app close and restart |
-| 📞 **Audio Call** | Voice call using mic → socket → speaker |
-| 📹 **Video Call** | Live video call with Camera2 + PiP preview |
+| 📞 **WebRTC P2P Audio Call** | Background-resilient **WebRTC** (`io.github.webrtc-sdk:android`) Opus/SRTP voice calling inside a `microphone` foreground service with hardware AEC/NS, wake/Wi-Fi locks, and notification Mute/Hangup controls |
+| 📹 **Video Call** | Live video call with Camera2 + PiP preview + WebRTC audio |
 | 🔍 **Peer Discovery** | Find nearby devices via Wi-Fi Direct |
 | 🔀 **Camera Switch** | Toggle front/back camera during video calls |
 | 🔇 **Mute / Speaker** | Audio controls during calls |
@@ -45,28 +45,24 @@ A peer-to-peer communication app that uses **Wi-Fi Direct (P2P)** to connect two
   - `LanvoxDatabase` (`@Database`): singleton Room database instance.
   - `ChatRepository`: maps entities/tuples to domain `ChatMessage` and `Conversation` models and exposes `Flow` streams collected with `repeatOnLifecycle(Lifecycle.State.STARTED)` in the UI.
 - **Offline History**: Saved conversations remain available immediately after closing and reopening the app; sending new messages requires connecting to a peer.
-- **Export** (💾 icon) writes all conversations to `Downloads/LANVOX_chats_<timestamp>.txt` (Android 10+) or the app Documents folder (Android 7–9).
-- **Clear-all** (🗑️ icon) or long-press on a conversation in `ChatsActivity` wipes stored messages after confirmation.
+- **Channel & Data Sheet** (`⋯` More Menu → `MainActionsBottomSheet`): Houses secondary and destructive actions cleanly off the main header — **Export Chat History** writes all conversations to `Downloads/LANVOX_chats_<timestamp>.txt` (Android 10+) or app Documents (Android 7–9), **Show Inline Radar**, **Disconnect Peer**, and a separated danger-zone **Delete All Chat History** (also available from `ChatsActivity`, or long-press a conversation to delete one thread).
 
-### Audio Call
-- Port `8989`: Separate socket for raw PCM audio
-- Mic → `AudioRecord` → `OutputStream` → [WiFi Direct] → `InputStream` → `AudioTrack` → Speaker
-- 16kHz mono 16-bit PCM, optimized for voice communication
-- Runs as a **foreground service** so the call survives app minimization
-- The dialing side **retries the audio connection for up to ~30 s**, so the call still connects even if the other phone needs a while to answer
+### Audio Call (WebRTC Foreground Service)
+- **`WebRtcAudioCallManager` (`io.github.webrtc-sdk:android`)**: Full-duplex **WebRTC** Unified Plan `PeerConnection` using `JavaAudioDeviceModule` (hardware Acoustic Echo Canceler, Noise Suppressor, Auto Gain Control), Opus codec over DTLS-SRTP/UDP with adaptive NetEQ jitter buffering, and buffered remote ICE candidate queuing.
+- **P2P Signaling (`Constants.AUDIO_PORT` `8989`)**: Group Owner hosts a `ServerSocket` (`reuseAddress = true`) and acts as the SDP offerer; the client connects (up to 30 retries) as the SDP answerer, exchanging newline-delimited JSON `offer` / `answer` / `ice` / `bye` signaling packets while media flows peer-to-peer over ICE host candidates on the Wi-Fi Direct LAN.
+- **Background Stability (`AudioCallService`)**: Runs as a `FOREGROUND_SERVICE_TYPE_MICROPHONE` foreground service holding a `PowerManager.PARTIAL_WAKE_LOCK`, `WifiManager.WifiLock` (`WIFI_MODE_FULL_LOW_LATENCY`), `AudioFocusRequest` (API 26+), `AudioManager.MODE_IN_COMMUNICATION`, and an interactive call notification (tap to reopen `AudioCallActivity`, **Mute/Unmute**, and **End Call** actions).
 
 ### Video Call
-- Port `8990`: Separate socket for video frames
-- Camera2 → `ImageReader` (JPEG) → length-prefixed protocol → `OutputStream` → [WiFi Direct] → `InputStream` → decode JPEG → draw on `SurfaceView`
-- Simultaneously starts `AudioCallService` for audio
-- 640×480 @ 15fps JPEG, ~500kbps bitrate
-- Local camera shown as picture-in-picture overlay
+- Port `8990`: Dedicated TCP socket for length-prefixed JPEG frames fed through a single conflated `Channel` and single-writer coroutine (no concurrent socket writes or frame corruption)
+- Camera2 (`CONTROL_AF_MODE_CONTINUOUS_VIDEO` + dynamic `JPEG_ORIENTATION`) → 15 FPS paced `ImageReader` → `OutputStream` → [WiFi Direct] → `InputStream` → off-UI `Dispatchers.Default` JPEG decode → aspect-preserving center-crop `Canvas` draw on `SurfaceView`
+- Local PiP overlay uses `setZOrderMediaOverlay(true)` and dynamically attaches/reconfigures when its `SurfaceView` becomes ready; camera switch serialized on `cameraHandler` and `HandlerThread` cleanly stopped on exit
+- Simultaneously manages `AudioCallService` (speakerphone enabled by default) and `CallSessionBus` lifecycle
 
 ### Receive Calls Even When the App Is Closed
 LANVOX keeps a **standby listener** (`CallListenerService`) running as a foreground service, so incoming calls and messages reach the phone even when the app was swiped away or rebooted:
-1. **Standby listener** — keeps a socket alive on port `8988` in both GO and Client roles.
+1. **Standby listener** — keeps a socket alive on port `8988` in both GO and Client roles and decodes full v5 `Envelope` packets (`HELLO`, `PEERS`, `TEXT`, `ACK`, `READ`, `CALL_REQ`, `CALL_END`).
 2. **Boot receiver** — `BootReceiver` restarts the listener after reboot or app update.
-3. **Incoming call while closed** — wakes the screen, plays ringtone, and shows `IncomingCallActivity` over the lock screen.
+3. **Incoming call while closed** — wakes the screen, plays ringtone, forwards caller peer ID/name, and shows `IncomingCallActivity` over the lock screen.
 4. **Messages while closed** — incoming texts are saved via `ChatRepository` into Room and posted as notifications.
 5. **Handover** — reopening the app seamlessly hands the chat socket back from the standby listener.
 
@@ -146,12 +142,15 @@ app/src/main/java/com/example/wifip2pchat/
 ├── LanvoxDatabase.kt               — Room @Database singleton ("lanvox_room_chat.db")
 ├── ChatRepository.kt               — Repository layer & Conversation domain model
 ├── ChatBus.kt                      — Event bus between main screen and chat threads
-├── AudioCallService.kt             — Audio streaming foreground service
-├── VideoCallService.kt             — Video streaming foreground service
+├── CallSessionBus.kt               — Shared call signaling state (`RINGING`/`CONNECTING`/`CONNECTED`/`RECONNECTING`/`ENDED`), mute sync & AudioFocus manager
+├── WebRtcAudioCallManager.kt       — WebRTC PeerConnection, JavaAudioDeviceModule (AEC/NS/AGC), SDP Offer/Answer & ICE candidate queue
+├── AudioCallService.kt             — Microphone foreground service hosting WebRTC P2P audio, wake/Wi-Fi locks & ongoing notification controls
+├── VideoCallService.kt             — Video streaming foreground service (Camera2 + conflated TCP writer)
 ├── AudioCallActivity.kt            — Audio call UI
 ├── VideoCallActivity.kt            — Video call UI
 ├── IncomingCallActivity.kt         — Incoming call screen (app open or closed)
-├── MainActivity.kt                 — Main screen: runtime permissions, PeerPickerBottomSheet, inline RecyclerView chat & call controls
+├── MainActivity.kt                 — Main screen: streamlined Obsidian Glass header, PeerPickerBottomSheet, inline RecyclerView chat & call controls
+├── MainActionsBottomSheet.kt       — Material BottomSheetDialog for secondary/destructive actions (Export, Inline Radar, Disconnect, Clear History)
 ├── PeerPickerBottomSheet.kt        — Material BottomSheetDialog for peer discovery & selection
 ├── ChatsActivity.kt                — Chats list (all conversations observed via Room Flow)
 ├── ChatsAdapter.kt                 — RecyclerView adapter for the chats list
@@ -210,7 +209,7 @@ app/src/main/java/com/example/wifip2pchat/
 - **Target SDK**: 34 (Android 14)
 - **Persistence**: AndroidX Room (`2.7.1`) with KSP (`2.3.5`), Repository pattern, and Kotlin `Flow` / `StateFlow`
 - **Architecture**: P2P Group Owner / Client sockets + Repository-backed Room persistence
-- **Audio**: PCM 16kHz mono via `AudioRecord` / `AudioTrack`
+- **Audio**: WebRTC (`io.github.webrtc-sdk:android`) `PeerConnection` + `JavaAudioDeviceModule` (Opus SRTP, hardware AEC/NS/AGC) over Wi-Fi Direct LAN ICE candidates with JSON TCP signaling (`8989`) inside a `microphone` foreground service
 - **Video**: Camera2 API → JPEG frames → length-prefixed TCP protocol
 - **Concurrency**: Kotlin Coroutines & Flow (`kotlinx.coroutines`)
 - **UI / UX**: Glassmorphism & Cryo-Cyan Orbital HUD aesthetic (`#050811` void, `#00F0FF` cryo-cyan, semi-transparent frosted chat bubbles with soft glow borders, `RenderEffect` blurred ambient light orbs via `GlassEffects.kt`, floating glass composer dock), `RadarView` conical `SweepGradient`, bundled `Space Grotesk`, `Plus Jakarta Sans`, & `JetBrains Mono` typography (`res/font/`), `BottomSheetDialog`, `RecyclerView` (`DiffUtil`), and ViewBinding

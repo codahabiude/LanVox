@@ -5,32 +5,36 @@ import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
-import android.view.View
+import android.view.WindowManager
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
+import java.util.Locale
 
 /**
  * Full-screen Activity for an audio call.
  *
- * Shows call status, duration timer, and controls:
- *  - Mute/Unmute microphone (icon swaps mic ↔ mic-off)
- *  - Speaker on/off (icon swaps volume ↔ volume-off)
- *  - End call
- *
- * v4.1: switches to MODE_IN_COMMUNICATION for the low-latency voice-call HAL
- * path (~30ms instead of the media pipeline's ~150ms), restores mode on exit.
+ * Improvements:
+ *  - Immediate foreground service start with Intent extras (no 500ms postDelayed race)
+ *  - Accurate Ringing → Connecting → Connected status driven by [CallSessionBus]
+ *  - Software mic mute via [AudioCallService.setMuted] + AudioFocus & communication routing
+ *  - Bidirectional hangup signaling ([Constants.MSG_TYPE_CALL_END]) & clean auto-dismissal
+ *  - Modern [OnBackPressedCallback]
  */
-class AudioCallActivity : AppCompatActivity() {
+class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
 
     companion object {
-        private const val TAG = "AudioCallActivity"
         const val EXTRA_IS_GROUP_OWNER = "extra_is_group_owner"
         const val EXTRA_HOST_ADDRESS = "extra_host_address"
+        const val EXTRA_PEER_ID = "extra_peer_id"
+        const val EXTRA_PEER_NAME = "extra_peer_name"
+        const val EXTRA_IS_OUTGOING = "extra_is_outgoing"
     }
 
+    private lateinit var ivAvatar: TextView
     private lateinit var tvCallerName: TextView
     private lateinit var tvCallStatus: TextView
     private lateinit var tvCallDuration: TextView
@@ -38,26 +42,53 @@ class AudioCallActivity : AppCompatActivity() {
     private lateinit var btnEndCall: MaterialButton
     private lateinit var btnSpeaker: MaterialButton
 
+    private var peerId: String? = null
+    private var peerName: String = "Peer"
+    private var isOutgoing = false
+
     private var isMuted = false
     private var isSpeakerOn = false
     private var callStartTime = 0L
+    private var timerStarted = false
+    private var endedLocally = false
+
     private val durationHandler = Handler(Looper.getMainLooper())
     private var durationRunnable: Runnable? = null
-    private var previousAudioMode = AudioManager.MODE_NORMAL
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_audio_call)
 
-        // Keep screen on during call
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        peerId = intent.getStringExtra(EXTRA_PEER_ID)
+        peerName = intent.getStringExtra(EXTRA_PEER_NAME)?.takeIf { it.isNotBlank() } ?: "Peer"
+        isOutgoing = intent.getBooleanExtra(EXTRA_IS_OUTGOING, false)
 
         initViews()
-        configureCallAudioMode()
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                Toast.makeText(
+                    this@AudioCallActivity,
+                    "Call continuing in background — tap notification to return",
+                    Toast.LENGTH_SHORT
+                ).show()
+                moveTaskToBack(true)
+            }
+        })
+
+        CallSessionBus.configureVoiceAudio(this, speakerOnByDefault = false)
+        CallSessionBus.addListener(this)
+        CallSessionBus.startSession(
+            callType = Constants.CALL_TYPE_AUDIO,
+            peerId = peerId,
+            initialState = if (isOutgoing) CallSessionBus.CallState.RINGING else CallSessionBus.CallState.CONNECTING
+        )
         startAudioCall()
     }
 
     private fun initViews() {
+        ivAvatar = findViewById(R.id.ivAvatar)
         tvCallerName = findViewById(R.id.tvCallerName)
         tvCallStatus = findViewById(R.id.tvCallStatus)
         tvCallDuration = findViewById(R.id.tvCallDuration)
@@ -65,96 +96,119 @@ class AudioCallActivity : AppCompatActivity() {
         btnEndCall = findViewById(R.id.btnEndCall)
         btnSpeaker = findViewById(R.id.btnSpeaker)
 
+        tvCallerName.text = peerName
+        ivAvatar.text = peerName.trim().take(1).uppercase(Locale.getDefault()).ifBlank { "L" }
+        updateSpeakerUi()
+        updateMuteUi()
+
         btnMute.setOnClickListener { toggleMute() }
         btnEndCall.setOnClickListener { endCall() }
         btnSpeaker.setOnClickListener { toggleSpeaker() }
-    }
-
-    /**
-     * Put Android in MODE_IN_COMMUNICATION. Without this the device routes
-     * audio through the media pipeline (~150ms) instead of the voice-call
-     * pipeline (~30ms). Speaker defaults OFF (earpiece, less echo).
-     */
-    private fun configureCallAudioMode() {
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        previousAudioMode = audioManager.mode
-        try {
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            audioManager.isSpeakerphoneOn = false
-            isSpeakerOn = false
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not switch to MODE_IN_COMMUNICATION: ${e.message}")
-        }
-    }
-
-    private fun restoreAudioMode() {
-        try {
-            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-            audioManager.mode = previousAudioMode
-            audioManager.isSpeakerphoneOn = false
-            audioManager.isMicrophoneMute = false
-        } catch (_: Exception) {}
     }
 
     private fun startAudioCall() {
         val isGroupOwner = intent.getBooleanExtra(EXTRA_IS_GROUP_OWNER, false)
         val hostAddress = intent.getStringExtra(EXTRA_HOST_ADDRESS)
 
-        tvCallStatus.text = "Connecting..."
+        tvCallStatus.text = if (isOutgoing) "Ringing…" else "Connecting…"
 
-        // Start the audio call service
-        val serviceIntent = Intent(this, AudioCallService::class.java)
-        startService(serviceIntent)
+        val serviceIntent = Intent(this, AudioCallService::class.java).apply {
+            putExtra(AudioCallService.EXTRA_IS_GROUP_OWNER, isGroupOwner)
+            putExtra(AudioCallService.EXTRA_HOST_ADDRESS, hostAddress)
+            putExtra(AudioCallService.EXTRA_NOTIFY_CALL_BUS, true)
+            putExtra(AudioCallService.EXTRA_PEER_ID, peerId)
+            putExtra(AudioCallService.EXTRA_PEER_NAME, peerName)
+        }
+        ContextCompat.startForegroundService(this, serviceIntent)
+    }
 
-        // Give the service a moment to initialize, then start streaming
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (isGroupOwner) {
-                AudioCallService.startAsGroupOwner()
-            } else if (hostAddress != null) {
-                AudioCallService.connectToGroupOwner(hostAddress)
+    override fun onCallStateChanged(state: CallSessionBus.CallState) {
+        if (isFinishing || isDestroyed) return
+        when (state) {
+            CallSessionBus.CallState.RINGING -> tvCallStatus.text = "Ringing…"
+            CallSessionBus.CallState.CONNECTING -> tvCallStatus.text = getString(R.string.call_connecting)
+            CallSessionBus.CallState.CONNECTED -> {
+                tvCallStatus.text = getString(R.string.call_connected_webrtc)
+                startDurationTimerIfNeeded()
             }
+            CallSessionBus.CallState.RECONNECTING -> {
+                tvCallStatus.text = getString(R.string.call_reconnecting)
+            }
+            CallSessionBus.CallState.ENDED -> tvCallStatus.text = getString(R.string.call_ended)
+        }
+    }
 
-            tvCallStatus.text = "Connected"
-            callStartTime = System.currentTimeMillis()
-            startDurationTimer()
-        }, 500)
+    override fun onMuteChanged(muted: Boolean) {
+        if (isFinishing || isDestroyed) return
+        if (isMuted != muted) {
+            isMuted = muted
+            updateMuteUi()
+        }
+    }
+
+    override fun onCallEnded(reason: String) {
+        if (endedLocally || isFinishing || isDestroyed) return
+        endedLocally = true
+        Toast.makeText(this, reason, Toast.LENGTH_SHORT).show()
+        cleanupAndFinish()
     }
 
     private fun toggleMute() {
         isMuted = !isMuted
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        audioManager.isMicrophoneMute = isMuted
-        // Swap the icon so it's obvious whether the mic is live or muted.
+        AudioCallService.setMuted(isMuted)
+        updateMuteUi()
+        Toast.makeText(this, if (isMuted) "Muted" else "Unmuted", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun updateMuteUi() {
         btnMute.setIconResource(if (isMuted) R.drawable.ic_mic_off else R.drawable.ic_mic)
         btnMute.alpha = if (isMuted) 0.6f else 1.0f
-        Toast.makeText(this, if (isMuted) "Muted" else "Unmuted", Toast.LENGTH_SHORT).show()
     }
 
     private fun toggleSpeaker() {
         isSpeakerOn = !isSpeakerOn
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         audioManager.isSpeakerphoneOn = isSpeakerOn
-        btnSpeaker.setIconResource(if (isSpeakerOn) R.drawable.ic_volume else R.drawable.ic_volume_off)
-        btnSpeaker.alpha = if (isSpeakerOn) 1.0f else 0.6f
+        updateSpeakerUi()
         Toast.makeText(this, if (isSpeakerOn) "Speaker on" else "Speaker off", Toast.LENGTH_SHORT).show()
     }
 
+    private fun updateSpeakerUi() {
+        btnSpeaker.setIconResource(if (isSpeakerOn) R.drawable.ic_volume else R.drawable.ic_volume_off)
+        btnSpeaker.alpha = if (isSpeakerOn) 1.0f else 0.65f
+    }
+
     private fun endCall() {
+        if (endedLocally) return
+        endedLocally = true
+        val hangupPayload = Constants.MSG_TYPE_CALL_END + Constants.CALL_TYPE_AUDIO
+        if (!MainActivity.sendControlToPeerStatic(peerId, hangupPayload)) {
+            CallListenerService.sendControl(hangupPayload, peerId)
+        }
+        cleanupAndFinish()
+    }
+
+    private fun cleanupAndFinish() {
         AudioCallService.endCall()
         durationRunnable?.let { durationHandler.removeCallbacks(it) }
-        restoreAudioMode()
+        CallSessionBus.removeListener(this)
+        CallSessionBus.restoreVoiceAudio(this)
+        CallSessionBus.clearSession()
         finish()
     }
 
     // ======================== Duration Timer ========================
 
-    private fun startDurationTimer() {
+    private fun startDurationTimerIfNeeded() {
+        if (timerStarted) return
+        timerStarted = true
+        callStartTime = System.currentTimeMillis()
         durationRunnable = object : Runnable {
             override fun run() {
                 val elapsed = System.currentTimeMillis() - callStartTime
                 val minutes = (elapsed / 1000) / 60
                 val seconds = (elapsed / 1000) % 60
-                tvCallDuration.text = String.format("%02d:%02d", minutes, seconds)
+                tvCallDuration.text = String.format(Locale.US, "%02d:%02d", minutes, seconds)
                 durationHandler.postDelayed(this, 1000)
             }
         }
@@ -163,14 +217,12 @@ class AudioCallActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         durationRunnable?.let { durationHandler.removeCallbacks(it) }
-        // If the activity is killed without End being tapped, still restore audio.
-        if (AudioCallService.isRunning.not()) restoreAudioMode()
+        CallSessionBus.removeListener(this)
+        if (!endedLocally) {
+            AudioCallService.endCall()
+            CallSessionBus.restoreVoiceAudio(this)
+            CallSessionBus.clearSession()
+        }
         super.onDestroy()
-    }
-
-    @Deprecated("Use OnBackInvokedCallback for API 33+")
-    override fun onBackPressed() {
-        // Prevent accidental back press during call — must use End button
-        Toast.makeText(this, "Tap End Call to hang up", Toast.LENGTH_SHORT).show()
     }
 }

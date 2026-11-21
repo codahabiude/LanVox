@@ -63,11 +63,15 @@ class WiFiDirectBroadcastReceiver(
                 val device = intent.getParcelableExtraCompat<WifiP2pDevice>(
                     WifiP2pManager.EXTRA_WIFI_P2P_DEVICE
                 )
-                wifiDirectManager.onConnectionChanged(info, device)
-                if (info != null && info.groupFormed) {
+                if (info != null) {
+                    wifiDirectManager.onConnectionChanged(info, device)
+                }
+                if (info == null || info.groupFormed) {
                     try {
                         manager.requestConnectionInfo(channel) { connectionInfo ->
-                            wifiDirectManager.onConnectionInfoAvailable(connectionInfo)
+                            if (connectionInfo != null) {
+                                wifiDirectManager.onConnectionInfoAvailable(connectionInfo)
+                            }
                         }
                     } catch (e: SecurityException) {
                         Log.e(TAG, "requestConnectionInfo permission error: ${e.message}")
