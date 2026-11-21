@@ -1,62 +1,322 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:id="@+id/chatRoot" android:layout_width="match_parent" android:layout_height="match_parent"
-    android:orientation="vertical" android:background="@color/brand_primary">
+    android:id="@+id/chatRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/brand_primary">
 
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="horizontal" android:gravity="center_vertical"
-        android:background="@drawable/top_bar_bg" android:paddingHorizontal="8dp" android:paddingVertical="8dp">
-        <ImageView android:id="@+id/btnChatBack" android:layout_width="36dp" android:layout_height="36dp"
-            android:src="@drawable/ic_back" android:contentDescription="Back"
-            android:background="?attr/selectableItemBackgroundBorderless" android:padding="8dp"
-            android:tint="@color/text_secondary" android:layout_marginEnd="4dp"/>
-        <FrameLayout android:layout_width="40dp" android:layout_height="40dp" android:layout_marginEnd="10dp">
-            <TextView android:id="@+id/tvChatAvatar" android:layout_width="40dp" android:layout_height="40dp"
-                android:gravity="center" android:textSize="16sp" android:textStyle="bold"
-                android:textColor="@color/text_on_primary" android:fontFamily="sans-serif-medium"
-                android:background="@drawable/circle_green_avatar"/>
-            <View android:layout_width="11dp" android:layout_height="11dp"
-                android:layout_gravity="bottom|end" android:background="@drawable/online_dot"/>
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/top_bar_bg"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="10dp">
+
+        <ImageView
+            android:id="@+id/btnChatBack"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/ic_back"
+            android:contentDescription="Back"
+            android:background="@drawable/bg_glass_circle"
+            android:padding="13dp"
+            android:tint="@color/text_primary"
+            android:layout_marginEnd="10dp" />
+
+        <FrameLayout
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:layout_marginEnd="12dp">
+
+            <TextView
+                android:id="@+id/tvChatAvatar"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
+                android:gravity="center"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_on_primary"
+                android:fontFamily="@font/space_grotesk"
+                android:background="@drawable/circle_green_avatar" />
+
+            <View
+                android:layout_width="11dp"
+                android:layout_height="11dp"
+                android:layout_gravity="bottom|end"
+                android:background="@drawable/online_dot" />
         </FrameLayout>
-        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
             android:orientation="vertical">
-            <TextView android:id="@+id/tvChatPeerName" android:layout_width="match_parent"
-                android:layout_height="wrap_content" android:textSize="16sp" android:textColor="@color/text_primary"
-                android:fontFamily="sans-serif-medium" android:maxLines="1" android:ellipsize="end"/>
-            <TextView android:id="@+id/tvChatPeerStatus" android:layout_width="match_parent"
-                android:layout_height="wrap_content" android:textSize="11sp"
-                android:textColor="@color/brand_secondary" android:maxLines="1" android:ellipsize="end"/>
+
+            <TextView
+                android:id="@+id/tvChatPeerName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary"
+                android:fontFamily="@font/space_grotesk"
+                android:maxLines="1"
+                android:ellipsize="end" />
+
+            <TextView
+                android:id="@+id/tvChatPeerStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textSize="11sp"
+                android:fontFamily="@font/jetbrains_mono"
+                android:textColor="@color/brand_secondary"
+                android:maxLines="1"
+                android:ellipsize="end" />
         </LinearLayout>
-        <ImageView android:id="@+id/btnChatAudioCall" android:layout_width="36dp" android:layout_height="36dp"
-            android:src="@drawable/ic_phone" android:contentDescription="Audio call"
-            android:background="?attr/selectableItemBackgroundBorderless" android:padding="7dp"
-            android:tint="@color/text_secondary" android:layout_marginEnd="4dp"/>
-        <ImageView android:id="@+id/btnChatVideoCall" android:layout_width="36dp" android:layout_height="36dp"
-            android:src="@drawable/ic_videocam" android:contentDescription="Video call"
-            android:background="?attr/selectableItemBackgroundBorderless" android:padding="7dp"
-            android:tint="@color/text_secondary"/>
+
+        <ImageView
+            android:id="@+id/btnChatSearch"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/ic_search"
+            android:contentDescription="@string/cd_search_messages"
+            android:background="@drawable/bg_glass_circle"
+            android:padding="13dp"
+            android:tint="@color/brand_secondary"
+            android:layout_marginEnd="6dp" />
+
+        <ImageView
+            android:id="@+id/btnChatAudioCall"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/ic_phone"
+            android:contentDescription="Audio call"
+            android:background="@drawable/bg_glass_circle"
+            android:padding="13dp"
+            android:tint="@color/brand_secondary"
+            android:layout_marginEnd="6dp" />
+
+        <ImageView
+            android:id="@+id/btnChatVideoCall"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/ic_videocam"
+            android:contentDescription="Video call"
+            android:background="@drawable/bg_glass_circle"
+            android:padding="13dp"
+            android:tint="@color/brand_secondary" />
     </LinearLayout>
 
-    <androidx.recyclerview.widget.RecyclerView android:id="@+id/rvMessages"
-        android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
-        android:paddingHorizontal="6dp" android:paddingTop="10dp" android:paddingBottom="6dp"
-        android:clipToPadding="false" android:scrollbars="none" android:background="@drawable/chat_wallpaper_tile"/>
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:clipChildren="false"
+        android:background="@drawable/chat_wallpaper_tile">
 
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="horizontal" android:gravity="center_vertical"
-        android:paddingHorizontal="8dp" android:paddingVertical="8dp" android:background="@drawable/top_bar_bg">
-        <EditText android:id="@+id/etMessage" android:layout_width="0dp" android:layout_height="wrap_content"
-            android:layout_weight="1" android:hint="@string/hint_message" android:inputType="text|textCapSentences"
-            android:maxLines="3" android:textSize="14sp" android:textColor="@color/text_primary"
-            android:textColorHint="@color/text_tertiary" android:fontFamily="sans-serif"
-            android:background="@drawable/chat_input_bg" android:paddingHorizontal="16dp"
-            android:paddingVertical="12dp" android:layout_marginEnd="8dp"/>
-        <com.google.android.material.button.MaterialButton android:id="@+id/btnSend"
-            android:layout_width="44dp" android:layout_height="44dp" android:insetTop="0dp"
-            android:insetBottom="0dp" android:insetLeft="0dp" android:insetRight="0dp"
-            app:cornerRadius="22dp" app:backgroundTint="@color/brand_secondary"
-            app:icon="@drawable/ic_send" app:iconGravity="textStart" app:iconPadding="0dp"
-            app:iconSize="20dp" app:iconTint="@color/text_on_primary"/>
-    </LinearLayout>
+        <!-- Ambient Luminous Light Orbs (blurred via RenderEffect on API 31+) -->
+        <View
+            android:id="@+id/ambientOrb1"
+            android:layout_width="260dp"
+            android:layout_height="260dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="20dp"
+            android:layout_marginEnd="-64dp"
+            android:background="@drawable/ambient_orb_cyan" />
+
+        <View
+            android:id="@+id/ambientOrb2"
+            android:layout_width="300dp"
+            android:layout_height="300dp"
+            android:layout_gravity="center_vertical|start"
+            android:layout_marginStart="-90dp"
+            android:background="@drawable/ambient_orb_violet" />
+
+        <View
+            android:id="@+id/ambientOrb3"
+            android:layout_width="240dp"
+            android:layout_height="240dp"
+            android:layout_gravity="bottom|end"
+            android:layout_marginEnd="-48dp"
+            android:layout_marginBottom="40dp"
+            android:background="@drawable/ambient_orb_cyan" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvMessages"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:paddingHorizontal="6dp"
+            android:paddingTop="14dp"
+            android:paddingBottom="88dp"
+            android:clipToPadding="false"
+            android:clipChildren="false"
+            android:scrollbars="none" />
+
+        <LinearLayout
+            android:id="@+id/llSearchEmpty"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:paddingHorizontal="36dp"
+            android:visibility="gone">
+
+            <FrameLayout
+                android:layout_width="68dp"
+                android:layout_height="68dp"
+                android:layout_marginBottom="12dp"
+                android:background="@drawable/bg_glass_circle">
+
+                <ImageView
+                    android:layout_width="28dp"
+                    android:layout_height="28dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_search"
+                    android:contentDescription="@string/search_empty_title"
+                    android:tint="@color/brand_secondary" />
+            </FrameLayout>
+
+            <TextView
+                android:id="@+id/tvSearchEmptyTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/search_empty_title"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary"
+                android:fontFamily="@font/space_grotesk"
+                android:layout_marginBottom="4dp" />
+
+            <TextView
+                android:id="@+id/tvSearchEmptySubtitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="@string/search_empty_subtitle"
+                android:textSize="12.5sp"
+                android:fontFamily="@font/plus_jakarta_sans"
+                android:textColor="@color/text_secondary" />
+        </LinearLayout>
+
+        <!-- Floating Frosted Glass Search Bar -->
+        <LinearLayout
+            android:id="@+id/searchBarContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:layout_marginHorizontal="12dp"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@drawable/bg_glass_thread_bar"
+            android:paddingStart="14dp"
+            android:paddingEnd="4dp"
+            android:paddingVertical="2dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="17dp"
+                android:layout_height="17dp"
+                android:layout_marginEnd="8dp"
+                android:src="@drawable/ic_search"
+                android:contentDescription="@string/cd_search_messages"
+                android:tint="@color/brand_secondary" />
+
+            <EditText
+                android:id="@+id/etSearchMessages"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:minHeight="48dp"
+                android:hint="@string/hint_search_messages"
+                android:inputType="text"
+                android:imeOptions="actionSearch"
+                android:maxLines="1"
+                android:singleLine="true"
+                android:textSize="13sp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_tertiary"
+                android:fontFamily="@font/plus_jakarta_sans"
+                android:background="@android:color/transparent"
+                android:paddingVertical="8dp" />
+
+            <TextView
+                android:id="@+id/tvSearchCount"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/pill_green_small"
+                android:fontFamily="@font/jetbrains_mono"
+                android:paddingHorizontal="8dp"
+                android:paddingVertical="3dp"
+                android:textColor="@color/brand_secondary"
+                android:textSize="10sp"
+                android:visibility="gone" />
+
+            <ImageView
+                android:id="@+id/btnCloseSearch"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/cd_close"
+                android:padding="14dp"
+                android:src="@drawable/ic_close"
+                android:tint="@color/text_secondary" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/composerDock"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_marginHorizontal="12dp"
+            android:layout_marginBottom="12dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingStart="16dp"
+            android:paddingEnd="6dp"
+            android:paddingVertical="5dp"
+            android:background="@drawable/bg_glass_composer">
+
+            <EditText
+                android:id="@+id/etMessage"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:minHeight="46dp"
+                android:hint="@string/hint_message"
+                android:inputType="text|textCapSentences"
+                android:maxLines="3"
+                android:textSize="14sp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_tertiary"
+                android:fontFamily="@font/plus_jakarta_sans"
+                android:background="@android:color/transparent"
+                android:paddingVertical="10dp"
+                android:layout_marginEnd="8dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSend"
+                android:layout_width="46dp"
+                android:layout_height="46dp"
+                android:contentDescription="@string/cd_send_message"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                app:cornerRadius="23dp"
+                app:backgroundTint="@color/brand_secondary"
+                app:icon="@drawable/ic_send"
+                app:iconGravity="textStart"
+                app:iconPadding="0dp"
+                app:iconSize="19dp"
+                app:iconTint="@color/text_on_primary" />
+        </LinearLayout>
+    </FrameLayout>
 </LinearLayout>

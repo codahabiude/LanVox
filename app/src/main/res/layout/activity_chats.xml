@@ -1,60 +1,194 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/chatsRoot" android:layout_width="match_parent" android:layout_height="match_parent"
-    android:orientation="vertical" android:background="@color/brand_primary">
+    android:id="@+id/chatsRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/chat_wallpaper_tile">
 
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="horizontal" android:gravity="center_vertical"
-        android:background="@drawable/top_bar_bg" android:paddingHorizontal="8dp" android:paddingVertical="14dp">
-        <ImageView android:id="@+id/btnChatsBack" android:layout_width="36dp" android:layout_height="36dp"
-            android:src="@drawable/ic_back" android:contentDescription="Back"
-            android:background="?attr/selectableItemBackgroundBorderless" android:padding="8dp"
-            android:tint="@color/text_secondary" android:layout_marginEnd="8dp"/>
-        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-            android:text="Chats" android:textSize="20sp" android:textColor="@color/text_primary"
-            android:fontFamily="sans-serif-medium"/>
-    </LinearLayout>
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/top_bar_bg"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="12dp">
 
-    <LinearLayout android:id="@+id/groupChatRow" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="horizontal" android:gravity="center_vertical"
-        android:paddingHorizontal="16dp" android:paddingVertical="14dp"
-        android:background="?attr/selectableItemBackground" android:layout_marginBottom="1dp">
-        <TextView android:layout_width="48dp" android:layout_height="48dp" android:gravity="center"
-            android:textSize="22sp" android:textStyle="bold" android:textColor="@color/text_on_primary"
-            android:fontFamily="sans-serif-medium" android:background="@drawable/circle_green_avatar" android:text="#"/>
-        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-            android:orientation="vertical" android:layout_marginStart="14dp">
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:text="Group Chat" android:textSize="16sp" android:textColor="@color/text_primary"
-                android:fontFamily="sans-serif-medium"/>
-            <TextView android:id="@+id/tvGroupChatSubtitle" android:layout_width="match_parent"
-                android:layout_height="wrap_content" android:layout_marginTop="2dp" android:textSize="13sp"
-                android:textColor="@color/brand_secondary" android:maxLines="1" android:ellipsize="end"
-                android:text="Broadcast to all group members"/>
+        <ImageView
+            android:id="@+id/btnChatsBack"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/ic_back"
+            android:contentDescription="Back"
+            android:background="@drawable/bg_glass_circle"
+            android:padding="13dp"
+            android:tint="@color/text_primary"
+            android:layout_marginEnd="12dp" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Channels"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary"
+                android:fontFamily="@font/space_grotesk" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="LOCAL P2P THREADS"
+                android:textSize="10sp"
+                android:letterSpacing="0.1"
+                android:textColor="@color/brand_secondary"
+                android:fontFamily="@font/jetbrains_mono" />
         </LinearLayout>
-        <ImageView android:layout_width="20dp" android:layout_height="20dp" android:src="@drawable/ic_chats"
-            android:tint="@color/text_tertiary" android:contentDescription="Group"/>
     </LinearLayout>
 
-    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider"/>
+    <!-- Pinned Broadcast Group Channel Glass Card -->
+    <LinearLayout
+        android:id="@+id/groupChatRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginHorizontal="14dp"
+        android:layout_marginTop="14dp"
+        android:layout_marginBottom="10dp"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="14dp"
+        android:background="@drawable/bg_glass_card">
 
-    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
-        <androidx.recyclerview.widget.RecyclerView android:id="@+id/rvChats"
-            android:layout_width="match_parent" android:layout_height="match_parent"
-            android:paddingTop="4dp" android:paddingBottom="12dp" android:clipToPadding="false" android:scrollbars="none"/>
-        <LinearLayout android:id="@+id/tvChatsEmpty" android:layout_width="match_parent"
-            android:layout_height="wrap_content" android:layout_gravity="center" android:orientation="vertical"
-            android:gravity="center" android:padding="32dp" android:visibility="gone">
-            <ImageView android:layout_width="56dp" android:layout_height="56dp" android:src="@drawable/ic_chats"
-                android:tint="@color/text_tertiary" android:alpha="0.5" android:layout_marginBottom="16dp"
-                android:contentDescription="No chats"/>
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="No 1:1 conversations yet" android:textSize="16sp"
-                android:textColor="@color/text_secondary" android:fontFamily="sans-serif-medium" android:layout_marginBottom="6dp"/>
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="Tap Group Chat above to broadcast to everyone,\nor open a peer's chat from the device list."
-                android:textSize="13sp" android:textColor="@color/text_tertiary"
-                android:lineSpacingExtra="3dp" android:gravity="center"/>
+        <TextView
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_on_primary"
+            android:fontFamily="@font/space_grotesk"
+            android:background="@drawable/circle_green_avatar"
+            android:text="#" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:layout_marginStart="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Group Mesh Broadcast"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary"
+                android:fontFamily="@font/space_grotesk" />
+
+            <TextView
+                android:id="@+id/tvGroupChatSubtitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:textSize="12sp"
+                android:fontFamily="@font/jetbrains_mono"
+                android:textColor="@color/brand_secondary"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:text="Broadcast to all group members" />
+        </LinearLayout>
+
+        <ImageView
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:src="@drawable/ic_chats"
+            android:tint="@color/brand_secondary"
+            android:contentDescription="Group" />
+    </LinearLayout>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="DIRECT NODES"
+        android:textSize="10sp"
+        android:letterSpacing="0.14"
+        android:fontFamily="@font/jetbrains_mono"
+        android:textColor="@color/text_tertiary"
+        android:paddingHorizontal="18dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="6dp" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvChats"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:paddingHorizontal="14dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="16dp"
+            android:clipToPadding="false"
+            android:scrollbars="none" />
+
+        <LinearLayout
+            android:id="@+id/tvChatsEmpty"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:padding="32dp"
+            android:visibility="gone">
+
+            <FrameLayout
+                android:layout_width="84dp"
+                android:layout_height="84dp"
+                android:layout_marginBottom="16dp">
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/pulse_ring" />
+
+                <ImageView
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_chats"
+                    android:tint="@color/brand_secondary"
+                    android:contentDescription="No chats" />
+            </FrameLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="No 1:1 channels yet"
+                android:textSize="17sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary"
+                android:fontFamily="@font/space_grotesk"
+                android:layout_marginBottom="6dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Tap Group Mesh above to broadcast,\nor pair with a peer from the radar sheet."
+                android:textSize="13sp"
+                android:fontFamily="@font/plus_jakarta_sans"
+                android:textColor="@color/text_secondary"
+                android:lineSpacingExtra="3dp"
+                android:gravity="center" />
         </LinearLayout>
     </FrameLayout>
 </LinearLayout>

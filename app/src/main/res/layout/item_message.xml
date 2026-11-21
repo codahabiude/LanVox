@@ -2,8 +2,10 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:paddingHorizontal="6dp"
-    android:paddingVertical="3dp">
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:paddingHorizontal="10dp"
+    android:paddingVertical="5dp">
 
     <LinearLayout
         android:id="@+id/bubbleContainer"
@@ -12,16 +14,17 @@
         android:layout_gravity="start"
         android:background="@drawable/bubble_received"
         android:orientation="vertical"
-        android:paddingHorizontal="12dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="6dp">
+        android:paddingHorizontal="16dp"
+        android:paddingTop="11dp"
+        android:paddingBottom="9dp">
 
         <TextView
             android:id="@+id/tvSenderName"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="2dp"
-            android:fontFamily="sans-serif-medium"
+            android:layout_marginBottom="3dp"
+            android:fontFamily="@font/space_grotesk"
+            android:textStyle="bold"
             android:maxWidth="260dp"
             android:maxLines="1"
             android:ellipsize="end"
@@ -33,18 +36,19 @@
             android:id="@+id/tvMessage"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:lineSpacingExtra="2dp"
-            android:maxWidth="280dp"
+            android:fontFamily="@font/plus_jakarta_sans"
+            android:lineSpacingExtra="3dp"
+            android:maxWidth="276dp"
             android:text="Hello"
             android:textColor="@color/bubble_received_text"
             android:textIsSelectable="true"
-            android:textSize="14sp" />
+            android:textSize="14.5sp" />
 
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="end"
-            android:layout_marginTop="2dp"
+            android:layout_marginTop="4dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
@@ -52,16 +56,17 @@
                 android:id="@+id/tvTimestamp"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:fontFamily="sans-serif"
+                android:fontFamily="@font/jetbrains_mono"
+                android:letterSpacing="0.02"
                 android:text="12:34"
                 android:textColor="@color/bubble_received_time"
-                android:textSize="10sp" />
+                android:textSize="11sp" />
 
             <ImageView
                 android:id="@+id/ivTick"
-                android:layout_width="14dp"
-                android:layout_height="14dp"
-                android:layout_marginStart="4dp"
+                android:layout_width="15dp"
+                android:layout_height="15dp"
+                android:layout_marginStart="5dp"
                 android:contentDescription="Sent"
                 android:src="@drawable/ic_check"
                 android:tint="@color/tick_sent"

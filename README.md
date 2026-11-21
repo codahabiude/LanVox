@@ -7,6 +7,7 @@ A peer-to-peer communication app that uses **Wi-Fi Direct (P2P)** to connect two
 | Feature | Description |
 |---------|-------------|
 | 💬 **Inline & Thread Text Chat** | `RecyclerView`-based chat interface directly in `MainActivity` plus dedicated per-contact `ChatActivity` threads using `ChatMessage` & `DiffUtil`-backed `MessageAdapter` |
+| 🔎 **In-Chat Message Search** | Frosted glass search bar in both `MainActivity` and `ChatActivity` filters messages live by body text, sender name, or timestamp (`14:30`, `3:54 PM`, `Nov 21`, `today`) with match highlights and hit counter |
 | 📡 **Peer Picker Bottom Sheet** | Interactive `PeerPickerBottomSheet` with live radar sweep, scanning status, discovered peer list, and one-tap connect/disconnect |
 | 🔐 **Wi-Fi P2P Runtime Permissions** | Android 13+ `NEARBY_WIFI_DEVICES` and Android 7–12 `ACCESS_FINE_LOCATION` permission flow with rationale dialog and Settings fallback |
 | 💾 **Room Database Persistence** | Every message auto-saved locally via **Room** (`LanvoxDatabase`, `ChatMessageEntity`, `ChatMessageDao`, `ChatRepository`) + reactive Kotlin `Flow` — history survives app close and restart |
@@ -34,8 +35,8 @@ A peer-to-peer communication app that uses **Wi-Fi Direct (P2P)** to connect two
 
 ### Text Chat (`MainActivity` & `ChatActivity`)
 - Port `8988`: GO hosts a `ServerSocket`, client connects to it using a newline-delimited protocol over TCP.
-- **`MainActivity` Inline Chat**: Features an embedded `RecyclerView` (`rvMessages`), empty-state view, live peer header (`tvActiveChatTitle` / `tvActiveChatSubtitle`), and message composer (`etMessage`, `btnSend`).
-- **`ChatMessage` & `MessageAdapter`**: Dedicated `ChatMessage` data class (`text`, `isSentByMe`, `timestamp`, `status: MessageStatus`, `senderName`, `id`) bound with `VIEW_TYPE_SENT` / `VIEW_TYPE_RECEIVED` view types and `DiffUtil` updates.
+- **`MainActivity` Inline Chat**: Features an embedded `RecyclerView` (`rvMessages`), empty-state view, live peer header (`tvActiveChatTitle` / `tvActiveChatSubtitle`), frosted glass search bar (`btnSearchMessages`), and message composer (`etMessage`, `btnSend`).
+- **`ChatMessage` & `MessageAdapter`**: Dedicated `ChatMessage` data class (`text`, `isSentByMe`, `timestamp`, `status: MessageStatus`, `senderName`, `id`) with locale-aware bubble timestamp formatting (`formattedTimestamp`, adapting to 12/24-hour clock and showing dates for older threads), `ChatSearchHelper` live filtering & keyword/time highlighting, `VIEW_TYPE_SENT` / `VIEW_TYPE_RECEIVED` view types, `DiffUtil` updates, and single/double checkmark delivery & read receipt icons (`SENT`, `DELIVERED`, `READ`) persisted in Room (`ACK:` / `READ:` control envelopes).
 
 ### Persistent Chat Storage (Room Database)
 - Every sent and received message is persisted to an app-private **Room Database** (`/data/data/com.example.lanvox/databases/lanvox_room_chat.db`) via KSP code generation:
@@ -156,7 +157,10 @@ app/src/main/java/com/example/wifip2pchat/
 ├── ChatsAdapter.kt                 — RecyclerView adapter for the chats list
 ├── ChatActivity.kt                 — Per-contact chat thread
 ├── PeerAdapter.kt                  — RecyclerView adapter for discovered peers
-├── MessageAdapter.kt               — RecyclerView adapter for ChatMessage items (sent/received + DiffUtil)
+├── MessageAdapter.kt               — RecyclerView adapter for ChatMessage items (sent/received + DiffUtil + search highlights)
+├── ChatSearchHelper.kt             — Live message filtering by content, sender, or timestamp + span highlighting
+├── MessageSwipeHelper.kt           — ItemTouchHelper swipe-to-delete on message bubbles (UI + Room + Undo)
+├── GlassEffects.kt                 — RenderEffect backdrop blur & luminous glow shadows
 ├── OnboardingActivity.kt           — First-launch tutorial
 ├── OnboardingAdapter.kt            — Pages for the tutorial
 ├── CallRingtoneManager.kt          — System ringtone + vibration for incoming calls
@@ -209,7 +213,7 @@ app/src/main/java/com/example/wifip2pchat/
 - **Audio**: PCM 16kHz mono via `AudioRecord` / `AudioTrack`
 - **Video**: Camera2 API → JPEG frames → length-prefixed TCP protocol
 - **Concurrency**: Kotlin Coroutines & Flow (`kotlinx.coroutines`)
-- **UI**: Material Design Components (including `BottomSheetDialog` & `RecyclerView` with `DiffUtil`), ViewBinding, Dark Mode
+- **UI / UX**: Glassmorphism & Cryo-Cyan Orbital HUD aesthetic (`#050811` void, `#00F0FF` cryo-cyan, semi-transparent frosted chat bubbles with soft glow borders, `RenderEffect` blurred ambient light orbs via `GlassEffects.kt`, floating glass composer dock), `RadarView` conical `SweepGradient`, bundled `Space Grotesk`, `Plus Jakarta Sans`, & `JetBrains Mono` typography (`res/font/`), `BottomSheetDialog`, `RecyclerView` (`DiffUtil`), and ViewBinding
 
 ## License
 

@@ -17,14 +17,17 @@ import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -36,6 +39,7 @@ import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -102,6 +106,11 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             return instance.transmitText(recipientId, text)
         }
 
+        fun sendReadReceiptStatic(threadPeerId: String?) {
+            val instance = staticInstance ?: return
+            instance.sendReadReceipt(threadPeerId)
+        }
+
         fun startAudioCallStatic(): Boolean {
             val instance = staticInstance ?: return false
             if (!instance.wifiManager.isConnected) return false
@@ -160,6 +169,13 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private lateinit var btnClearHistory: ImageView
     private lateinit var tvActiveChatTitle: TextView
     private lateinit var tvActiveChatSubtitle: TextView
+    private lateinit var topOverlayContainer: LinearLayout
+    private lateinit var btnSearchMessages: ImageView
+    private lateinit var searchBarContainer: LinearLayout
+    private lateinit var etSearchMessages: EditText
+    private lateinit var tvSearchCount: TextView
+    private lateinit var btnCloseSearch: ImageView
+    private lateinit var llSearchEmpty: LinearLayout
     private lateinit var rvMessages: RecyclerView
     private lateinit var llMessagesEmpty: LinearLayout
     private lateinit var etMessage: EditText
@@ -229,7 +245,15 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     // --- Persistent storage (Room) ---
     private val chatRepository by lazy { ChatRepository.get(this) }
     private val activeThreadPeerIdFlow = MutableStateFlow(Constants.GROUP_PEER_ID)
+    private val searchQueryFlow = MutableStateFlow("")
+    private var totalThreadMessages = 0
     private var storedCount = 0
+
+    private val searchBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            setSearchOpen(false)
+        }
+    }
 
     // --- PeerRegistry listener token (so we can unsubscribe in onDestroy) ---
     private var peerRegistryListener: (() -> Unit)? = null
@@ -246,7 +270,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         initWiFiDirect()
         checkPermissions()
 
-        // Observe Room-persisted messages and message count reactively
+        onBackPressedDispatcher.addCallback(this, searchBackCallback)
+
+        // Observe Room-persisted messages, search filter, and message count reactively
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
@@ -256,13 +282,28 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                     }
                 }
                 launch {
-                    activeThreadPeerIdFlow
-                        .flatMapLatest { threadId -> chatRepository.observeHistory(threadId) }
-                        .collect { history ->
-                            messageAdapter.setMessages(history)
-                            updateEmptyMessagesState()
+                    combine(
+                        activeThreadPeerIdFlow.flatMapLatest { threadId ->
+                            chatRepository.observeHistory(threadId)
+                        },
+                        searchQueryFlow
+                    ) { history, query ->
+                        Pair(history, query)
+                    }.collect { (history, query) ->
+                        totalThreadMessages = history.size
+                        val trimmed = query.trim()
+                        val filtered = if (trimmed.isEmpty()) {
+                            history
+                        } else {
+                            ChatSearchHelper.filter(this@MainActivity, history, trimmed)
+                        }
+                        val prevCount = messageAdapter.itemCount
+                        messageAdapter.submitMessages(filtered, trimmed)
+                        updateSearchAndEmptyUi(history.size, filtered.size, trimmed)
+                        if (trimmed.isEmpty() && filtered.size > prevCount) {
                             scrollMessagesToBottom()
                         }
+                    }
                 }
             }
         }
@@ -293,6 +334,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         updateActiveChatHeader()
         loadMainChatHistory()
         refreshStoredCount()
+        sendReadReceipt(activeThreadPeerId())
     }
 
     override fun onPause() {
@@ -335,6 +377,13 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         btnClearHistory = findViewById(R.id.btnClearHistory)
         tvActiveChatTitle = findViewById(R.id.tvActiveChatTitle)
         tvActiveChatSubtitle = findViewById(R.id.tvActiveChatSubtitle)
+        topOverlayContainer = findViewById(R.id.topOverlayContainer)
+        btnSearchMessages = findViewById(R.id.btnSearchMessages)
+        searchBarContainer = findViewById(R.id.searchBarContainer)
+        etSearchMessages = findViewById(R.id.etSearchMessages)
+        tvSearchCount = findViewById(R.id.tvSearchCount)
+        btnCloseSearch = findViewById(R.id.btnCloseSearch)
+        llSearchEmpty = findViewById(R.id.llSearchEmpty)
         rvMessages = findViewById(R.id.rvMessages)
         llMessagesEmpty = findViewById(R.id.llMessagesEmpty)
         etMessage = findViewById(R.id.etMessage)
@@ -348,10 +397,73 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
         rvMessages.layoutManager = chatLayoutManager
         rvMessages.adapter = messageAdapter
+        MessageSwipeHelper.attach(rvMessages, messageAdapter) { deletedMessage ->
+            val threadPeerId = activeThreadPeerId()
+            val threadPeerName = activeThreadPeerName()
+            updateSearchAndEmptyUi(
+                totalCount = (totalThreadMessages - 1).coerceAtLeast(0),
+                visibleCount = messageAdapter.itemCount,
+                query = searchQueryFlow.value.trim()
+            )
+            lifecycleScope.launch {
+                chatRepository.deleteMessage(deletedMessage)
+            }
+            showSnackbar("Message deleted", "Undo") {
+                lifecycleScope.launch {
+                    chatRepository.insertMessage(deletedMessage, threadPeerId, threadPeerName)
+                }
+            }
+        }
+
+        // Keep top padding of message list synchronized with the floating header + search bar height
+        topOverlayContainer.addOnLayoutChangeListener { _, _, top, _, bottom, _, _, _, _ ->
+            val overlayHeight = (bottom - top).coerceAtLeast(0)
+            val extraGapPx = (18 * resources.displayMetrics.density).toInt()
+            val desiredTopPadding = overlayHeight + extraGapPx
+            if (rvMessages.paddingTop != desiredTopPadding) {
+                rvMessages.setPadding(
+                    rvMessages.paddingLeft,
+                    desiredTopPadding,
+                    rvMessages.paddingRight,
+                    rvMessages.paddingBottom
+                )
+            }
+        }
 
         // Radar view
         radarView = findViewById(R.id.radarView)
         radarView?.startSweeping()
+
+        // Glassmorphism backdrop blur & luminous HUD glow
+        GlassEffects.applyAmbientBlur(findViewById(R.id.ambientOrb1), 64f)
+        GlassEffects.applyAmbientBlur(findViewById(R.id.ambientOrb2), 72f)
+        GlassEffects.applyAmbientBlur(findViewById(R.id.ambientOrb3), 64f)
+        GlassEffects.applyGlowElevation(findViewById(R.id.activeChatHeader), R.color.glow_bubble_received, 8f)
+        GlassEffects.applyGlowElevation(searchBarContainer, R.color.glow_bubble_sent, 10f)
+        GlassEffects.applyGlowElevation(findViewById(R.id.composerDock), R.color.glow_bubble_sent, 12f)
+
+        btnSearchMessages.setOnClickListener {
+            val opening = searchBarContainer.visibility != View.VISIBLE
+            setSearchOpen(opening)
+        }
+        btnCloseSearch.setOnClickListener {
+            if (etSearchMessages.text?.isNotEmpty() == true) {
+                etSearchMessages.text?.clear()
+            } else {
+                setSearchOpen(false)
+            }
+        }
+        etSearchMessages.doAfterTextChanged { editable ->
+            searchQueryFlow.value = editable?.toString().orEmpty()
+        }
+        etSearchMessages.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                hideKeyboard(etSearchMessages)
+                true
+            } else {
+                false
+            }
+        }
 
         btnChats.setOnClickListener {
             startActivity(Intent(this, ChatsActivity::class.java))
@@ -729,6 +841,28 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 val text = payload.removePrefix(Constants.MSG_TYPE_TEXT)
                 onIncomingText(text, env.senderId, env.senderName, env.recipientId)
             }
+            payload.startsWith(Constants.MSG_TYPE_ACK) -> {
+                val scope = payload.removePrefix(Constants.MSG_TYPE_ACK)
+                val targetThread = if (scope == Constants.GROUP_PEER_ID) {
+                    Constants.GROUP_PEER_ID
+                } else {
+                    env.senderId
+                }
+                lifecycleScope.launch {
+                    chatRepository.markThreadDelivered(targetThread)
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_READ) -> {
+                val scope = payload.removePrefix(Constants.MSG_TYPE_READ)
+                val targetThread = if (scope == Constants.GROUP_PEER_ID) {
+                    Constants.GROUP_PEER_ID
+                } else {
+                    env.senderId
+                }
+                lifecycleScope.launch {
+                    chatRepository.markThreadRead(targetThread)
+                }
+            }
             else -> {
                 Log.d(TAG, "Unhandled envelope payload: $payload")
             }
@@ -796,6 +930,17 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
         ChatBus.notifyMessageSaved(message, threadPeerId)
 
+        // Emit delivery receipt immediately; emit read receipt if this thread is actively viewed
+        if (envIsDirectOrKnown(senderId)) {
+            val scopeSuffix = if (recipientId == Constants.RECIPIENT_BROADCAST) Constants.GROUP_PEER_ID else ""
+            sendControlMessage(Constants.MSG_TYPE_ACK + scopeSuffix, senderId)
+            val isActivelyViewing = ChatBus.activeChatPeerId == threadPeerId ||
+                (threadPeerId == activeThreadPeerId() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+            if (isActivelyViewing) {
+                sendControlMessage(Constants.MSG_TYPE_READ + scopeSuffix, senderId)
+            }
+        }
+
         if (ChatBus.activeChatPeerId != threadPeerId &&
             threadPeerId != activeThreadPeerId() &&
             lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
@@ -806,6 +951,18 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 senderName
             }
             showSnackbar("New message from $from")
+        }
+    }
+
+    private fun envIsDirectOrKnown(senderId: String): Boolean =
+        wifiManager.isConnected && senderId.isNotBlank() && senderId != "legacy"
+
+    private fun sendReadReceipt(threadPeerId: String?) {
+        if (!wifiManager.isConnected || threadPeerId.isNullOrBlank()) return
+        if (threadPeerId == Constants.GROUP_PEER_ID) {
+            sendControlMessage(Constants.MSG_TYPE_READ + Constants.GROUP_PEER_ID, Constants.RECIPIENT_BROADCAST)
+        } else {
+            sendControlMessage(Constants.MSG_TYPE_READ, threadPeerId)
         }
     }
 
@@ -840,6 +997,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
         val message = ChatMessage(text, isSentByMe = true)
         etMessage.text.clear()
+        if (searchQueryFlow.value.isNotBlank()) {
+            setSearchOpen(false)
+        }
 
         lifecycleScope.launch {
             chatRepository.insertMessage(message, threadPeerId, threadPeerName)
@@ -848,8 +1008,39 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         ChatBus.notifyMessageSaved(message, threadPeerId)
     }
 
-    private fun updateEmptyMessagesState() {
-        llMessagesEmpty.visibility = if (messageAdapter.itemCount == 0) View.VISIBLE else View.GONE
+    private fun setSearchOpen(open: Boolean) {
+        searchBarContainer.visibility = if (open) View.VISIBLE else View.GONE
+        searchBackCallback.isEnabled = open
+        if (open) {
+            etSearchMessages.requestFocus()
+            etSearchMessages.post {
+                val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+                imm?.showSoftInput(etSearchMessages, InputMethodManager.SHOW_IMPLICIT)
+            }
+        } else {
+            etSearchMessages.text?.clear()
+            searchQueryFlow.value = ""
+            hideKeyboard(etSearchMessages)
+        }
+    }
+
+    private fun hideKeyboard(view: View) {
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(view.windowToken, 0)
+    }
+
+    private fun updateSearchAndEmptyUi(totalCount: Int, visibleCount: Int, query: String) {
+        val searching = query.isNotEmpty()
+        if (searching) {
+            tvSearchCount.visibility = View.VISIBLE
+            tvSearchCount.text = if (visibleCount == 1) "1 hit" else "$visibleCount hits"
+            llMessagesEmpty.visibility = View.GONE
+            llSearchEmpty.visibility = if (visibleCount == 0) View.VISIBLE else View.GONE
+        } else {
+            tvSearchCount.visibility = View.GONE
+            llSearchEmpty.visibility = View.GONE
+            llMessagesEmpty.visibility = if (totalCount == 0) View.VISIBLE else View.GONE
+        }
     }
 
     private fun scrollMessagesToBottom() {
@@ -1005,8 +1196,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 lifecycleScope.launch {
                     chatRepository.clearAll()
                     storedCount = 0
+                    totalThreadMessages = 0
                     messageAdapter.clear()
-                    updateEmptyMessagesState()
+                    updateSearchAndEmptyUi(0, 0, searchQueryFlow.value.trim())
                     updateStoragePill()
                     showSnackbar("Chat history deleted")
                 }
@@ -1063,29 +1255,29 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
         return withContext(Dispatchers.IO) {
             try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Scoped storage — write straight into the public Downloads folder
-                val values = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                    put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    // Scoped storage — write straight into the public Downloads folder
+                    val values = ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                        put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                    }
+                    val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                        ?: return@withContext Result.failure(IllegalStateException("Could not create file"))
+                    contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(content.toByteArray())
+                    } ?: return@withContext Result.failure(IllegalStateException("Could not open file"))
+                    Result.success("Downloads/$fileName")
+                } else {
+                    // Legacy devices — app-private Documents folder (visible via file manager)
+                    val dir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+                        ?: return@withContext Result.failure(IllegalStateException("Storage unavailable"))
+                    val file = File(dir, fileName)
+                    file.writeText(content)
+                    Result.success(file.absolutePath)
                 }
-                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                    ?: return Result.failure(IllegalStateException("Could not create file"))
-                contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(content.toByteArray())
-                } ?: return Result.failure(IllegalStateException("Could not open file"))
-                Result.success("Downloads/$fileName")
-            } else {
-                // Legacy devices — app-private Documents folder (visible via file manager)
-                val dir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-                    ?: return Result.failure(IllegalStateException("Storage unavailable"))
-                val file = File(dir, fileName)
-                file.writeText(content)
-                Result.success(file.absolutePath)
+            } catch (e: Exception) {
+                Result.failure(e)
             }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
         }
     }
 

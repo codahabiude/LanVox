@@ -1,32 +1,74 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent" android:layout_height="match_parent"
-    android:orientation="vertical" android:gravity="center"
-    android:background="@color/brand_primary" android:padding="32dp">
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="@drawable/chat_wallpaper_tile"
+    android:padding="32dp">
 
-    <FrameLayout android:layout_width="160dp" android:layout_height="160dp" android:layout_marginBottom="32dp">
-        <View android:layout_width="match_parent" android:layout_height="match_parent"
-            android:background="@drawable/pulse_ring" android:alpha="0.6"/>
-        <ImageView android:layout_width="96dp" android:layout_height="96dp"
-            android:layout_gravity="center" android:src="@drawable/ic_brand_logo"
-            android:contentDescription="LANVOX logo"/>
+    <FrameLayout
+        android:layout_width="172dp"
+        android:layout_height="172dp"
+        android:layout_marginBottom="32dp">
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/pulse_ring" />
+
+        <View
+            android:layout_width="132dp"
+            android:layout_height="132dp"
+            android:layout_gravity="center"
+            android:background="@drawable/circle_outline_green" />
+
+        <ImageView
+            android:layout_width="82dp"
+            android:layout_height="82dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_brand_logo"
+            android:contentDescription="LANVOX logo" />
     </FrameLayout>
 
-    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-        android:text="LANVOX" android:textSize="44sp" android:textColor="@color/brand_secondary"
-        android:fontFamily="sans-serif-medium" android:letterSpacing="0.12" android:layout_marginBottom="8dp"/>
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="LANVOX"
+        android:textSize="44sp"
+        android:textStyle="bold"
+        android:textColor="@color/text_primary"
+        android:fontFamily="@font/space_grotesk"
+        android:letterSpacing="0.22"
+        android:layout_marginBottom="8dp" />
 
-    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-        android:text="@string/tagline" android:textSize="13sp" android:textColor="@color/text_secondary"
-        android:fontFamily="sans-serif" android:letterSpacing="0.04" android:layout_marginBottom="56dp"/>
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/tagline"
+        android:textSize="13sp"
+        android:textColor="@color/brand_secondary"
+        android:fontFamily="@font/jetbrains_mono"
+        android:letterSpacing="0.08"
+        android:layout_marginBottom="56dp" />
 
     <com.google.android.material.progressindicator.CircularProgressIndicator
-        android:layout_width="32dp" android:layout_height="32dp" android:indeterminate="true"
-        app:indicatorColor="@color/brand_secondary" app:trackColor="@color/encrypted_bg"
-        app:trackThickness="2.5dp" app:indicatorSize="32dp"/>
+        android:layout_width="34dp"
+        android:layout_height="34dp"
+        android:indeterminate="true"
+        app:indicatorColor="@color/brand_secondary"
+        app:trackColor="@color/encrypted_bg"
+        app:trackThickness="2.5dp"
+        app:indicatorSize="34dp" />
 
-    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-        android:text="v5.0 — Multi-Peer" android:textSize="11sp" android:textColor="@color/text_tertiary"
-        android:fontFamily="sans-serif-medium" android:letterSpacing="0.06" android:layout_marginTop="24dp"/>
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="v5.0 // MESH P2P"
+        android:textSize="11sp"
+        android:textColor="@color/text_tertiary"
+        android:fontFamily="@font/jetbrains_mono"
+        android:letterSpacing="0.12"
+        android:layout_marginTop="24dp" />
 </LinearLayout>

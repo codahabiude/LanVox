@@ -1,59 +1,87 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="brand_primary">#0B1120</color>
-    <color name="brand_primary_variant">#060A14</color>
-    <color name="brand_secondary">#39FF14</color>
-    <color name="brand_secondary_variant">#2BCC10</color>
-    <color name="brand_accent">#39FF14</color>
-    <color name="surface_background">#0B1120</color>
-    <color name="surface_card">#1E293B</color>
-    <color name="surface_elevated">#283548</color>
-    <color name="surface_overlay">#B3000000</color>
-    <color name="text_primary">#FFFFFF</color>
-    <color name="text_secondary">#94A3B8</color>
-    <color name="text_tertiary">#64748B</color>
-    <color name="text_on_primary">#0B1120</color>
-    <color name="text_on_secondary">#0B1120</color>
-    <color name="text_link">#39FF14</color>
-    <color name="status_online">#39FF14</color>
-    <color name="status_discovering">#FBBF24</color>
-    <color name="status_offline">#FF4757</color>
-    <color name="status_connected">#39FF14</color>
-    <color name="bubble_sent">#25D366</color>
-    <color name="bubble_sent_text">#0B1120</color>
-    <color name="bubble_received">#1E293B</color>
-    <color name="bubble_received_text">#E8EDF2</color>
-    <color name="bubble_sent_time">#5A0B1120</color>
-    <color name="bubble_received_time">#7B94A3B8</color>
-    <color name="tick_sent">#5A0B1120</color>
-    <color name="tick_delivered">#0B1120</color>
-    <color name="tick_read">#4FC3F7</color>
-    <color name="chat_wallpaper_tint">#0E1626</color>
-    <color name="chat_wallpaper_dot">#1F2A40</color>
-    <color name="call_background">#0B1120</color>
-    <color name="call_accept">#39FF14</color>
-    <color name="call_decline">#FF4757</color>
-    <color name="call_mute_bg">#1A39FF14</color>
-    <color name="radar_grid">#1A334155</color>
-    <color name="radar_sweep">#39FF14</color>
-    <color name="radar_blip">#39FF14</color>
-    <color name="divider">#1E293B</color>
-    <color name="ripple">#1A39FF14</color>
-    <color name="shimmer">#1E293B</color>
-    <color name="pill_call_bg">#39FF14</color>
-    <color name="pill_call_text">#0B1120</color>
-    <color name="pill_video_bg">#00000000</color>
-    <color name="pill_video_border">#39FF14</color>
-    <color name="pill_video_text">#39FF14</color>
-    <color name="encrypted_bg">#1A39FF14</color>
-    <color name="encrypted_text">#39FF14</color>
-    <color name="live_badge_bg">#39FF14</color>
-    <color name="live_badge_text">#0B1120</color>
-    <color name="avatar_green_bg">#166534</color>
-    <color name="avatar_blue_bg">#1D4ED8</color>
-    <color name="gradient_mid">#0F172A</color>
-    <color name="overlay_80">#80060A14</color>
+    <!-- Core Obsidian Void & Cryo-Cyan HUD Palette -->
+    <color name="brand_primary">#050811</color>
+    <color name="brand_primary_variant">#03050B</color>
+    <color name="brand_secondary">#00F0FF</color>
+    <color name="brand_secondary_variant">#00B8D4</color>
+    <color name="brand_accent">#00F0FF</color>
+    <color name="brand_ion">#38BDF8</color>
+    <color name="brand_violet">#7C3AED</color>
+
+    <!-- Frosted Glass & Translucent Surfaces -->
+    <color name="surface_background">#050811</color>
+    <color name="surface_card">#0D1526</color>
+    <color name="surface_elevated">#142038</color>
+    <color name="surface_overlay">#CC040710</color>
+    <color name="hud_surface">#E6080E1E</color>
+    <color name="glass_surface">#CC0C1426</color>
+    <color name="glass_border">#2E38BDF8</color>
+    <color name="glass_border_active">#6600F0FF</color>
+    <color name="glass_highlight">#1AFFFFFF</color>
+
+    <!-- Typography Ink -->
+    <color name="text_primary">#F0F6FC</color>
+    <color name="text_secondary">#93A8C8</color>
+    <color name="text_tertiary">#586D8E</color>
+    <color name="text_on_primary">#040B16</color>
+    <color name="text_on_secondary">#040B16</color>
+    <color name="text_link">#00F0FF</color>
+
+    <!-- Telemetry & Link Status -->
+    <color name="status_online">#00F5A0</color>
+    <color name="status_discovering">#FFB800</color>
+    <color name="status_offline">#FF3B6B</color>
+    <color name="status_connected">#00F5A0</color>
+
+    <!-- Chat Bubbles (Semi-Transparent Frosted Glass + Soft Glow Borders) -->
+    <color name="bubble_sent">#4000F0FF</color>
+    <color name="bubble_sent_start">#4800F0FF</color>
+    <color name="bubble_sent_end">#2E0EA5E9</color>
+    <color name="bubble_sent_text">#F4FBFF</color>
+    <color name="bubble_received">#780D1830</color>
+    <color name="bubble_received_border">#667DD3FC</color>
+    <color name="bubble_received_text">#F0F6FC</color>
+    <color name="bubble_sent_time">#B8D8F5FF</color>
+    <color name="bubble_received_time">#99A8C2E0</color>
+    <color name="tick_sent">#A6CBE8FF</color>
+    <color name="tick_delivered">#FFFFFF</color>
+    <color name="tick_read">#00F5A0</color>
+    <color name="glow_bubble_sent">#9900F0FF</color>
+    <color name="glow_bubble_received">#6660A5FA</color>
+    <color name="search_highlight">#5900F0FF</color>
+
+    <!-- Chat Canvas Atmospheric Gradient -->
+    <color name="chat_wallpaper_tint">#091224</color>
+    <color name="chat_wallpaper_dot">#162544</color>
+
+    <!-- Call & Telemetry HUD -->
+    <color name="call_background">#040710</color>
+    <color name="call_accept">#00F5A0</color>
+    <color name="call_decline">#FF3B6B</color>
+    <color name="call_mute_bg">#1A00F0FF</color>
+    <color name="radar_grid">#3338BDF8</color>
+    <color name="radar_sweep">#00F0FF</color>
+    <color name="radar_blip">#00F5A0</color>
+    <color name="divider">#1F2D4A</color>
+    <color name="ripple">#2600F0FF</color>
+    <color name="shimmer">#131E36</color>
+
+    <!-- Action Pills & Badges -->
+    <color name="pill_call_bg">#00F0FF</color>
+    <color name="pill_call_text">#040B16</color>
+    <color name="pill_video_bg">#1400F0FF</color>
+    <color name="pill_video_border">#4D00F0FF</color>
+    <color name="pill_video_text">#00F0FF</color>
+    <color name="encrypted_bg">#1800F0FF</color>
+    <color name="encrypted_text">#00F0FF</color>
+    <color name="live_badge_bg">#00F5A0</color>
+    <color name="live_badge_text">#040B16</color>
+    <color name="avatar_green_bg">#0E7490</color>
+    <color name="avatar_blue_bg">#2563EB</color>
+    <color name="gradient_mid">#0B1730</color>
+    <color name="overlay_80">#CC03050B</color>
     <color name="overlay_transparent">#00000000</color>
-    <color name="pulse_ring_stroke">#4D39FF14</color>
-    <color name="pulse_ring_fill">#0039FF14</color>
+    <color name="pulse_ring_stroke">#6600F0FF</color>
+    <color name="pulse_ring_fill">#0D00F0FF</color>
 </resources>

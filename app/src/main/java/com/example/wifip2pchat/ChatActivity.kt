@@ -2,11 +2,15 @@ package com.example.wifip2pchat
 
 import android.os.Bundle
 import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -14,6 +18,8 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.snackbar.Snackbar
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
@@ -35,14 +41,27 @@ class ChatActivity : AppCompatActivity() {
     private lateinit var rvMessages: RecyclerView
     private lateinit var etMessage: EditText
     private lateinit var btnSend: MaterialButton
+    private lateinit var btnChatSearch: ImageView
     private lateinit var btnAudioCall: ImageView
     private lateinit var btnVideoCall: ImageView
     private lateinit var tvPeerName: TextView
     private lateinit var tvPeerStatus: TextView
     private lateinit var tvAvatar: TextView
+    private lateinit var searchBarContainer: LinearLayout
+    private lateinit var etSearchMessages: EditText
+    private lateinit var tvSearchCount: TextView
+    private lateinit var btnCloseSearch: ImageView
+    private lateinit var llSearchEmpty: LinearLayout
 
     private val messageAdapter = MessageAdapter()
     private val chatRepository by lazy { ChatRepository.get(this) }
+    private val searchQueryFlow = MutableStateFlow("")
+
+    private val searchBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            setSearchOpen(false)
+        }
+    }
 
     private val peerId: String? by lazy { intent.getStringExtra(EXTRA_PEER_ID) }
     private var peerName: String = "Device"
@@ -55,11 +74,18 @@ class ChatActivity : AppCompatActivity() {
         rvMessages = findViewById(R.id.rvMessages)
         etMessage = findViewById(R.id.etMessage)
         btnSend = findViewById(R.id.btnSend)
+        btnChatSearch = findViewById(R.id.btnChatSearch)
         btnAudioCall = findViewById(R.id.btnChatAudioCall)
         btnVideoCall = findViewById(R.id.btnChatVideoCall)
         tvPeerName = findViewById(R.id.tvChatPeerName)
         tvPeerStatus = findViewById(R.id.tvChatPeerStatus)
         tvAvatar = findViewById(R.id.tvChatAvatar)
+        searchBarContainer = findViewById(R.id.searchBarContainer)
+        etSearchMessages = findViewById(R.id.etSearchMessages)
+        tvSearchCount = findViewById(R.id.tvSearchCount)
+        btnCloseSearch = findViewById(R.id.btnCloseSearch)
+        llSearchEmpty = findViewById(R.id.llSearchEmpty)
+        onBackPressedDispatcher.addCallback(this, searchBackCallback)
 
         peerName = if (peerId == Constants.GROUP_PEER_ID) {
             Constants.GROUP_PEER_NAME
@@ -97,8 +123,49 @@ class ChatActivity : AppCompatActivity() {
         layoutManager.stackFromEnd = true
         rvMessages.layoutManager = layoutManager
         rvMessages.adapter = messageAdapter
+        MessageSwipeHelper.attach(rvMessages, messageAdapter) { deletedMessage ->
+            lifecycleScope.launch {
+                chatRepository.deleteMessage(deletedMessage)
+            }
+            Snackbar.make(chatRoot, "Message deleted", Snackbar.LENGTH_LONG)
+                .setAction("Undo") {
+                    lifecycleScope.launch {
+                        chatRepository.insertMessage(deletedMessage, peerId, peerName)
+                    }
+                }
+                .show()
+        }
+
+        // Glassmorphism backdrop blur & floating composer/search glow
+        GlassEffects.applyAmbientBlur(findViewById(R.id.ambientOrb1), 64f)
+        GlassEffects.applyAmbientBlur(findViewById(R.id.ambientOrb2), 72f)
+        GlassEffects.applyAmbientBlur(findViewById(R.id.ambientOrb3), 64f)
+        GlassEffects.applyGlowElevation(searchBarContainer, R.color.glow_bubble_sent, 10f)
+        GlassEffects.applyGlowElevation(findViewById(R.id.composerDock), R.color.glow_bubble_sent, 12f)
 
         findViewById<ImageView>(R.id.btnChatBack).setOnClickListener { finish() }
+        btnChatSearch.setOnClickListener {
+            val opening = searchBarContainer.visibility != View.VISIBLE
+            setSearchOpen(opening)
+        }
+        btnCloseSearch.setOnClickListener {
+            if (etSearchMessages.text?.isNotEmpty() == true) {
+                etSearchMessages.text?.clear()
+            } else {
+                setSearchOpen(false)
+            }
+        }
+        etSearchMessages.doAfterTextChanged { editable ->
+            searchQueryFlow.value = editable?.toString().orEmpty()
+        }
+        etSearchMessages.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                hideKeyboard(etSearchMessages)
+                true
+            } else {
+                false
+            }
+        }
         btnAudioCall.setOnClickListener { startCall(video = false) }
         btnVideoCall.setOnClickListener { startCall(video = true) }
         btnSend.setOnClickListener { sendCurrentMessage() }
@@ -117,6 +184,7 @@ class ChatActivity : AppCompatActivity() {
         super.onResume()
         ChatBus.activeChatPeerId = peerId
         updateConnectionUi()
+        MainActivity.sendReadReceiptStatic(peerId)
     }
 
     override fun onDestroy() {
@@ -131,11 +199,66 @@ class ChatActivity : AppCompatActivity() {
     private fun observeHistory() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                chatRepository.observeHistory(peerId).collect { history ->
-                    messageAdapter.setMessages(history)
-                    rvMessages.post { scrollToBottom() }
+                combine(
+                    chatRepository.observeHistory(peerId),
+                    searchQueryFlow
+                ) { history, query ->
+                    Pair(history, query)
+                }.collect { (history, query) ->
+                    val trimmed = query.trim()
+                    val filtered = if (trimmed.isEmpty()) {
+                        history
+                    } else {
+                        ChatSearchHelper.filter(this@ChatActivity, history, trimmed)
+                    }
+                    val prevCount = messageAdapter.itemCount
+                    messageAdapter.submitMessages(filtered, trimmed)
+                    updateSearchUi(filtered.size, trimmed)
+                    if (trimmed.isEmpty() && filtered.size > prevCount) {
+                        rvMessages.post { scrollToBottom() }
+                    }
                 }
             }
+        }
+    }
+
+    private fun setSearchOpen(open: Boolean) {
+        searchBarContainer.visibility = if (open) View.VISIBLE else View.GONE
+        searchBackCallback.isEnabled = open
+        val topDp = if (open) 74 else 14
+        val topPx = (topDp * resources.displayMetrics.density).toInt()
+        rvMessages.setPadding(
+            rvMessages.paddingLeft,
+            topPx,
+            rvMessages.paddingRight,
+            rvMessages.paddingBottom
+        )
+        if (open) {
+            etSearchMessages.requestFocus()
+            etSearchMessages.post {
+                val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+                imm?.showSoftInput(etSearchMessages, InputMethodManager.SHOW_IMPLICIT)
+            }
+        } else {
+            etSearchMessages.text?.clear()
+            searchQueryFlow.value = ""
+            hideKeyboard(etSearchMessages)
+        }
+    }
+
+    private fun hideKeyboard(view: View) {
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(view.windowToken, 0)
+    }
+
+    private fun updateSearchUi(visibleCount: Int, query: String) {
+        if (query.isNotEmpty()) {
+            tvSearchCount.visibility = View.VISIBLE
+            tvSearchCount.text = if (visibleCount == 1) "1 hit" else "$visibleCount hits"
+            llSearchEmpty.visibility = if (visibleCount == 0) View.VISIBLE else View.GONE
+        } else {
+            tvSearchCount.visibility = View.GONE
+            llSearchEmpty.visibility = View.GONE
         }
     }
 
@@ -187,6 +310,9 @@ class ChatActivity : AppCompatActivity() {
             chatRepository.insertMessage(message, peerId, peerName)
         }
         etMessage.text.clear()
+        if (searchQueryFlow.value.isNotBlank()) {
+            setSearchOpen(false)
+        }
     }
 
     // ======================== Calling ========================

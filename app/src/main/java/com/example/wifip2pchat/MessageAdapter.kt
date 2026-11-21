@@ -1,6 +1,5 @@
 package com.example.wifip2pchat
 
-import android.text.format.DateUtils
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -12,9 +11,6 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * RecyclerView adapter for binding and displaying sent and received [ChatMessage] items.
@@ -30,8 +26,7 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.MessageViewHolder>() 
     }
 
     private val messages = mutableListOf<ChatMessage>()
-    private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
-    private val dateTimeFormat = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault())
+    private var activeQuery: String = ""
 
     override fun getItemViewType(position: Int): Int {
         return if (messages[position].isSentByMe) VIEW_TYPE_SENT else VIEW_TYPE_RECEIVED
@@ -43,6 +38,21 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.MessageViewHolder>() 
     }
 
     fun setMessages(history: List<ChatMessage>) {
+        submitMessages(history, activeQuery)
+    }
+
+    fun submitMessages(history: List<ChatMessage>, query: String) {
+        val normalizedQuery = query.trim()
+        val queryChanged = normalizedQuery != activeQuery
+        activeQuery = normalizedQuery
+
+        if (queryChanged) {
+            messages.clear()
+            messages.addAll(history)
+            notifyDataSetChanged()
+            return
+        }
+
         val oldList = messages.toList()
         val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
             override fun getOldListSize(): Int = oldList.size
@@ -70,6 +80,15 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.MessageViewHolder>() 
         messages.clear()
         messages.addAll(history)
         diff.dispatchUpdatesTo(this)
+    }
+
+    fun getMessageAt(position: Int): ChatMessage? = messages.getOrNull(position)
+
+    fun removeAt(position: Int): ChatMessage? {
+        if (position !in messages.indices) return null
+        val removed = messages.removeAt(position)
+        notifyItemRemoved(position)
+        return removed
     }
 
     fun clear() {
@@ -104,14 +123,19 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.MessageViewHolder>() 
 
         fun bind(message: ChatMessage) {
             val ctx = itemView.context
-            tvMessage.text = message.text
-            tvTimestamp.text = if (DateUtils.isToday(message.timestamp)) {
-                timeFormat.format(Date(message.timestamp))
+            val isSent = viewType == VIEW_TYPE_SENT || message.isSentByMe
+            val formattedTime = message.formattedTimestamp(ctx)
+            val highlightColor = ContextCompat.getColor(ctx, R.color.search_highlight)
+
+            tvMessage.text = ChatSearchHelper.highlight(message.text, activeQuery, highlightColor)
+            tvTimestamp.visibility = View.VISIBLE
+            tvTimestamp.text = ChatSearchHelper.highlight(formattedTime, activeQuery, highlightColor)
+            tvTimestamp.contentDescription = if (isSent) {
+                "Sent at $formattedTime"
             } else {
-                dateTimeFormat.format(Date(message.timestamp))
+                "Received at $formattedTime"
             }
 
-            val isSent = viewType == VIEW_TYPE_SENT || message.isSentByMe
             val sideMarginPx = (48 * ctx.resources.displayMetrics.density).toInt()
             val lp = bubbleContainer.layoutParams as FrameLayout.LayoutParams
             if (isSent) {
@@ -127,6 +151,7 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.MessageViewHolder>() 
 
             if (isSent) {
                 bubbleContainer.setBackgroundResource(R.drawable.bubble_sent)
+                GlassEffects.applyGlowElevation(bubbleContainer, R.color.glow_bubble_sent, 10f)
                 tvSenderName.visibility = View.GONE
                 tvMessage.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_sent_text))
                 tvTimestamp.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_sent_time))
@@ -150,6 +175,7 @@ class MessageAdapter : RecyclerView.Adapter<MessageAdapter.MessageViewHolder>() 
                 }
             } else {
                 bubbleContainer.setBackgroundResource(R.drawable.bubble_received)
+                GlassEffects.applyGlowElevation(bubbleContainer, R.color.glow_bubble_received, 7f)
                 val sender = message.senderName?.takeIf { it.isNotBlank() }
                 if (sender != null) {
                     tvSenderName.text = sender

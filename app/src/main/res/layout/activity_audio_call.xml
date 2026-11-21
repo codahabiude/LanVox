@@ -1,81 +1,235 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent" android:layout_height="match_parent"
-    android:background="@drawable/call_gradient_bg">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent"
-        android:orientation="vertical" android:gravity="center"
-        android:paddingHorizontal="24dp" android:paddingTop="48dp" android:paddingBottom="32dp">
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="@string/encrypted_short" android:textSize="11sp" android:textColor="@color/brand_secondary"
-            android:fontFamily="sans-serif-medium" android:background="@drawable/pill_green_small"
-            android:paddingHorizontal="12dp" android:paddingVertical="4dp" android:layout_marginBottom="32dp"/>
-        <FrameLayout android:layout_width="120dp" android:layout_height="120dp" android:layout_marginBottom="24dp">
-            <View android:layout_width="120dp" android:layout_height="120dp" android:layout_gravity="center"
-                android:background="@drawable/pulse_ring" android:alpha="0.6"/>
-            <TextView android:id="@+id/ivAvatar" android:layout_width="96dp" android:layout_height="96dp"
-                android:layout_gravity="center" android:gravity="center" android:textSize="40sp"
-                android:textColor="@color/text_on_primary" android:fontFamily="sans-serif-medium"
-                android:background="@drawable/circle_green_avatar" android:text="L"/>
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="LIVE" android:textSize="8sp" android:textColor="@color/live_badge_text"
-                android:fontFamily="sans-serif-medium" android:background="@drawable/live_badge"
-                android:paddingHorizontal="5dp" android:paddingVertical="2dp" android:layout_gravity="bottom|end"/>
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/chat_wallpaper_tile">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:paddingHorizontal="24dp"
+        android:paddingTop="48dp"
+        android:paddingBottom="32dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/encrypted_short"
+            android:textSize="11sp"
+            android:textColor="@color/brand_secondary"
+            android:fontFamily="@font/jetbrains_mono"
+            android:background="@drawable/pill_green_small"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="5dp"
+            android:layout_marginBottom="32dp" />
+
+        <FrameLayout
+            android:layout_width="136dp"
+            android:layout_height="136dp"
+            android:layout_marginBottom="24dp">
+
+            <View
+                android:layout_width="136dp"
+                android:layout_height="136dp"
+                android:layout_gravity="center"
+                android:background="@drawable/pulse_ring" />
+
+            <TextView
+                android:id="@+id/ivAvatar"
+                android:layout_width="96dp"
+                android:layout_height="96dp"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:textSize="38sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_on_primary"
+                android:fontFamily="@font/space_grotesk"
+                android:background="@drawable/circle_green_avatar"
+                android:text="L" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="LIVE"
+                android:textSize="9sp"
+                android:textStyle="bold"
+                android:textColor="@color/live_badge_text"
+                android:fontFamily="@font/jetbrains_mono"
+                android:background="@drawable/live_badge"
+                android:paddingHorizontal="7dp"
+                android:paddingVertical="2dp"
+                android:layout_gravity="bottom|end" />
         </FrameLayout>
-        <TextView android:id="@+id/tvCallerName" android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="Peer" android:textSize="22sp" android:textColor="@color/text_primary"
-            android:fontFamily="sans-serif-medium" android:layout_marginBottom="6dp"/>
-        <TextView android:id="@+id/tvCallDuration" android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="00:00" android:textSize="48sp" android:textColor="@color/brand_secondary"
-            android:fontFamily="sans-serif-medium" android:letterSpacing="0.04" android:layout_marginBottom="6dp"/>
-        <TextView android:id="@+id/tvCallStatus" android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="Connecting…" android:textSize="13sp" android:textColor="@color/text_secondary"
-            android:layout_marginBottom="48dp"/>
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:orientation="horizontal" android:gravity="center" android:layout_marginBottom="40dp">
-            <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-                android:orientation="vertical" android:gravity="center">
-                <com.google.android.material.button.MaterialButton android:id="@+id/btnMute"
-                    android:layout_width="56dp" android:layout_height="56dp" android:insetTop="0dp"
-                    android:insetBottom="0dp" android:insetLeft="0dp" android:insetRight="0dp"
-                    app:cornerRadius="28dp" app:backgroundTint="@color/call_mute_bg"
-                    app:strokeColor="@color/brand_secondary" app:strokeWidth="1.5dp"
-                    app:icon="@drawable/ic_mic" app:iconGravity="textStart" app:iconPadding="0dp"
-                    app:iconTint="@color/brand_secondary" app:iconSize="24dp"/>
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="Mute" android:textSize="11sp" android:textColor="@color/text_secondary" android:layout_marginTop="6dp"/>
+
+        <TextView
+            android:id="@+id/tvCallerName"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Peer"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_primary"
+            android:fontFamily="@font/space_grotesk"
+            android:layout_marginBottom="6dp" />
+
+        <TextView
+            android:id="@+id/tvCallDuration"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="00:00"
+            android:textSize="48sp"
+            android:textColor="@color/brand_secondary"
+            android:fontFamily="@font/jetbrains_mono"
+            android:letterSpacing="0.06"
+            android:layout_marginBottom="6dp" />
+
+        <TextView
+            android:id="@+id/tvCallStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Connecting…"
+            android:textSize="13sp"
+            android:fontFamily="@font/jetbrains_mono"
+            android:textColor="@color/text_secondary"
+            android:layout_marginBottom="44dp" />
+
+        <!-- Glassmorphic Call Control Deck -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:background="@drawable/bg_glass_card"
+            android:paddingVertical="18dp"
+            android:paddingHorizontal="12dp"
+            android:layout_marginBottom="28dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnMute"
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:insetLeft="0dp"
+                    android:insetRight="0dp"
+                    app:cornerRadius="28dp"
+                    app:backgroundTint="@color/call_mute_bg"
+                    app:strokeColor="@color/glass_border_active"
+                    app:strokeWidth="1.5dp"
+                    app:icon="@drawable/ic_mic"
+                    app:iconGravity="textStart"
+                    app:iconPadding="0dp"
+                    app:iconTint="@color/brand_secondary"
+                    app:iconSize="24dp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Mute"
+                    android:textSize="11sp"
+                    android:fontFamily="@font/space_grotesk"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginTop="6dp" />
             </LinearLayout>
-            <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-                android:orientation="vertical" android:gravity="center">
-                <com.google.android.material.button.MaterialButton android:id="@+id/btnSpeaker"
-                    android:layout_width="56dp" android:layout_height="56dp" android:insetTop="0dp"
-                    android:insetBottom="0dp" android:insetLeft="0dp" android:insetRight="0dp"
-                    app:cornerRadius="28dp" app:backgroundTint="@color/call_mute_bg"
-                    app:strokeColor="@color/brand_secondary" app:strokeWidth="1.5dp"
-                    app:icon="@drawable/ic_volume" app:iconGravity="textStart" app:iconPadding="0dp"
-                    app:iconTint="@color/brand_secondary" app:iconSize="24dp"/>
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="Speaker" android:textSize="11sp" android:textColor="@color/text_secondary" android:layout_marginTop="6dp"/>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnSpeaker"
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:insetLeft="0dp"
+                    android:insetRight="0dp"
+                    app:cornerRadius="28dp"
+                    app:backgroundTint="@color/call_mute_bg"
+                    app:strokeColor="@color/glass_border_active"
+                    app:strokeWidth="1.5dp"
+                    app:icon="@drawable/ic_volume"
+                    app:iconGravity="textStart"
+                    app:iconPadding="0dp"
+                    app:iconTint="@color/brand_secondary"
+                    app:iconSize="24dp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Speaker"
+                    android:textSize="11sp"
+                    android:fontFamily="@font/space_grotesk"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginTop="6dp" />
             </LinearLayout>
-            <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-                android:orientation="vertical" android:gravity="center">
-                <com.google.android.material.button.MaterialButton android:id="@+id/btnVideo"
-                    android:layout_width="56dp" android:layout_height="56dp" android:insetTop="0dp"
-                    android:insetBottom="0dp" android:insetLeft="0dp" android:insetRight="0dp"
-                    app:cornerRadius="28dp" app:backgroundTint="@color/call_mute_bg"
-                    app:strokeColor="@color/brand_secondary" app:strokeWidth="1.5dp"
-                    app:icon="@drawable/ic_videocam" app:iconGravity="textStart" app:iconPadding="0dp"
-                    app:iconTint="@color/brand_secondary" app:iconSize="24dp"/>
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="Video" android:textSize="11sp" android:textColor="@color/text_secondary" android:layout_marginTop="6dp"/>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnVideo"
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:insetLeft="0dp"
+                    android:insetRight="0dp"
+                    app:cornerRadius="28dp"
+                    app:backgroundTint="@color/call_mute_bg"
+                    app:strokeColor="@color/glass_border_active"
+                    app:strokeWidth="1.5dp"
+                    app:icon="@drawable/ic_videocam"
+                    app:iconGravity="textStart"
+                    app:iconPadding="0dp"
+                    app:iconTint="@color/brand_secondary"
+                    app:iconSize="24dp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Video"
+                    android:textSize="11sp"
+                    android:fontFamily="@font/space_grotesk"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginTop="6dp" />
             </LinearLayout>
         </LinearLayout>
-        <com.google.android.material.button.MaterialButton android:id="@+id/btnEndCall"
-            android:layout_width="match_parent" android:layout_height="52dp" android:text="@string/end_call"
-            android:textAllCaps="false" android:textSize="16sp" android:textColor="@color/text_primary"
-            android:fontFamily="sans-serif-medium" android:insetTop="0dp" android:insetBottom="0dp"
-            app:cornerRadius="999dp" app:backgroundTint="@color/call_decline"
-            app:icon="@drawable/ic_phone_off" app:iconGravity="textStart" app:iconSize="20dp"
-            app:iconTint="@color/text_primary"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnEndCall"
+            android:layout_width="match_parent"
+            android:layout_height="54dp"
+            android:text="@string/end_call"
+            android:textAllCaps="false"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_primary"
+            android:fontFamily="@font/space_grotesk"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            app:cornerRadius="999dp"
+            app:backgroundTint="@color/call_decline"
+            app:icon="@drawable/ic_phone_off"
+            app:iconGravity="textStart"
+            app:iconSize="20dp"
+            app:iconTint="@color/text_primary" />
     </LinearLayout>
 </FrameLayout>

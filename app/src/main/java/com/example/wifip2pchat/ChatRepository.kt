@@ -6,6 +6,18 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 
 /**
+ * One row in the chats list — a conversation with a single contact device.
+ */
+data class Conversation(
+    val peerId: String,
+    val peerName: String?,
+    val lastText: String,
+    val lastIsSentByMe: Boolean,
+    val lastTimestamp: Long,
+    val messageCount: Int
+)
+
+/**
  * Repository abstracting local Room persistence for chat threads and messages.
  */
 class ChatRepository(private val dao: ChatMessageDao) {
@@ -64,6 +76,37 @@ class ChatRepository(private val dao: ChatMessageDao) {
 
     suspend fun count(peerId: String? = null): Int =
         if (peerId == null) dao.countAll() else dao.countForPeer(peerId)
+
+    suspend fun markThreadDelivered(peerId: String) {
+        if (peerId.isBlank()) return
+        dao.updateOutgoingStatus(
+            peerId = peerId,
+            newStatus = MessageStatus.DELIVERED.name,
+            fromStatuses = listOf(MessageStatus.SENT.name)
+        )
+    }
+
+    suspend fun markThreadRead(peerId: String) {
+        if (peerId.isBlank()) return
+        dao.updateOutgoingStatus(
+            peerId = peerId,
+            newStatus = MessageStatus.READ.name,
+            fromStatuses = listOf(MessageStatus.SENT.name, MessageStatus.DELIVERED.name)
+        )
+    }
+
+    suspend fun deleteMessage(message: ChatMessage) {
+        val rowId = message.id.removePrefix("room_").toLongOrNull()
+        if (rowId != null) {
+            dao.deleteById(rowId)
+        } else {
+            dao.deleteBySignature(
+                timestamp = message.timestamp,
+                text = message.text,
+                isSent = if (message.isSentByMe) 1 else 0
+            )
+        }
+    }
 
     suspend fun clearConversation(peerId: String) {
         dao.deleteConversation(peerId)

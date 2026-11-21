@@ -42,7 +42,7 @@ class OnboardingAdapter(
 
         fun bind(page: OnboardingPage) {
             ivIcon.setImageResource(page.iconResId)
-            ivIcon.setColorFilter(ivIcon.context.getColor(R.color.brand_primary))
+            ivIcon.setColorFilter(ivIcon.context.getColor(R.color.brand_secondary))
             tvTitle.text = page.title
             tvDescription.text = page.description
         }
