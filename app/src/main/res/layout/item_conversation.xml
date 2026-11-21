@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="horizontal" android:gravity="center_vertical"
+    android:paddingHorizontal="16dp" android:paddingVertical="12dp"
+    android:background="?attr/selectableItemBackground">
+    <FrameLayout android:layout_width="48dp" android:layout_height="48dp">
+        <TextView android:id="@+id/tvAvatar" android:layout_width="48dp" android:layout_height="48dp"
+            android:gravity="center" android:textSize="20sp" android:textStyle="bold"
+            android:textColor="@color/text_on_primary" android:fontFamily="sans-serif-medium"
+            android:background="@drawable/circle_green_avatar"/>
+        <View android:layout_width="12dp" android:layout_height="12dp"
+            android:layout_gravity="bottom|end" android:background="@drawable/online_dot"/>
+    </FrameLayout>
+    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+        android:orientation="vertical" android:layout_marginStart="14dp">
+        <TextView android:id="@+id/tvConvName" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="16sp" android:textColor="@color/text_primary" android:fontFamily="sans-serif-medium"
+            android:maxLines="1" android:ellipsize="end"/>
+        <TextView android:id="@+id/tvConvPreview" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="2dp" android:textSize="13sp" android:textColor="@color/text_secondary"
+            android:maxLines="1" android:ellipsize="end"/>
+    </LinearLayout>
+    <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:orientation="vertical" android:gravity="end" android:layout_marginStart="10dp">
+        <TextView android:id="@+id/tvConvTime" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:textSize="11sp" android:textColor="@color/text_tertiary"/>
+        <TextView android:id="@+id/tvConvCount" android:layout_width="22dp" android:layout_height="22dp"
+            android:layout_marginTop="6dp" android:gravity="center" android:textSize="11sp"
+            android:textColor="@color/text_on_primary" android:fontFamily="sans-serif-medium"
+            android:background="@drawable/unread_badge" android:visibility="gone"/>
+    </LinearLayout>
+</LinearLayout>

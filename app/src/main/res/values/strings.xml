@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LANVOX</string>
+    <string name="tagline">Secure Offline Calling</string>
+    <string name="status_disabled">Wi-Fi Direct Disabled</string>
+    <string name="status_enabled">Ready to discover</string>
+    <string name="status_discovering">Scanning for nearby devices…</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_offline_mode">0 MB Used · Offline</string>
+    <string name="btn_discover">Discover Devices</string>
+    <string name="btn_disconnect">Disconnect</string>
+    <string name="btn_audio_call">Call</string>
+    <string name="btn_video_call">Video</string>
+    <string name="btn_send">Send</string>
+    <string name="hint_message">Message</string>
+    <string name="section_devices">Nearby Devices</string>
+    <string name="section_messages">Messages</string>
+    <string name="section_scanner">Device Scanner</string>
+    <string name="call_connecting">Connecting…</string>
+    <string name="call_ringing">Incoming call…</string>
+    <string name="call_active">Active Call</string>
+    <string name="call_ended">Call Ended</string>
+    <string name="call_incoming">Incoming Call</string>
+    <string name="mute">Mute</string>
+    <string name="unmute">Unmute</string>
+    <string name="speaker_on">Speaker On</string>
+    <string name="speaker_off">Speaker Off</string>
+    <string name="end_call">End Call</string>
+    <string name="switch_camera">Flip</string>
+    <string name="accept">Accept</string>
+    <string name="decline">Decline</string>
+    <string name="encrypted">End-to-End Encrypted</string>
+    <string name="encrypted_short">Encrypted · Offline</string>
+    <string name="permission_rationale">Location and nearby device permissions are required for peer discovery. Camera and microphone are needed for calls.</string>
+    <string name="error_no_wifi">Please enable Wi-Fi first</string>
+    <string name="error_not_connected">Connect to a peer first</string>
+    <string name="error_already_connected">Already connected — disconnect first</string>
+</resources>

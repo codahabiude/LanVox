@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp" android:height="48dp"
+    android:viewportWidth="48" android:viewportHeight="48">
+    <path android:pathData="M0,0h48v48h-48z" android:fillColor="@color/chat_wallpaper_tint"/>
+    <path android:pathData="M6,6 m-1.4,0 a1.4,1.4 0 1 0 2.8,0 a1.4,1.4 0 1 0 -2.8,0" android:fillColor="@color/chat_wallpaper_dot"/>
+    <path android:pathData="M24,6 m-1.4,0 a1.4,1.4 0 1 0 2.8,0 a1.4,1.4 0 1 0 -2.8,0" android:fillColor="@color/chat_wallpaper_dot"/>
+    <path android:pathData="M42,6 m-1.4,0 a1.4,1.4 0 1 0 2.8,0 a1.4,1.4 0 1 0 -2.8,0" android:fillColor="@color/chat_wallpaper_dot"/>
+    <path android:pathData="M6,24 m-1.4,0 a1.4,1.4 0 1 0 2.8,0 a1.4,1.4 0 1 0 -2.8,0" android:fillColor="@color/chat_wallpaper_dot"/>
+    <path android:pathData="M24,24 m-1.4,0 a1.4,1.4 0 1 0 2.8,0 a1.4,1.4 0 1 0 -2.8,0" android:fillColor="@color/chat_wallpaper_dot"/>
+    <path android:pathData="M42,24 m-1.4,0 a1.4,1.4 0 1 0 2.8,0 a1.4,1.4 0 1 0 -2.8,0" android:fillColor="@color/chat_wallpaper_dot"/>
+    <path android:pathData="M6,42 m-1.4,0 a1.4,1.4 0 1 0 2.8,0 a1.4,1.4 0 1 0 -2.8,0" android:fillColor="@color/chat_wallpaper_dot"/>
+    <path android:pathData="M24,42 m-1.4,0 a1.4,1.4 0 1 0 2.8,0 a1.4,1.4 0 1 0 -2.8,0" android:fillColor="@color/chat_wallpaper_dot"/>
+    <path android:pathData="M42,42 m-1.4,0 a1.4,1.4 0 1 0 2.8,0 a1.4,1.4 0 1 0 -2.8,0" android:fillColor="@color/chat_wallpaper_dot"/>
+</vector>

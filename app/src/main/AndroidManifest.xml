@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- WiFi Direct required permissions -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+
+    <!-- Audio call permissions -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- Video call permissions -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Foreground service for calls -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"
+        tools:targetApi="u" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA"
+        tools:targetApi="u" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
+        tools:targetApi="u" />
+
+    <!-- Vibrate for incoming calls -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Receive calls & messages while the app is closed -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <uses-feature android:name="android.hardware.wifi.direct" android:required="true" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Lanvox">
+
+        <!-- Splash screen (launcher) -->
+        <activity
+            android:name=".SplashActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Lanvox.Splash">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Main activity -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false" />
+
+        <!-- Chats list (all conversations) -->
+        <activity
+            android:name=".ChatsActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity"
+            android:windowSoftInputMode="adjustPan" />
+
+        <!-- Per-contact chat thread -->
+        <activity
+            android:name=".ChatActivity"
+            android:exported="false"
+            android:parentActivityName=".ChatsActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- Onboarding tutorial -->
+        <activity
+            android:name=".OnboardingActivity"
+            android:exported="false" />
+
+        <!-- Incoming call screen -->
+        <activity
+            android:name=".IncomingCallActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Lanvox.Call"
+            android:screenOrientation="portrait"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true" />
+
+        <!-- Audio call screen -->
+        <activity
+            android:name=".AudioCallActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Lanvox.Call"
+            android:screenOrientation="portrait"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true" />
+
+        <!-- Video call screen -->
+        <activity
+            android:name=".VideoCallActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Lanvox.Call"
+            android:screenOrientation="portrait"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true" />
+
+        <!-- Chat server service -->
+        <service
+            android:name=".ChatServerService"
+            android:exported="false" />
+
+        <!-- Audio streaming foreground service -->
+        <service
+            android:name=".AudioCallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Video streaming foreground service -->
+        <service
+            android:name=".VideoCallService"
+            android:exported="false"
+            android:foregroundServiceType="camera|microphone" />
+
+        <!-- Standby listener: receives calls & messages while the app is closed -->
+        <service
+            android:name=".CallListenerService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- Auto-start the standby listener after boot / app update -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>

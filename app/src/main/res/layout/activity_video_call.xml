@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:background="#000000">
+    <SurfaceView android:id="@+id/surfaceRemote" android:layout_width="match_parent" android:layout_height="match_parent"/>
+    <com.google.android.material.card.MaterialCardView android:layout_width="120dp" android:layout_height="160dp"
+        android:layout_gravity="top|end" android:layout_marginTop="56dp" android:layout_marginEnd="12dp"
+        app:cardCornerRadius="14dp" app:cardElevation="0dp">
+        <SurfaceView android:id="@+id/surfaceLocal" android:layout_width="match_parent" android:layout_height="match_parent"/>
+    </com.google.android.material.card.MaterialCardView>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:gravity="center_horizontal" android:paddingTop="20dp"
+        android:paddingBottom="14dp" android:background="@drawable/call_gradient_top_overlay">
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/encrypted_short" android:textSize="10sp" android:textColor="@color/brand_secondary"
+            android:fontFamily="sans-serif-medium" android:background="@drawable/pill_green_small"
+            android:paddingHorizontal="10dp" android:paddingVertical="3dp" android:layout_marginBottom="8dp"/>
+        <TextView android:id="@+id/tvCallerName" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="Connected Peer" android:textSize="18sp" android:textColor="@color/text_primary"
+            android:fontFamily="sans-serif-medium" android:shadowColor="#80000000" android:shadowRadius="4"/>
+        <TextView android:id="@+id/tvCallDuration" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="00:00" android:textSize="13sp" android:textColor="@color/brand_secondary"
+            android:fontFamily="sans-serif-medium"/>
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_gravity="bottom" android:orientation="horizontal" android:gravity="center"
+        android:paddingHorizontal="24dp" android:paddingVertical="24dp" android:background="@drawable/call_gradient_bottom_overlay">
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnMute"
+            android:layout_width="52dp" android:layout_height="52dp" android:layout_marginEnd="16dp"
+            android:insetTop="0dp" android:insetBottom="0dp" android:insetLeft="0dp" android:insetRight="0dp"
+            app:cornerRadius="26dp" app:backgroundTint="@color/call_mute_bg"
+            app:strokeColor="@color/brand_secondary" app:strokeWidth="1.5dp" app:icon="@drawable/ic_mic"
+            app:iconGravity="textStart" app:iconPadding="0dp" app:iconTint="@color/brand_secondary" app:iconSize="22dp"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnEndCall"
+            android:layout_width="64dp" android:layout_height="64dp" android:layout_marginEnd="16dp"
+            android:insetTop="0dp" android:insetBottom="0dp" android:insetLeft="0dp" android:insetRight="0dp"
+            app:cornerRadius="32dp" app:backgroundTint="@color/call_decline" app:icon="@drawable/ic_phone_off"
+            app:iconGravity="textStart" app:iconPadding="0dp" app:iconTint="@color/text_primary" app:iconSize="26dp"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnSwitchCamera"
+            android:layout_width="52dp" android:layout_height="52dp" android:layout_marginEnd="16dp"
+            android:insetTop="0dp" android:insetBottom="0dp" android:insetLeft="0dp" android:insetRight="0dp"
+            app:cornerRadius="26dp" app:backgroundTint="@color/call_mute_bg"
+            app:strokeColor="@color/brand_secondary" app:strokeWidth="1.5dp" app:icon="@drawable/ic_camera_flip"
+            app:iconGravity="textStart" app:iconPadding="0dp" app:iconTint="@color/brand_secondary" app:iconSize="22dp"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnSpeaker"
+            android:layout_width="52dp" android:layout_height="52dp" android:insetTop="0dp"
+            android:insetBottom="0dp" android:insetLeft="0dp" android:insetRight="0dp"
+            app:cornerRadius="26dp" app:backgroundTint="@color/call_mute_bg"
+            app:strokeColor="@color/brand_secondary" app:strokeWidth="1.5dp" app:icon="@drawable/ic_volume"
+            app:iconGravity="textStart" app:iconPadding="0dp" app:iconTint="@color/brand_secondary" app:iconSize="22dp"/>
+    </LinearLayout>
+</FrameLayout>
