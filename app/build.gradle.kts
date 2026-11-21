@@ -1,6 +1,5 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 android {
@@ -15,23 +14,19 @@ android {
         versionName = "5.0"
     }
 
-    // Use a persistent debug keystore when building locally (so successive
-    // local builds sign identically and can update each other without
-    // uninstalling). On CI (GitHub Actions) the env var is absent, so the
-    // default ephemeral debug keystore is used — unchanged behaviour there.
     signingConfigs {
-        getByName("debug") {
-            val ks = System.getenv("LANVOX_DEBUG_KEYSTORE")
-            if (ks != null) {
-                storeFile = file(ks)
-                storePassword = "lanvoxdebug"
-                keyAlias = "lanvox"
-                keyPassword = "lanvoxdebug"
-            }
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debugConfig")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -45,10 +40,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
     }
 
     buildFeatures {
