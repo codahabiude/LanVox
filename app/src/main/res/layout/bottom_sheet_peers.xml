@@ -25,11 +25,26 @@
         android:orientation="horizontal"
         android:layout_marginBottom="12dp">
 
-        <com.example.wifip2pchat.RadarView
-            android:id="@+id/sheetRadarView"
-            android:layout_width="54dp"
-            android:layout_height="54dp"
-            android:layout_marginEnd="14dp" />
+        <FrameLayout
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:layout_marginEnd="10dp"
+            android:clipChildren="false">
+
+            <View
+                android:id="@+id/sheetRadarPulse"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:layout_gravity="center"
+                android:background="@drawable/pulse_ring"
+                android:visibility="invisible" />
+
+            <com.example.wifip2pchat.RadarView
+                android:id="@+id/sheetRadarView"
+                android:layout_width="54dp"
+                android:layout_height="54dp"
+                android:layout_gravity="center" />
+        </FrameLayout>
 
         <LinearLayout
             android:layout_width="0dp"
@@ -84,7 +99,7 @@
     <!-- Glass Peers Card Container -->
     <com.google.android.material.card.MaterialCardView
         android:layout_width="match_parent"
-        android:layout_height="268dp"
+        android:layout_height="312dp"
         android:layout_marginBottom="16dp"
         app:cardBackgroundColor="@color/surface_card"
         app:cardCornerRadius="20dp"
@@ -106,51 +121,99 @@
 
             <LinearLayout
                 android:id="@+id/llSheetPeersEmpty"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_gravity="center"
                 android:gravity="center"
                 android:orientation="vertical"
-                android:paddingHorizontal="24dp">
+                android:paddingHorizontal="24dp"
+                android:paddingVertical="12dp">
 
-                <FrameLayout
-                    android:layout_width="68dp"
-                    android:layout_height="68dp"
-                    android:layout_marginBottom="12dp">
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="228dp"
+                    android:layout_height="122dp"
+                    android:layout_marginBottom="14dp"
+                    app:cardBackgroundColor="@color/surface_card"
+                    app:cardCornerRadius="18dp"
+                    app:cardElevation="0dp"
+                    app:strokeColor="@color/glass_border"
+                    app:strokeWidth="1dp">
 
-                    <View
+                    <FrameLayout
                         android:layout_width="match_parent"
                         android:layout_height="match_parent"
-                        android:background="@drawable/pulse_ring" />
+                        android:clipChildren="false">
 
-                    <ImageView
-                        android:layout_width="30dp"
-                        android:layout_height="30dp"
-                        android:layout_gravity="center"
-                        android:contentDescription="@string/sheet_peers_empty_title"
-                        android:src="@drawable/ic_search"
-                        android:tint="@color/brand_secondary" />
-                </FrameLayout>
+                        <ImageView
+                            android:id="@+id/ivSheetEmptyIllustration"
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:alpha="0.92"
+                            android:contentDescription="@string/cd_empty_peers_illustration"
+                            android:scaleType="centerCrop"
+                            android:src="@drawable/img_no_peers_empty" />
+
+                        <View
+                            android:id="@+id/sheetEmptyPulseRing"
+                            android:layout_width="76dp"
+                            android:layout_height="76dp"
+                            android:layout_gravity="center"
+                            android:background="@drawable/pulse_ring"
+                            android:visibility="invisible" />
+
+                        <com.example.wifip2pchat.RadarView
+                            android:id="@+id/sheetEmptyRadarView"
+                            android:layout_width="68dp"
+                            android:layout_height="68dp"
+                            android:layout_gravity="center"
+                            android:background="@drawable/radar_bg" />
+                    </FrameLayout>
+                </com.google.android.material.card.MaterialCardView>
 
                 <TextView
+                    android:id="@+id/tvSheetEmptyTitle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="4dp"
+                    android:layout_marginBottom="6dp"
                     android:fontFamily="@font/space_grotesk"
-                    android:textStyle="bold"
                     android:text="@string/sheet_peers_empty_title"
                     android:textColor="@color/text_primary"
-                    android:textSize="15sp" />
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
 
                 <TextView
+                    android:id="@+id/tvSheetEmptySubtitle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_marginBottom="16dp"
+                    android:fontFamily="@font/plus_jakarta_sans"
                     android:gravity="center"
                     android:lineSpacingExtra="3dp"
-                    android:fontFamily="@font/plus_jakarta_sans"
                     android:text="@string/sheet_peers_empty_subtitle"
                     android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
+                    android:textSize="12.5sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnSheetEmptyScan"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:fontFamily="@font/space_grotesk"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minWidth="168dp"
+                    android:paddingHorizontal="24dp"
+                    android:text="@string/btn_start_scan"
+                    android:textAllCaps="false"
+                    android:textColor="@color/text_on_primary"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="@color/brand_secondary"
+                    app:cornerRadius="999dp"
+                    app:icon="@drawable/ic_search"
+                    app:iconGravity="textStart"
+                    app:iconPadding="8dp"
+                    app:iconSize="18dp"
+                    app:iconTint="@color/text_on_primary" />
             </LinearLayout>
         </FrameLayout>
     </com.google.android.material.card.MaterialCardView>

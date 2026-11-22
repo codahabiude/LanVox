@@ -105,6 +105,9 @@ interface ChatMessageDao {
     @Query("UPDATE messages SET status = :newStatus WHERE peer_id = :peerId AND is_sent = 1 AND status IN (:fromStatuses)")
     suspend fun updateOutgoingStatus(peerId: String, newStatus: String, fromStatuses: List<String>): Int
 
+    @Query("UPDATE messages SET attachment_path = :attachmentPath, attachment_state = :attachmentState WHERE transfer_id = :transferId")
+    suspend fun updateAttachmentByTransferId(transferId: String, attachmentPath: String?, attachmentState: String): Int
+
     @Query("DELETE FROM messages WHERE _id = :id")
     suspend fun deleteById(id: Long): Int
 

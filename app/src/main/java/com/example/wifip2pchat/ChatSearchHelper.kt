@@ -69,6 +69,12 @@ object ChatSearchHelper {
 
             val fullHaystack = buildString {
                 append(msg.text)
+                if (!msg.attachmentName.isNullOrBlank()) {
+                    append(' ').append(msg.attachmentName)
+                }
+                if (!msg.attachmentMime.isNullOrBlank()) {
+                    append(' ').append(msg.attachmentMime)
+                }
                 if (!msg.senderName.isNullOrBlank()) {
                     append(' ').append(msg.senderName)
                 }

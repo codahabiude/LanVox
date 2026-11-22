@@ -313,9 +313,18 @@
             android:layout_marginBottom="10dp">
 
             <FrameLayout
-                android:layout_width="92dp"
-                android:layout_height="92dp"
-                android:layout_marginEnd="14dp">
+                android:layout_width="96dp"
+                android:layout_height="96dp"
+                android:layout_marginEnd="12dp"
+                android:clipChildren="false">
+
+                <View
+                    android:id="@+id/inlineRadarPulse"
+                    android:layout_width="86dp"
+                    android:layout_height="86dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/pulse_ring"
+                    android:visibility="invisible" />
 
                 <com.example.wifip2pchat.RadarView
                     android:id="@+id/radarView"
@@ -392,7 +401,7 @@
 
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
-            android:layout_height="140dp"
+            android:layout_height="168dp"
             app:cardCornerRadius="18dp"
             app:cardElevation="0dp"
             app:strokeColor="@color/glass_border"
@@ -411,16 +420,85 @@
                     android:clipToPadding="false"
                     android:scrollbars="none" />
 
-                <TextView
-                    android:id="@+id/tvPeersEmpty"
-                    android:layout_width="wrap_content"
+                <LinearLayout
+                    android:id="@+id/llInlinePeersEmpty"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_gravity="center"
-                    android:gravity="center"
-                    android:text="No devices nearby yet.\nTap Scan to discover."
-                    android:textSize="13sp"
-                    android:textColor="@color/text_tertiary"
-                    android:lineSpacingExtra="3dp" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="14dp"
+                    android:paddingVertical="10dp">
+
+                    <com.google.android.material.card.MaterialCardView
+                        android:layout_width="110dp"
+                        android:layout_height="84dp"
+                        android:layout_marginEnd="14dp"
+                        app:cardBackgroundColor="@color/surface_card"
+                        app:cardCornerRadius="14dp"
+                        app:cardElevation="0dp"
+                        app:strokeColor="@color/glass_border"
+                        app:strokeWidth="1dp">
+
+                        <ImageView
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:contentDescription="@string/cd_empty_peers_illustration"
+                            android:scaleType="centerCrop"
+                            android:src="@drawable/img_no_peers_empty" />
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:id="@+id/tvPeersEmpty"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="@font/space_grotesk"
+                            android:text="@string/sheet_peers_empty_title"
+                            android:textColor="@color/text_primary"
+                            android:textSize="14sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/tvPeersEmptySub"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:layout_marginBottom="8dp"
+                            android:fontFamily="@font/plus_jakarta_sans"
+                            android:lineSpacingExtra="2dp"
+                            android:maxLines="2"
+                            android:text="@string/sheet_peers_empty_subtitle"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="11.5sp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnInlineEmptyScan"
+                            android:layout_width="wrap_content"
+                            android:layout_height="48dp"
+                            android:fontFamily="@font/space_grotesk"
+                            android:insetTop="4dp"
+                            android:insetBottom="4dp"
+                            android:paddingHorizontal="16dp"
+                            android:text="@string/btn_start_scan"
+                            android:textAllCaps="false"
+                            android:textColor="@color/text_on_primary"
+                            android:textSize="12.5sp"
+                            android:textStyle="bold"
+                            app:backgroundTint="@color/brand_secondary"
+                            app:cornerRadius="999dp"
+                            app:icon="@drawable/ic_search"
+                            app:iconGravity="textStart"
+                            app:iconPadding="6dp"
+                            app:iconSize="16dp"
+                            app:iconTint="@color/text_on_primary" />
+                    </LinearLayout>
+                </LinearLayout>
             </FrameLayout>
         </com.google.android.material.card.MaterialCardView>
     </LinearLayout>
@@ -651,10 +729,20 @@
             android:layout_marginBottom="12dp"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:paddingStart="16dp"
+            android:paddingStart="6dp"
             android:paddingEnd="6dp"
             android:paddingVertical="5dp"
             android:background="@drawable/bg_glass_composer">
+
+            <ImageView
+                android:id="@+id/btnAttach"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/cd_attach_file"
+                android:padding="13dp"
+                android:src="@drawable/ic_attach"
+                android:tint="@color/brand_secondary" />
 
             <EditText
                 android:id="@+id/etMessage"

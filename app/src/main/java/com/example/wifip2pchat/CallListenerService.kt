@@ -88,6 +88,8 @@ class CallListenerService : Service() {
 
         @Volatile
         private var pendingCallType: String? = null
+        @Volatile
+        private var pendingCallerIp: String? = null
 
         /**
          * Called by MainActivity the moment the connection hub opens so the
@@ -271,6 +273,7 @@ class CallListenerService : Service() {
             return
         }
         serverSocket = server
+        FileTransferManager.configureSession(applicationContext, isGroupOwner = true, hostAddress = null)
         Log.d(TAG, "Standby listening on port ${Constants.CHAT_PORT} (group owner)")
 
         // Safety: unblock as soon as the app becomes alive
@@ -310,6 +313,7 @@ class CallListenerService : Service() {
         try {
             val sock = Socket()
             sock.connect(InetSocketAddress(goAddress, Constants.CHAT_PORT), 4_000)
+            FileTransferManager.configureSession(applicationContext, isGroupOwner = false, hostAddress = goAddress)
             Log.d(TAG, "Standby: connected to group owner at $goAddress")
             adoptSocket(sock)
             readFrom(sock) // blocks until EOF
@@ -415,10 +419,14 @@ class CallListenerService : Service() {
                 }
             }
             payload.startsWith(Constants.MSG_TYPE_CALL_REQUEST) -> {
+                val rawReq = payload.removePrefix(Constants.MSG_TYPE_CALL_REQUEST)
+                val callType = rawReq.substringBefore('|')
+                val callerIp = rawReq.substringAfter('|', "").takeIf { it.isNotBlank() }
                 onIncomingCall(
-                    callType = payload.removePrefix(Constants.MSG_TYPE_CALL_REQUEST),
+                    callType = callType,
                     peerId = senderId,
-                    callerName = senderName
+                    callerName = senderName,
+                    callerIp = callerIp
                 )
             }
             payload.startsWith(Constants.MSG_TYPE_CALL_END) -> {
@@ -456,6 +464,9 @@ class CallListenerService : Service() {
                 val cleanText = payload.removePrefix(Constants.MSG_TYPE_TEXT)
                 onIncomingText(cleanText, senderId, senderName, recipientId)
             }
+            payload.startsWith(Constants.MSG_TYPE_FILE) -> {
+                onIncomingFile(payload, senderId, senderName, recipientId)
+            }
             else -> {
                 if (env == null) {
                     onIncomingText(payload, senderId, senderName, recipientId)
@@ -471,18 +482,25 @@ class CallListenerService : Service() {
     private fun onIncomingCall(
         callType: String,
         peerId: String,
-        callerName: String
+        callerName: String,
+        callerIp: String?
     ) {
         if (pendingCallType != null) {
             Log.d(TAG, "Already ringing — ignoring second call request")
             return
         }
         pendingCallType = callType
+        pendingCallerIp = callerIp
+        val connectHost = callerIp
+            ?: PeerRegistry.ipFor(peerId)
+            ?: LastSession.groupOwnerAddress(this@CallListenerService)
+        // When callerIp is explicitly given, caller acts as call host & callee connects directly.
+        val actAsCallHost = if (!callerIp.isNullOrBlank()) false else LastSession.isGroupOwner(this@CallListenerService)
 
         val callLabel =
             if (callType == Constants.CALL_TYPE_VIDEO) "video call" else "audio call"
 
-        Log.d(TAG, "Incoming $callLabel from $callerName — ringing (app closed)")
+        Log.d(TAG, "Incoming $callLabel from $callerName (host=$connectHost) — ringing (app closed)")
 
         // Ring with sound + vibration (also wakes the user up)
         CallRingtoneManager.startRinging(this)
@@ -491,14 +509,8 @@ class CallListenerService : Service() {
             this, 1001,
             Intent(this, IncomingCallActivity::class.java).apply {
                 putExtra(IncomingCallActivity.EXTRA_CALL_TYPE, callType)
-                putExtra(
-                    IncomingCallActivity.EXTRA_IS_GROUP_OWNER,
-                    LastSession.isGroupOwner(this@CallListenerService)
-                )
-                putExtra(
-                    IncomingCallActivity.EXTRA_HOST_ADDRESS,
-                    LastSession.groupOwnerAddress(this@CallListenerService)
-                )
+                putExtra(IncomingCallActivity.EXTRA_IS_GROUP_OWNER, actAsCallHost)
+                putExtra(IncomingCallActivity.EXTRA_HOST_ADDRESS, connectHost)
                 putExtra(IncomingCallActivity.EXTRA_CALLER_NAME, callerName)
                 putExtra(IncomingCallActivity.EXTRA_PEER_ID, peerId)
                 addFlags(
@@ -622,6 +634,72 @@ class CallListenerService : Service() {
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(senderName)
             .setContentText(text)
+            .setContentIntent(openThread)
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .build()
+        try {
+            notificationManager?.notify(NOTIF_MSG_ID_BASE + (threadId.hashCode() and 0x3FF), notification)
+        } catch (_: Exception) {}
+    }
+
+    private fun onIncomingFile(
+        payload: String,
+        senderId: String,
+        senderName: String,
+        recipientId: String
+    ) {
+        val offer = FileTransferManager.FileOffer.fromPayload(payload) ?: return
+        val threadId = if (recipientId == Constants.RECIPIENT_BROADCAST && senderId != "unknown") {
+            Constants.GROUP_PEER_ID
+        } else {
+            senderId
+        }
+        val threadName = if (threadId == Constants.GROUP_PEER_ID) {
+            Constants.GROUP_PEER_NAME
+        } else {
+            senderName
+        }
+        val displaySender = if (threadId == Constants.GROUP_PEER_ID) senderName else null
+        val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize)
+
+        scope.launch {
+            try {
+                val repo = ChatRepository.get(applicationContext)
+                repo.insertMessage(
+                    ChatMessage(
+                        text = summary,
+                        isSentByMe = false,
+                        senderName = displaySender,
+                        attachmentName = offer.fileName,
+                        attachmentMime = offer.mimeType,
+                        attachmentSize = offer.fileSize,
+                        attachmentState = AttachmentState.TRANSFERRING,
+                        transferId = offer.transferId
+                    ),
+                    threadId,
+                    threadName
+                )
+                val savedFile = FileTransferManager.downloadOffer(applicationContext, offer, senderId)
+                val state = if (savedFile != null) AttachmentState.COMPLETED else AttachmentState.FAILED
+                repo.updateAttachmentState(offer.transferId, savedFile?.absolutePath, state)
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not handle standby file offer: ${e.message}")
+            }
+        }
+
+        val openThread = PendingIntent.getActivity(
+            this, 1004,
+            Intent(this, ChatActivity::class.java)
+                .putExtra(ChatActivity.EXTRA_PEER_ID, threadId)
+                .putExtra(ChatActivity.EXTRA_PEER_NAME, threadName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(senderName)
+            .setContentText(summary)
             .setContentIntent(openThread)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)

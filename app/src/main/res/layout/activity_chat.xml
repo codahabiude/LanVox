@@ -279,10 +279,20 @@
             android:layout_marginBottom="12dp"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:paddingStart="16dp"
+            android:paddingStart="6dp"
             android:paddingEnd="6dp"
             android:paddingVertical="5dp"
             android:background="@drawable/bg_glass_composer">
+
+            <ImageView
+                android:id="@+id/btnAttach"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/cd_attach_file"
+                android:padding="13dp"
+                android:src="@drawable/ic_attach"
+                android:tint="@color/brand_secondary" />
 
             <EditText
                 android:id="@+id/etMessage"

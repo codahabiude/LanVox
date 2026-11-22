@@ -16,6 +16,10 @@ object Constants {
     // Port for video call streaming
     const val VIDEO_PORT = 8990
 
+    // Port for peer-to-peer file transfers
+    const val FILE_PORT = 8991
+    const val MAX_FILE_TRANSFER_BYTES = 250L * 1024L * 1024L
+
     // Intent actions
     const val ACTION_MESSAGE_RECEIVED = "com.example.lanvox.MESSAGE_RECEIVED"
     const val ACTION_INCOMING_CALL = "com.example.lanvox.INCOMING_CALL"
@@ -53,6 +57,7 @@ object Constants {
 
     // Message type prefixes for multiplexing on the chat channel
     const val MSG_TYPE_TEXT = "TEXT:"
+    const val MSG_TYPE_FILE = "FILE:"
     const val MSG_TYPE_ACK = "ACK:"
     const val MSG_TYPE_READ = "READ:"
     const val MSG_TYPE_CALL_REQUEST = "CALL_REQ:"
@@ -82,6 +87,8 @@ object Constants {
     const val PAYLOAD_HELLO = "HELLO"
     const val PAYLOAD_BYE = "BYE"
     const val PAYLOAD_PEERS = "PEERS:"
+    const val MSG_ID_PREFIX = "MID:"
+    const val NSD_SERVICE_TYPE = "_lanvox._tcp."
 
     // Special "peer ID" used for the group-wide broadcast chat thread.
     const val GROUP_PEER_ID = "__group__"

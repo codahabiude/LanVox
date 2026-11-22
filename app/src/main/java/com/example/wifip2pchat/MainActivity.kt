@@ -79,9 +79,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             staticInstance?.sendControlMessage(message)
         }
 
-        /** True when a WiFi Direct connection is live. */
+        /** True when a Wi-Fi Direct or LAN mesh connection is live. */
         fun isConnectedStatic(): Boolean =
-            staticInstance?.wifiManager?.isConnected == true
+            staticInstance?.isNetworkConnected() == true
 
         /** True when the currently connected peer IS the given contact. */
         fun currentPeerMatches(peerId: String?): Boolean =
@@ -111,17 +111,23 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             instance.sendReadReceipt(threadPeerId)
         }
 
-        fun startAudioCallStatic(): Boolean {
+        fun startAudioCallStatic(
+            targetPeerId: String? = null,
+            targetPeerName: String? = null
+        ): Boolean {
             val instance = staticInstance ?: return false
-            if (!instance.wifiManager.isConnected) return false
-            instance.startAudioCall()
+            if (!instance.isNetworkConnected()) return false
+            instance.startAudioCall(targetPeerId, targetPeerName)
             return true
         }
 
-        fun startVideoCallStatic(): Boolean {
+        fun startVideoCallStatic(
+            targetPeerId: String? = null,
+            targetPeerName: String? = null
+        ): Boolean {
             val instance = staticInstance ?: return false
-            if (!instance.wifiManager.isConnected) return false
-            instance.startVideoCall()
+            if (!instance.isNetworkConnected()) return false
+            instance.startVideoCall(targetPeerId, targetPeerName)
             return true
         }
 
@@ -142,7 +148,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         /** Send a control line through the live app channel, if it exists. */
         fun sendControlIfPossible(message: String): Boolean {
             val inst = staticInstance ?: return false
-            if (!inst.wifiManager.isConnected) return false
+            if (!inst.isNetworkConnected()) return false
             inst.sendControlMessage(message)
             return true
         }
@@ -150,8 +156,21 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         /** Send a control line addressed to a specific peer (e.g. CALL_ACCEPT / CALL_REJECT / CALL_END). */
         fun sendControlToPeerStatic(peerId: String?, message: String): Boolean {
             val inst = staticInstance ?: return false
-            if (!inst.wifiManager.isConnected) return false
+            if (!inst.isNetworkConnected()) return false
             inst.sendControlMessage(message, peerId)
+            return true
+        }
+
+        /** Send a picked file URI from any chat thread screen to the specified peer or group. */
+        fun sendFileToStatic(
+            recipientId: String,
+            threadPeerId: String,
+            threadPeerName: String,
+            uri: Uri
+        ): Boolean {
+            val inst = staticInstance ?: return false
+            if (!inst.isNetworkConnected()) return false
+            inst.sendFileFromUri(uri, recipientId, threadPeerId, threadPeerName)
             return true
         }
     }
@@ -169,7 +188,10 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private lateinit var scannerPanel: LinearLayout
     private lateinit var tvScanHint: TextView
     private lateinit var rvPeers: RecyclerView
+    private lateinit var llInlinePeersEmpty: View
     private lateinit var tvPeersEmpty: TextView
+    private lateinit var tvPeersEmptySub: TextView
+    private lateinit var btnInlineEmptyScan: MaterialButton
     private lateinit var progressConnecting: View
     private lateinit var tvStoragePill: TextView
     private lateinit var btnChats: ImageView
@@ -187,10 +209,12 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private lateinit var rvMessages: RecyclerView
     private lateinit var llMessagesEmpty: LinearLayout
     private lateinit var etMessage: EditText
+    private lateinit var btnAttach: ImageView
     private lateinit var btnSend: MaterialButton
 
     // --- Radar ---
     private var radarView: RadarView? = null
+    private var inlineRadarPulse: View? = null
     private var isScannerExpanded = false
     private var latestPeers: List<WifiP2pDevice> = emptyList()
     private var peerPickerSheet: PeerPickerBottomSheet? = null
@@ -201,15 +225,37 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         onCallClick = { device -> onPeerCallClicked(device) },
         onVideoClick = { device -> onPeerVideoClicked(device) }
     )
-    private val messageAdapter = MessageAdapter()
+    private val messageAdapter = MessageAdapter { msg -> openChatAttachment(msg) }
 
-    // --- WiFi Direct ---
+    private val filePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        if (!isNetworkConnected()) {
+            showSnackbar("Connect to a peer first before sending files")
+            return@registerForActivityResult
+        }
+        val threadPeerId = activeThreadPeerId()
+        val threadPeerName = activeThreadPeerName()
+        val recipient = if (threadPeerId == Constants.GROUP_PEER_ID) {
+            Constants.RECIPIENT_BROADCAST
+        } else {
+            threadPeerId
+        }
+        sendFileFromUri(uri, recipient, threadPeerId, threadPeerName)
+    }
+
+    // --- WiFi Direct & Local Mesh ---
     private val wifiManager: WiFiDirectManager by lazy { WiFiDirectManager(this, this) }
     private var broadcastReceiver: WiFiDirectBroadcastReceiver? = null
+    private var localMeshDiscovery: LocalMeshDiscovery? = null
 
-    // --- Chat channel ---
-    private var chatClient: ChatClient? = null
+    // --- Discovery & Failover state ---
     private var isDiscovering = false
+    @Volatile private var userInitiatedDisconnect = false
+    private var pendingFailoverTargetId: String? = null
+    private var pendingFailoverTargetName: String? = null
+    private var lastP2pNonGoPeers: List<PeerRegistry.Peer> = emptyList()
 
     // --- Peer resolution / chat opening ---
     private var pendingChatOpen = false
@@ -217,6 +263,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private var pendingDiscoveryAfterPermission = false
     private var pendingConnectDeviceAfterPermission: WifiP2pDevice? = null
     private var pendingCallVideoAfterPermission: Boolean? = null
+    private var pendingCallTargetPeerId: String? = null
+    private var pendingCallTargetPeerName: String? = null
 
     // --- Runtime permission launcher ---
     private val permissionLauncher = registerForActivityResult(
@@ -232,13 +280,20 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             ) == PackageManager.PERMISSION_GRANTED
 
             if (hasAudio && hasCamera) {
+                val targetId = pendingCallTargetPeerId
+                val targetName = pendingCallTargetPeerName
                 pendingCallVideoAfterPermission = null
-                if (needsVideo) launchVideoCall() else launchAudioCall()
+                pendingCallTargetPeerId = null
+                pendingCallTargetPeerName = null
+                if (needsVideo) launchVideoCall(targetId, targetName)
+                else launchAudioCall(targetId, targetName)
             } else if (results.keys.any {
                     it == Manifest.permission.RECORD_AUDIO || it == Manifest.permission.CAMERA
                 }
             ) {
                 pendingCallVideoAfterPermission = null
+                pendingCallTargetPeerId = null
+                pendingCallTargetPeerName = null
                 val neededLabel = if (needsVideo) "microphone and camera" else "microphone"
                 showSnackbar(
                     "Allow $neededLabel permission to place calls",
@@ -342,16 +397,24 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             }
         }
 
-        // Whenever the peer registry changes (a new client HELLOs, a client
-        // drops, or the GO broadcasts a PEERS list), refresh the empty-state
-        // hint so the user knows the group size.
+        // Initialize stable collision-free identity and start symmetric mesh + NSD discovery
+        PeerRegistry.selfId = DeviceIdentity.getId(this)
+        PeerRegistry.selfName = DeviceIdentity.defaultDeviceName()
+        PeerRegistry.selfIpAddress = DeviceIdentity.resolveLocalIp()
+        startChatServer()
+        FileTransferManager.ensureServerRunning(applicationContext)
+        startLocalMeshDiscovery()
+
         peerRegistryListener = PeerRegistry.addListener {
+            val allPeers = PeerRegistry.snapshot()
+            lastP2pNonGoPeers = allPeers.filter { !it.isGroupOwner && it.transport == "p2p" }
             val groupSize = PeerRegistry.snapshotIncludingSelf().size
             tvPeersEmpty.text = if (groupSize > 1) {
                 "Group has $groupSize members — open Chats to talk"
             } else {
                 "No devices nearby yet.\nTap Discover to scan."
             }
+            refreshNetworkConnectionUi()
         }
 
         // Hand the standby listener over: while this screen is alive the app
@@ -382,9 +445,11 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         peerRegistryListener = null
         peerPickerSheet?.dismiss()
         peerPickerSheet = null
+        localMeshDiscovery?.stop()
+        localMeshDiscovery = null
         super.onDestroy()
+        FileTransferManager.stopSession()
         wifiManager.stopDiscovery()
-        chatClient?.disconnect()
         stopChatServer()
     }
 
@@ -403,7 +468,10 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         scannerPanel = findViewById(R.id.scannerPanel)
         tvScanHint = findViewById(R.id.tvScanHint)
         rvPeers = findViewById(R.id.rvPeers)
+        llInlinePeersEmpty = findViewById(R.id.llInlinePeersEmpty)
         tvPeersEmpty = findViewById(R.id.tvPeersEmpty)
+        tvPeersEmptySub = findViewById(R.id.tvPeersEmptySub)
+        btnInlineEmptyScan = findViewById(R.id.btnInlineEmptyScan)
         progressConnecting = findViewById(R.id.progressConnecting)
         tvStoragePill = findViewById(R.id.tvStoragePill)
         btnChats = findViewById(R.id.btnChats)
@@ -421,6 +489,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         rvMessages = findViewById(R.id.rvMessages)
         llMessagesEmpty = findViewById(R.id.llMessagesEmpty)
         etMessage = findViewById(R.id.etMessage)
+        btnAttach = findViewById(R.id.btnAttach)
         btnSend = findViewById(R.id.btnSend)
 
         rvPeers.layoutManager = LinearLayoutManager(this)
@@ -470,7 +539,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
         // Radar view
         radarView = findViewById(R.id.radarView)
-        radarView?.startSweeping()
+        inlineRadarPulse = findViewById(R.id.inlineRadarPulse)
 
         // Glassmorphism backdrop blur & luminous HUD glow
         GlassEffects.applyAmbientBlur(findViewById(R.id.ambientOrb1), 64f)
@@ -510,10 +579,18 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         activeChatHeader.setOnClickListener { openChannelsScreen() }
         btnMoreOptions.setOnClickListener { showMoreActionsSheet() }
         btnDiscover.setOnClickListener { toggleDiscovery() }
+        btnInlineEmptyScan.setOnClickListener { toggleDiscovery() }
         btnToggleDevices.setOnClickListener { showPeerPickerBottomSheet() }
         btnDisconnect.setOnClickListener { disconnect() }
         btnAudioCall.setOnClickListener { startAudioCall() }
         btnVideoCall.setOnClickListener { startVideoCall() }
+        btnAttach.setOnClickListener {
+            if (!wifiManager.isConnected) {
+                showSnackbar("Connect to a peer first to send files")
+            } else {
+                filePickerLauncher.launch(arrayOf("*/*"))
+            }
+        }
         btnSend.setOnClickListener { sendCurrentMessage() }
         etMessage.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEND) {
@@ -673,18 +750,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private fun toggleDiscovery() {
         if (isDiscovering) {
             wifiManager.stopDiscovery()
-            isDiscovering = false
-            btnDiscover.text = getString(R.string.btn_scan_short)
-            tvStatus.text = if (wifiManager.isP2pEnabled) {
-                getString(R.string.status_enabled)
-            } else {
-                getString(R.string.status_disabled)
-            }
-            tvScanHint.text = tvStatus.text
-            statusIndicator.setBackgroundResource(
-                if (wifiManager.isP2pEnabled) R.drawable.circle_green else R.drawable.circle_red
-            )
-            refreshPeerPickerBottomSheet()
+            stopDiscoveryUiState(updateStatusText = !wifiManager.isConnected)
             return
         }
 
@@ -706,10 +772,68 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         wifiManager.startDiscovery()
         isDiscovering = true
         btnDiscover.text = "Stop"
+        btnDiscover.setIconResource(R.drawable.ic_close)
+        radarView?.startSweeping()
+        inlineRadarPulse?.let { pulseView ->
+            pulseView.visibility = View.VISIBLE
+            if (pulseView.animation == null) {
+                pulseView.startAnimation(
+                    android.view.animation.AnimationUtils.loadAnimation(this, R.anim.pulse_scan)
+                )
+            }
+        }
         tvStatus.text = getString(R.string.status_discovering)
         tvScanHint.text = getString(R.string.status_discovering)
         statusIndicator.setBackgroundResource(R.drawable.circle_orange)
+        updateInlinePeersEmptyState()
         showPeerPickerBottomSheet()
+    }
+
+    private fun stopDiscoveryUiState(updateStatusText: Boolean) {
+        isDiscovering = false
+        btnDiscover.text = getString(R.string.btn_scan_short)
+        btnDiscover.setIconResource(R.drawable.ic_search)
+        btnDiscover.clearAnimation()
+        radarView?.stopSweeping()
+        inlineRadarPulse?.clearAnimation()
+        inlineRadarPulse?.visibility = View.INVISIBLE
+
+        if (updateStatusText) {
+            tvStatus.text = if (wifiManager.isP2pEnabled) {
+                getString(R.string.status_enabled)
+            } else {
+                getString(R.string.status_disabled)
+            }
+            tvScanHint.text = tvStatus.text
+            statusIndicator.setBackgroundResource(
+                if (wifiManager.isP2pEnabled) R.drawable.circle_green else R.drawable.circle_red
+            )
+        } else {
+            tvScanHint.text = if (isNetworkConnected()) {
+                getString(R.string.status_connected)
+            } else if (wifiManager.isP2pEnabled) {
+                getString(R.string.status_enabled)
+            } else {
+                getString(R.string.status_disabled)
+            }
+        }
+        updateInlinePeersEmptyState()
+        refreshPeerPickerBottomSheet()
+    }
+
+    private fun updateInlinePeersEmptyState() {
+        val showEmpty = latestPeers.isEmpty()
+        llInlinePeersEmpty.visibility = if (showEmpty) View.VISIBLE else View.GONE
+        if (!showEmpty) return
+        if (isDiscovering) {
+            tvPeersEmpty.setText(R.string.sheet_peers_scanning_empty_title)
+            tvPeersEmptySub.setText(R.string.sheet_peers_scanning_empty_subtitle)
+            btnInlineEmptyScan.visibility = View.GONE
+        } else {
+            tvPeersEmpty.setText(R.string.sheet_peers_empty_title)
+            tvPeersEmptySub.setText(R.string.sheet_peers_empty_subtitle)
+            btnInlineEmptyScan.visibility = View.VISIBLE
+        }
     }
 
     private fun showPeerPickerBottomSheet() {
@@ -721,19 +845,19 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             onToggleScan = { toggleDiscovery() },
             onDisconnect = { disconnect() }
         ).also { peerPickerSheet = it }
-        sheet.show(latestPeers, isDiscovering, wifiManager.isConnected)
+        sheet.show(latestPeers, isDiscovering, isNetworkConnected())
     }
 
     private fun refreshPeerPickerBottomSheet() {
         peerPickerSheet?.takeIf { it.isShowing() }
-            ?.updateState(latestPeers, isDiscovering, wifiManager.isConnected)
+            ?.updateState(latestPeers, isDiscovering, isNetworkConnected())
     }
 
     private fun showMoreActionsSheet() {
         MainActionsBottomSheet.show(
             context = this,
             storedMessageCount = storedCount,
-            isConnected = wifiManager.isConnected,
+            isConnected = isNetworkConnected(),
             isScannerExpanded = isScannerExpanded,
             onExportChats = { exportChatToFile() },
             onToggleRadar = { setScannerExpanded(!isScannerExpanded) },
@@ -759,17 +883,43 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
     // ======================== Peer Connection ========================
 
+    private fun isNetworkConnected(): Boolean =
+        wifiManager.isConnected || ChatServerService.hasConnectedPeers()
+
+    private fun refreshNetworkConnectionUi() {
+        val connected = isNetworkConnected()
+        if (connected) {
+            tvStatus.text = getString(R.string.status_connected)
+            statusIndicator.setBackgroundResource(R.drawable.circle_green)
+        } else if (!isDiscovering) {
+            tvStatus.text = if (wifiManager.isP2pEnabled) {
+                getString(R.string.status_enabled)
+            } else {
+                getString(R.string.status_disconnected)
+            }
+            statusIndicator.setBackgroundResource(
+                if (wifiManager.isP2pEnabled) R.drawable.circle_green else R.drawable.circle_orange
+            )
+        }
+        updateCallButtons()
+        updateActiveChatHeader()
+        ChatBus.notifyConnectionChanged(connected)
+        refreshPeerPickerBottomSheet()
+    }
+
     private fun onPeerClicked(device: WifiP2pDevice) {
         val name = device.deviceName.ifBlank { device.deviceAddress }
 
-        // Tapping the device we are already connected to re-opens its chat
-        if (wifiManager.isConnected) {
-            if (device.deviceAddress == currentPeerId) {
+        if (isNetworkConnected()) {
+            if (device.deviceAddress == currentPeerId || PeerRegistry.nameFor(device.deviceAddress) != null) {
                 openChat(device.deviceAddress, name)
-            } else {
-                showSnackbar("Already connected — disconnect first")
+                return
             }
-            return
+            // If we are Group Owner, we can invite additional peers into the existing group
+            if (wifiManager.isGroupOwner) {
+                connectToPeer(device)
+                return
+            }
         }
 
         pendingConnectDeviceAfterPermission = device
@@ -780,6 +930,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     }
 
     private fun connectToPeer(device: WifiP2pDevice) {
+        userInitiatedDisconnect = false
         val name = device.deviceName.ifBlank { device.deviceAddress }
         progressConnecting.visibility = View.VISIBLE
         showSnackbar("Connecting to $name…")
@@ -787,29 +938,32 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     }
 
     private fun onPeerCallClicked(device: WifiP2pDevice) {
-        if (!wifiManager.isConnected) {
+        if (!isNetworkConnected()) {
             onPeerClicked(device)
             return
         }
-        startAudioCall()
+        val name = device.deviceName.ifBlank { device.deviceAddress }
+        startAudioCall(device.deviceAddress, name)
     }
 
     private fun onPeerVideoClicked(device: WifiP2pDevice) {
-        if (!wifiManager.isConnected) {
+        if (!isNetworkConnected()) {
             onPeerClicked(device)
             return
         }
-        startVideoCall()
+        val name = device.deviceName.ifBlank { device.deviceAddress }
+        startVideoCall(device.deviceAddress, name)
     }
 
     private fun disconnect() {
+        userInitiatedDisconnect = true
+        pendingFailoverTargetId = null
+        pendingFailoverTargetName = null
         wifiManager.disconnect()
-        chatClient?.disconnect()
-        chatClient = null
-        stopChatServer()
+        ChatServerService.disconnectTransport("p2p")
         clearCurrentPeer()
         LastSession.clearRole(this)
-        updateCallButtons()
+        refreshNetworkConnectionUi()
         showSnackbar("Disconnected — chat history saved on this phone")
     }
 
@@ -866,18 +1020,57 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         ChatServerService.onMessageReceived = { env ->
             dispatchIncomingEnvelope(env)
         }
+        ChatServerService.onMeshPeersChanged = {
+            refreshNetworkConnectionUi()
+        }
+    }
+
+    private fun startLocalMeshDiscovery() {
+        if (localMeshDiscovery != null) return
+        localMeshDiscovery = LocalMeshDiscovery(
+            context = applicationContext,
+            onPeerDiscovered = { peerId, peerName, hostIp, _ ->
+                if (peerId != PeerRegistry.selfId) {
+                    PeerRegistry.upsert(
+                        PeerRegistry.Peer(
+                            id = peerId,
+                            name = peerName,
+                            isGroupOwner = false,
+                            ipAddress = hostIp,
+                            transport = "lan"
+                        )
+                    )
+                    if (PeerRegistry.selfId < peerId) {
+                        ChatServerService.connectToPeer(
+                            hostIp = hostIp,
+                            peerIdHint = peerId,
+                            peerNameHint = peerName,
+                            isGroupOwnerUplink = false,
+                            transport = "lan"
+                        )
+                    }
+                    runOnUiThread { refreshNetworkConnectionUi() }
+                }
+            },
+            onPeerLost = { peerId ->
+                PeerRegistry.remove(peerId)
+                runOnUiThread { refreshNetworkConnectionUi() }
+            }
+        ).also {
+            it.start(PeerRegistry.selfId, PeerRegistry.selfName)
+        }
     }
 
     /**
-     * Single multiplexer for every envelope arriving on the chat channel
-     * (GO server, client socket, or forwarded by the standby listener).
+     * Single multiplexer for every envelope arriving on the mesh chat channel
+     * or forwarded by the standby listener.
      */
     private fun dispatchIncomingEnvelope(env: Envelope) {
         val payload = env.payload
         when {
             payload.startsWith(Constants.MSG_TYPE_CALL_REQUEST) -> {
-                val callType = payload.removePrefix(Constants.MSG_TYPE_CALL_REQUEST)
-                handleIncomingCallRequest(callType, env.senderId, env.senderName)
+                val rawReq = payload.removePrefix(Constants.MSG_TYPE_CALL_REQUEST)
+                handleIncomingCallRequest(rawReq, env.senderId, env.senderName)
             }
             payload.startsWith(Constants.MSG_TYPE_CALL_ACCEPT) -> {
                 Log.d(TAG, "Call accepted by ${env.senderName}")
@@ -896,6 +1089,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             payload.startsWith(Constants.MSG_TYPE_TEXT) -> {
                 val text = payload.removePrefix(Constants.MSG_TYPE_TEXT)
                 onIncomingText(text, env.senderId, env.senderName, env.recipientId)
+            }
+            payload.startsWith(Constants.MSG_TYPE_FILE) -> {
+                onIncomingFile(payload, env.senderId, env.senderName, env.recipientId)
             }
             payload.startsWith(Constants.MSG_TYPE_ACK) -> {
                 val scope = payload.removePrefix(Constants.MSG_TYPE_ACK)
@@ -927,9 +1123,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
     /**
      * Legacy raw-line dispatcher — only used by the standby listener
-     * (CallListenerService) which may receive lines from a v4 (pre-envelope)
-     * peer. Wraps the line as a broadcast envelope so the new dispatcher
-     * can still handle it.
+     * (CallListenerService) which may receive lines from a pre-envelope peer.
      */
     private fun dispatchIncomingLine(msg: String) {
         val env = Envelope(
@@ -943,17 +1137,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
     private fun stopChatServer() {
         ChatServerService.onMessageReceived = null
+        ChatServerService.onMeshPeersChanged = null
         stopService(Intent(this, ChatServerService::class.java))
-    }
-
-    private fun connectAsClient(hostAddress: String) {
-        chatClient?.disconnect()
-        chatClient = ChatClient(this).also { client ->
-            client.onEnvelopeReceived = { env ->
-                dispatchIncomingEnvelope(env)
-            }
-            client.connect(hostAddress)
-        }
     }
 
     /**
@@ -1010,11 +1195,123 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
     }
 
+    private fun onIncomingFile(
+        payload: String,
+        senderId: String,
+        senderName: String,
+        recipientId: String
+    ) {
+        val offer = FileTransferManager.FileOffer.fromPayload(payload) ?: return
+        val threadPeerId = if (recipientId == Constants.RECIPIENT_BROADCAST) {
+            Constants.GROUP_PEER_ID
+        } else {
+            senderId
+        }
+        val threadPeerName = if (recipientId == Constants.RECIPIENT_BROADCAST) {
+            Constants.GROUP_PEER_NAME
+        } else {
+            senderName
+        }
+        val displaySender = if (recipientId == Constants.RECIPIENT_BROADCAST) senderName else null
+        val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize)
+
+        val message = ChatMessage(
+            text = summary,
+            isSentByMe = false,
+            senderName = displaySender,
+            attachmentName = offer.fileName,
+            attachmentMime = offer.mimeType,
+            attachmentSize = offer.fileSize,
+            attachmentState = AttachmentState.TRANSFERRING,
+            transferId = offer.transferId
+        )
+
+        lifecycleScope.launch {
+            chatRepository.insertMessage(message, threadPeerId, threadPeerName)
+            ChatBus.notifyMessageSaved(message, threadPeerId)
+
+            val savedFile = FileTransferManager.downloadOffer(applicationContext, offer, senderId)
+            val newState = if (savedFile != null) AttachmentState.COMPLETED else AttachmentState.FAILED
+            chatRepository.updateAttachmentState(offer.transferId, savedFile?.absolutePath, newState)
+            if (savedFile == null) {
+                runOnUiThread {
+                    showSnackbar("Failed to receive ${offer.fileName}")
+                }
+            }
+        }
+
+        if (envIsDirectOrKnown(senderId)) {
+            val scopeSuffix = if (recipientId == Constants.RECIPIENT_BROADCAST) Constants.GROUP_PEER_ID else ""
+            sendControlMessage(Constants.MSG_TYPE_ACK + scopeSuffix, senderId)
+            val isActivelyViewing = ChatBus.activeChatPeerId == threadPeerId ||
+                (threadPeerId == activeThreadPeerId() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+            if (isActivelyViewing) {
+                sendControlMessage(Constants.MSG_TYPE_READ + scopeSuffix, senderId)
+            }
+        }
+
+        if (ChatBus.activeChatPeerId != threadPeerId &&
+            threadPeerId != activeThreadPeerId() &&
+            lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        ) {
+            showSnackbar("Incoming file from $senderName: ${offer.fileName}")
+        }
+    }
+
+    private fun openChatAttachment(message: ChatMessage) {
+        val error = FileTransferManager.openAttachment(this, message)
+        if (error != null) {
+            showSnackbar(error)
+        }
+    }
+
+    private fun sendFileFromUri(
+        uri: Uri,
+        recipientId: String,
+        threadPeerId: String,
+        threadPeerName: String
+    ) {
+        lifecycleScope.launch {
+            val stagedResult = FileTransferManager.stageFromUri(applicationContext, uri)
+            val staged = stagedResult.getOrElse { err ->
+                showSnackbar(err.message ?: "Could not attach selected file")
+                return@launch
+            }
+            val offer = staged.offer
+            val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize)
+            val msg = ChatMessage(
+                text = summary,
+                isSentByMe = true,
+                attachmentName = offer.fileName,
+                attachmentMime = offer.mimeType,
+                attachmentSize = offer.fileSize,
+                attachmentPath = staged.localFile.absolutePath,
+                attachmentState = AttachmentState.TRANSFERRING,
+                transferId = offer.transferId
+            )
+
+            chatRepository.insertMessage(msg, threadPeerId, threadPeerName)
+            ChatBus.notifyMessageSaved(msg, threadPeerId)
+
+            val uploaded = FileTransferManager.pushStagedFileToGroup(staged)
+            val signaled = if (uploaded) transmitPayload(recipientId, offer.toPayload()) else false
+            val finalState = if (uploaded && signaled) {
+                AttachmentState.COMPLETED
+            } else {
+                AttachmentState.FAILED
+            }
+            chatRepository.updateAttachmentState(offer.transferId, staged.localFile.absolutePath, finalState)
+            if (finalState == AttachmentState.FAILED) {
+                showSnackbar("Failed to send ${offer.fileName}")
+            }
+        }
+    }
+
     private fun envIsDirectOrKnown(senderId: String): Boolean =
-        wifiManager.isConnected && senderId.isNotBlank() && senderId != "legacy"
+        isNetworkConnected() && senderId.isNotBlank() && senderId != "legacy"
 
     private fun sendReadReceipt(threadPeerId: String?) {
-        if (!wifiManager.isConnected || threadPeerId.isNullOrBlank()) return
+        if (!isNetworkConnected() || threadPeerId.isNullOrBlank()) return
         if (threadPeerId == Constants.GROUP_PEER_ID) {
             sendControlMessage(Constants.MSG_TYPE_READ + Constants.GROUP_PEER_ID, Constants.RECIPIENT_BROADCAST)
         } else {
@@ -1044,7 +1341,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             threadPeerId
         }
 
-        if (wifiManager.isConnected) {
+        if (isNetworkConnected()) {
             val sent = transmitText(recipient, text)
             if (!sent) {
                 showSnackbar("Failed to transmit — saved locally")
@@ -1110,7 +1407,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
     private fun updateActiveChatHeader() {
         tvActiveChatTitle.text = activeThreadPeerName()
-        tvActiveChatSubtitle.text = if (wifiManager.isConnected) {
+        tvActiveChatSubtitle.text = if (isNetworkConnected()) {
             getString(R.string.label_online_encrypted)
         } else {
             getString(R.string.label_offline_local)
@@ -1118,30 +1415,20 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     }
 
     /**
-     * Send text over the live channel.
+     * Send text over the live mesh channel.
      * If [recipientId] is "*" the message goes to the group chat (broadcast).
-     * Otherwise it goes to that specific peer.
+     * Otherwise it routes directly to that peer (with relay fallback).
      */
-    private fun transmitText(recipientId: String, text: String): Boolean {
-        val payload = Constants.MSG_TYPE_TEXT + text
+    private fun transmitText(recipientId: String, text: String): Boolean =
+        transmitPayload(recipientId, Constants.MSG_TYPE_TEXT + text)
+
+    private fun transmitPayload(recipientId: String, payload: String): Boolean {
         return try {
-            if (wifiManager.isGroupOwner && ChatServerService.running) {
-                if (recipientId == Constants.RECIPIENT_BROADCAST) {
-                    ChatServerService.sendBroadcast(payload)
-                } else {
-                    ChatServerService.sendTo(recipientId, payload)
-                }
-                true
+            if (!ChatServerService.running) return false
+            if (recipientId == Constants.RECIPIENT_BROADCAST) {
+                ChatServerService.sendBroadcast(payload)
             } else {
-                val client = chatClient
-                if (client != null) {
-                    if (recipientId == Constants.RECIPIENT_BROADCAST) {
-                        client.sendBroadcast(payload)
-                    } else {
-                        client.sendTo(recipientId, payload)
-                    }
-                    true
-                } else false
+                ChatServerService.sendTo(recipientId, payload)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Transmit failed: ${e.message}")
@@ -1154,20 +1441,12 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
      * specific peer. Falls back to broadcast when no recipient is given.
      */
     private fun sendControlMessage(message: String, recipientId: String? = null) {
+        if (!ChatServerService.running) return
         val target = recipientId ?: currentPeerId ?: Constants.RECIPIENT_BROADCAST
-        if (wifiManager.isGroupOwner && ChatServerService.running) {
-            if (target == Constants.RECIPIENT_BROADCAST) {
-                ChatServerService.sendBroadcast(message)
-            } else {
-                ChatServerService.sendTo(target, message)
-            }
+        if (target == Constants.RECIPIENT_BROADCAST) {
+            ChatServerService.sendBroadcast(message)
         } else {
-            val client = chatClient ?: return
-            if (target == Constants.RECIPIENT_BROADCAST) {
-                client.sendBroadcast(message)
-            } else {
-                client.sendTo(target, message)
-            }
+            ChatServerService.sendTo(target, message)
         }
     }
 
@@ -1225,9 +1504,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         tvStoragePill.text = if (storedCount == 1) "1 saved" else "$storedCount saved"
     }
 
-    /** Enable/disable the call buttons based on connection state. */
+    /** Enable/disable the call buttons based on P2P or LAN mesh connection state. */
     private fun updateCallButtons() {
-        val connected = wifiManager.isConnected
+        val connected = isNetworkConnected()
         btnAudioCall.isEnabled = connected
         btnVideoCall.isEnabled = connected
         btnAudioCall.alpha = if (connected) 1.0f else 0.4f
@@ -1344,52 +1623,123 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
     }
 
-    // ======================== Calling ========================
+    // ======================== Calling (Direct & Role-Agnostic) ========================
 
-    private fun startAudioCall() {
-        if (!wifiManager.isConnected) {
+    private fun startAudioCall(
+        targetPeerId: String? = null,
+        targetPeerName: String? = null
+    ) {
+        if (!isNetworkConnected()) {
             showSnackbar("Connect to a peer first")
             return
         }
-        ensureCallPermissions(video = false) { launchAudioCall() }
+        resolveCallTarget(targetPeerId, targetPeerName) { resolvedId, resolvedName ->
+            pendingCallTargetPeerId = resolvedId
+            pendingCallTargetPeerName = resolvedName
+            ensureCallPermissions(video = false) {
+                launchAudioCall(resolvedId, resolvedName)
+            }
+        }
     }
 
-    private fun launchAudioCall() {
-        if (!wifiManager.isConnected) return
-        val targetPeerId = currentPeerId
-        val targetPeerName = currentPeerName ?: activeThreadPeerName()
-        sendControlMessage(Constants.MSG_TYPE_CALL_REQUEST + Constants.CALL_TYPE_AUDIO, targetPeerId)
+    private fun startVideoCall(
+        targetPeerId: String? = null,
+        targetPeerName: String? = null
+    ) {
+        if (!isNetworkConnected()) {
+            showSnackbar("Connect to a peer first")
+            return
+        }
+        resolveCallTarget(targetPeerId, targetPeerName) { resolvedId, resolvedName ->
+            pendingCallTargetPeerId = resolvedId
+            pendingCallTargetPeerName = resolvedName
+            ensureCallPermissions(video = true) {
+                launchVideoCall(resolvedId, resolvedName)
+            }
+        }
+    }
 
+    private fun resolveCallTarget(
+        explicitPeerId: String?,
+        explicitPeerName: String?,
+        onResolved: (String?, String) -> Unit
+    ) {
+        if (!explicitPeerId.isNullOrBlank() && explicitPeerId != Constants.GROUP_PEER_ID) {
+            onResolved(
+                explicitPeerId,
+                explicitPeerName ?: PeerRegistry.nameFor(explicitPeerId) ?: explicitPeerId
+            )
+            return
+        }
+        val current = currentPeerId?.takeIf { it != Constants.GROUP_PEER_ID }
+        if (current != null) {
+            onResolved(current, currentPeerName ?: PeerRegistry.nameFor(current) ?: current)
+            return
+        }
+        val onlinePeers = PeerRegistry.snapshot()
+        when {
+            onlinePeers.isEmpty() -> onResolved(null, activeThreadPeerName())
+            onlinePeers.size == 1 -> onResolved(onlinePeers[0].id, onlinePeers[0].name)
+            else -> {
+                val labels = onlinePeers.map { it.name.ifBlank { it.id } }.toTypedArray()
+                MaterialAlertDialogBuilder(this)
+                    .setTitle("Select peer to call")
+                    .setItems(labels) { _, idx ->
+                        val chosen = onlinePeers[idx]
+                        onResolved(chosen.id, chosen.name)
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun launchAudioCall(
+        targetPeerId: String? = pendingCallTargetPeerId ?: currentPeerId,
+        targetPeerName: String? = pendingCallTargetPeerName ?: currentPeerName ?: activeThreadPeerName()
+    ) {
+        if (!isNetworkConnected()) return
+        val localIp = ChatServerService.localIpForPeer(targetPeerId)
+            ?: DeviceIdentity.resolveLocalIp(PeerRegistry.ipFor(targetPeerId))
+        val callPayload = if (!localIp.isNullOrBlank()) {
+            "${Constants.MSG_TYPE_CALL_REQUEST}${Constants.CALL_TYPE_AUDIO}|$localIp"
+        } else {
+            Constants.MSG_TYPE_CALL_REQUEST + Constants.CALL_TYPE_AUDIO
+        }
+        sendControlMessage(callPayload, targetPeerId)
+
+        // Caller hosts the WebRTC signaling socket directly (no Group Owner hub needed!)
         val intent = Intent(this, AudioCallActivity::class.java).apply {
-            putExtra(AudioCallActivity.EXTRA_IS_GROUP_OWNER, wifiManager.isGroupOwner)
-            putExtra(AudioCallActivity.EXTRA_HOST_ADDRESS, wifiManager.groupOwnerAddress)
+            putExtra(AudioCallActivity.EXTRA_IS_GROUP_OWNER, true)
+            putExtra(AudioCallActivity.EXTRA_HOST_ADDRESS, localIp)
             putExtra(AudioCallActivity.EXTRA_PEER_ID, targetPeerId)
-            putExtra(AudioCallActivity.EXTRA_PEER_NAME, targetPeerName)
+            putExtra(AudioCallActivity.EXTRA_PEER_NAME, targetPeerName ?: "Peer")
             putExtra(AudioCallActivity.EXTRA_IS_OUTGOING, true)
         }
         startActivity(intent)
         overridePendingTransition(R.anim.slide_up, android.R.anim.fade_out)
     }
 
-    private fun startVideoCall() {
-        if (!wifiManager.isConnected) {
-            showSnackbar("Connect to a peer first")
-            return
+    private fun launchVideoCall(
+        targetPeerId: String? = pendingCallTargetPeerId ?: currentPeerId,
+        targetPeerName: String? = pendingCallTargetPeerName ?: currentPeerName ?: activeThreadPeerName()
+    ) {
+        if (!isNetworkConnected()) return
+        val localIp = ChatServerService.localIpForPeer(targetPeerId)
+            ?: DeviceIdentity.resolveLocalIp(PeerRegistry.ipFor(targetPeerId))
+        val callPayload = if (!localIp.isNullOrBlank()) {
+            "${Constants.MSG_TYPE_CALL_REQUEST}${Constants.CALL_TYPE_VIDEO}|$localIp"
+        } else {
+            Constants.MSG_TYPE_CALL_REQUEST + Constants.CALL_TYPE_VIDEO
         }
-        ensureCallPermissions(video = true) { launchVideoCall() }
-    }
+        sendControlMessage(callPayload, targetPeerId)
 
-    private fun launchVideoCall() {
-        if (!wifiManager.isConnected) return
-        val targetPeerId = currentPeerId
-        val targetPeerName = currentPeerName ?: activeThreadPeerName()
-        sendControlMessage(Constants.MSG_TYPE_CALL_REQUEST + Constants.CALL_TYPE_VIDEO, targetPeerId)
-
+        // Caller hosts direct Camera2 + WebRTC call sockets regardless of P2P group role
         val intent = Intent(this, VideoCallActivity::class.java).apply {
-            putExtra(VideoCallActivity.EXTRA_IS_GROUP_OWNER, wifiManager.isGroupOwner)
-            putExtra(VideoCallActivity.EXTRA_HOST_ADDRESS, wifiManager.groupOwnerAddress)
+            putExtra(VideoCallActivity.EXTRA_IS_GROUP_OWNER, true)
+            putExtra(VideoCallActivity.EXTRA_HOST_ADDRESS, localIp)
             putExtra(VideoCallActivity.EXTRA_PEER_ID, targetPeerId)
-            putExtra(VideoCallActivity.EXTRA_PEER_NAME, targetPeerName)
+            putExtra(VideoCallActivity.EXTRA_PEER_NAME, targetPeerName ?: "Peer")
             putExtra(VideoCallActivity.EXTRA_IS_OUTGOING, true)
         }
         startActivity(intent)
@@ -1423,6 +1773,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 .setMessage(detail)
                 .setNegativeButton("Cancel") { _, _ ->
                     pendingCallVideoAfterPermission = null
+                    pendingCallTargetPeerId = null
+                    pendingCallTargetPeerName = null
                 }
                 .setPositiveButton("Allow") { _, _ ->
                     permissionLauncher.launch(missing.toTypedArray())
@@ -1434,10 +1786,21 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     }
 
     /**
-     * Handle an incoming call — show the IncomingCallActivity
-     * with accept/decline UI instead of auto-accepting.
+     * Handle an incoming call — show the IncomingCallActivity with accept/decline UI
+     * and route direct peer-to-peer connection to the caller's IP (no central host required).
      */
-    private fun handleIncomingCallRequest(callType: String, callerId: String, callerName: String) {
+    private fun handleIncomingCallRequest(rawRequest: String, callerId: String, callerName: String) {
+        val callType = rawRequest.substringBefore('|')
+        val explicitCallerIp = rawRequest.substringAfter('|', "").takeIf { it.isNotBlank() }
+        val resolvedHost = explicitCallerIp
+            ?: PeerRegistry.ipFor(callerId)
+            ?: wifiManager.groupOwnerAddress
+        val actAsCallHost = if (!explicitCallerIp.isNullOrBlank() || PeerRegistry.ipFor(callerId) != null) {
+            false
+        } else {
+            wifiManager.isGroupOwner
+        }
+
         runOnUiThread {
             if (IncomingCallActivity.isShowing() || CallSessionBus.isCallActive()) {
                 Log.d(TAG, "Ignoring incoming call while another call UI is active")
@@ -1445,8 +1808,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             }
             val intent = Intent(this, IncomingCallActivity::class.java).apply {
                 putExtra(IncomingCallActivity.EXTRA_CALL_TYPE, callType)
-                putExtra(IncomingCallActivity.EXTRA_IS_GROUP_OWNER, wifiManager.isGroupOwner)
-                putExtra(IncomingCallActivity.EXTRA_HOST_ADDRESS, wifiManager.groupOwnerAddress)
+                putExtra(IncomingCallActivity.EXTRA_IS_GROUP_OWNER, actAsCallHost)
+                putExtra(IncomingCallActivity.EXTRA_HOST_ADDRESS, resolvedHost)
                 putExtra(IncomingCallActivity.EXTRA_PEER_ID, callerId)
                 putExtra(
                     IncomingCallActivity.EXTRA_CALLER_NAME,
@@ -1464,24 +1827,37 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
     override fun onP2pEnabled(enabled: Boolean) {
         if (enabled) {
-            tvStatus.text = getString(R.string.status_enabled)
-            statusIndicator.setBackgroundResource(R.drawable.circle_green)
+            refreshNetworkConnectionUi()
         } else {
-            tvStatus.text = getString(R.string.status_disabled)
-            statusIndicator.setBackgroundResource(R.drawable.circle_red)
-            isDiscovering = false
-            btnDiscover.text = getString(R.string.btn_scan_short)
-            refreshPeerPickerBottomSheet()
+            stopDiscoveryUiState(updateStatusText = true)
         }
     }
 
     override fun onPeersUpdated(peers: List<WifiP2pDevice>) {
         latestPeers = peers
         peerAdapter.updatePeers(peers)
-        tvPeersEmpty.visibility = if (peers.isEmpty()) View.VISIBLE else View.GONE
+        updateInlinePeersEmptyState()
         radarView?.setBlipCount(peers.size)
         updateToggleDevicesLabel()
         refreshPeerPickerBottomSheet()
+
+        // Automatic failover rejoin: if the previous Group Owner vanished and another
+        // surviving peer was elected, reconnect to it automatically.
+        val targetId = pendingFailoverTargetId
+        val targetName = pendingFailoverTargetName
+        if (!wifiManager.isConnected && (!targetId.isNullOrBlank() || !targetName.isNullOrBlank())) {
+            val match = peers.firstOrNull { p ->
+                p.status == WifiP2pDevice.AVAILABLE &&
+                    ((targetId != null && p.deviceAddress == targetId) ||
+                        (targetName != null && p.deviceName.equals(targetName, ignoreCase = true)) ||
+                        p.isGroupOwner)
+            }
+            if (match != null) {
+                pendingFailoverTargetId = null
+                pendingFailoverTargetName = null
+                connectToPeer(match)
+            }
+        }
 
         // Peer identity may have just been resolved — finish opening the chat
         if (pendingChatOpen) {
@@ -1492,43 +1868,55 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
     override fun onDeviceChanged(device: WifiP2pDevice?) {
         device?.let {
-            tvDeviceInfo.text = it.deviceName.ifBlank { it.deviceAddress }
-            // Register our own identity in the peer registry so envelopes can
-            // be addressed FROM us and the UI can show "you" correctly.
-            PeerRegistry.selfId = it.deviceAddress
-            PeerRegistry.selfName = it.deviceName.ifBlank { "This device" }
+            val name = it.deviceName.ifBlank { DeviceIdentity.defaultDeviceName() }
+            tvDeviceInfo.text = name
+            PeerRegistry.selfId = DeviceIdentity.getId(this, it.deviceAddress)
+            PeerRegistry.selfName = name
+            PeerRegistry.selfIpAddress = DeviceIdentity.resolveLocalIp()
             Log.d(TAG, "Self identity: ${PeerRegistry.selfId} (${PeerRegistry.selfName})")
         }
     }
 
     override fun onConnected(info: WifiP2pInfo?) {
         progressConnecting.visibility = View.GONE
-        tvStatus.text = getString(R.string.status_connected)
-        statusIndicator.setBackgroundResource(R.drawable.circle_green)
-        updateCallButtons()
+        userInitiatedDisconnect = false
+        pendingFailoverTargetId = null
+        pendingFailoverTargetName = null
 
+        startChatServer()
         info?.let { connectionInfo ->
-            if (connectionInfo.isGroupOwner) {
-                Log.d(TAG, "Group Owner — starting server")
-                startChatServer()
-            } else {
-                val hostAddress = connectionInfo.groupOwnerAddress.hostAddress
-                Log.d(TAG, "Client — connecting to GO at $hostAddress")
-                if (hostAddress != null) {
-                    connectAsClient(hostAddress)
-                }
+            PeerRegistry.isSelfGroupOwner = connectionInfo.isGroupOwner
+            PeerRegistry.selfIpAddress = DeviceIdentity.resolveLocalIp(
+                connectionInfo.groupOwnerAddress?.hostAddress
+            )
+            val hostAddress = connectionInfo.groupOwnerAddress?.hostAddress
+            if (!connectionInfo.isGroupOwner && !hostAddress.isNullOrBlank()) {
+                Log.d(TAG, "Joining mesh via P2P link to $hostAddress")
+                ChatServerService.connectToPeer(
+                    hostIp = hostAddress,
+                    isGroupOwnerUplink = true,
+                    transport = "p2p"
+                )
             }
+
+            FileTransferManager.configureSession(
+                this,
+                connectionInfo.isGroupOwner,
+                hostAddress
+            )
 
             // Snapshot the session so the standby listener can keep receiving
             // calls/messages after this process dies
             LastSession.save(
                 this,
                 connectionInfo.isGroupOwner,
-                connectionInfo.groupOwnerAddress?.hostAddress,
+                hostAddress,
                 currentPeerId,
                 currentPeerName
             )
         }
+
+        refreshNetworkConnectionUi()
 
         // Resolve who we are talking to, then open their chat thread
         pendingChatOpen = true
@@ -1536,42 +1924,61 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
         if (isDiscovering) {
             wifiManager.stopDiscovery()
-            isDiscovering = false
-            btnDiscover.text = getString(R.string.btn_scan_short)
+            stopDiscoveryUiState(updateStatusText = false)
+        } else {
+            refreshPeerPickerBottomSheet()
         }
-
-        refreshPeerPickerBottomSheet()
         showSnackbar("Connected to peer")
     }
 
     override fun onDisconnected() {
         progressConnecting.visibility = View.GONE
-        tvStatus.text = getString(R.string.status_disconnected)
-        statusIndicator.setBackgroundResource(R.drawable.circle_orange)
-        updateCallButtons()
-        chatClient?.disconnect()
-        chatClient = null
-        clearCurrentPeer()
+        val survivingCandidates = lastP2pNonGoPeers
+        lastP2pNonGoPeers = emptyList()
+
+        ChatServerService.disconnectTransport("p2p")
+        PeerRegistry.isSelfGroupOwner = false
         LastSession.clearRole(this)
-        refreshPeerPickerBottomSheet()
+
+        if (!ChatServerService.hasConnectedPeers()) {
+            FileTransferManager.stopSession()
+            clearCurrentPeer()
+        } else {
+            // LAN/NSD mesh peers remain active — keep FileTransferManager server alive!
+            FileTransferManager.ensureServerRunning(applicationContext)
+        }
+        refreshNetworkConnectionUi()
+
+        // Automatic host failover election when Group Owner unexpectedly drops off-grid
+        if (!userInitiatedDisconnect &&
+            survivingCandidates.isNotEmpty() &&
+            !ChatServerService.hasConnectedPeers() &&
+            WiFiDirectManager.hasWifiP2pPermission(this)
+        ) {
+            val allCandidateIds = (survivingCandidates.map { it.id } + PeerRegistry.selfId).sorted()
+            val winnerId = allCandidateIds.firstOrNull()
+            if (winnerId == PeerRegistry.selfId) {
+                showSnackbar("Group host left — promoting this phone as backup host…")
+                wifiManager.createAutonomousGroup { ok ->
+                    if (!ok) startDiscoveryIfReady()
+                }
+            } else {
+                val winnerPeer = survivingCandidates.firstOrNull { it.id == winnerId }
+                pendingFailoverTargetId = winnerId
+                pendingFailoverTargetName = winnerPeer?.name
+                showSnackbar("Group host left — reconnecting to ${winnerPeer?.name ?: "remaining peer"}…")
+                startDiscoveryIfReady()
+            }
+        }
     }
 
     override fun onConnectionFailed(reason: String) {
         progressConnecting.visibility = View.GONE
         if (isDiscovering) {
-            isDiscovering = false
-            btnDiscover.text = getString(R.string.btn_scan_short)
-            tvStatus.text = if (wifiManager.isP2pEnabled) {
-                getString(R.string.status_enabled)
-            } else {
-                getString(R.string.status_disabled)
-            }
-            tvScanHint.text = tvStatus.text
-            statusIndicator.setBackgroundResource(
-                if (wifiManager.isP2pEnabled) R.drawable.circle_green else R.drawable.circle_red
-            )
+            stopDiscoveryUiState(updateStatusText = true)
+        } else {
+            refreshPeerPickerBottomSheet()
         }
-        refreshPeerPickerBottomSheet()
         showSnackbar(reason, "Retry") { toggleDiscovery() }
     }
 }

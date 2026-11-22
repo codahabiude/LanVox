@@ -72,25 +72,51 @@ class ChatsActivity : AppCompatActivity() {
             overridePendingTransition(R.anim.slide_up, android.R.anim.fade_out)
         }
 
-        registryListenerToken = PeerRegistry.addListener { updateGroupChatRow() }
+        registryListenerToken = PeerRegistry.addListener {
+            updateGroupChatRow()
+            submitMergedConversations(latestStoredConversations)
+        }
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 chatRepository.observeConversations().collect { conversations ->
-                    val oneToOne = conversations.filter { it.peerId != Constants.GROUP_PEER_ID }
-                    chatsAdapter.submit(oneToOne)
-                    val hasGroupHistory = conversations.any { it.peerId == Constants.GROUP_PEER_ID }
-                    tvEmpty.visibility =
-                        if (oneToOne.isEmpty() && !hasGroupHistory) View.VISIBLE else View.GONE
-                    rvChats.visibility = if (oneToOne.isEmpty()) View.GONE else View.VISIBLE
+                    latestStoredConversations = conversations
+                    submitMergedConversations(conversations)
                 }
             }
         }
     }
 
+    private var latestStoredConversations: List<Conversation> = emptyList()
+
+    private fun submitMergedConversations(conversations: List<Conversation>) {
+        val oneToOne = conversations.filter { it.peerId != Constants.GROUP_PEER_ID }.toMutableList()
+        val existingIds = oneToOne.mapTo(HashSet()) { it.peerId }
+        val now = System.currentTimeMillis()
+        PeerRegistry.snapshot().forEach { peer ->
+            if (!existingIds.contains(peer.id)) {
+                val transportLabel = if (peer.transport == "lan") "Wi-Fi mesh" else "Wi-Fi Direct"
+                oneToOne += Conversation(
+                    peerId = peer.id,
+                    peerName = peer.name,
+                    lastText = "Online ($transportLabel) · tap to chat or call",
+                    lastIsSentByMe = false,
+                    lastTimestamp = now,
+                    messageCount = 0
+                )
+            }
+        }
+        chatsAdapter.submit(oneToOne)
+        val hasGroupHistory = conversations.any { it.peerId == Constants.GROUP_PEER_ID }
+        tvEmpty.visibility =
+            if (oneToOne.isEmpty() && !hasGroupHistory) View.VISIBLE else View.GONE
+        rvChats.visibility = if (oneToOne.isEmpty()) View.GONE else View.VISIBLE
+    }
+
     override fun onResume() {
         super.onResume()
         updateGroupChatRow()
+        submitMergedConversations(latestStoredConversations)
     }
 
     override fun onDestroy() {
@@ -119,6 +145,10 @@ class ChatsActivity : AppCompatActivity() {
     }
 
     private fun confirmDelete(conversation: Conversation) {
+        if (conversation.messageCount == 0) {
+            openChat(conversation)
+            return
+        }
         val name = conversation.peerName?.takeIf { it.isNotBlank() } ?: conversation.peerId
         MaterialAlertDialogBuilder(this)
             .setTitle("Delete conversation?")

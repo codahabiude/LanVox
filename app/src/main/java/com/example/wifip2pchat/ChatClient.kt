@@ -191,10 +191,10 @@ class ChatClient(private val context: Context) {
         if (env.payload.startsWith(Constants.PAYLOAD_PEERS)) {
             val list = PeerRegistry.parsePeersPayload(
                 payload = env.payload,
-                goId = env.senderId,
-                goName = env.senderName
+                senderId = env.senderId,
+                senderName = env.senderName
             )
-            PeerRegistry.replaceAll(list)
+            PeerRegistry.mergeFromPeersPayload(list)
             return
         }
 

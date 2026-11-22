@@ -9,6 +9,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.Lifecycle
@@ -40,6 +41,7 @@ class ChatActivity : AppCompatActivity() {
     private lateinit var chatRoot: LinearLayout
     private lateinit var rvMessages: RecyclerView
     private lateinit var etMessage: EditText
+    private lateinit var btnAttach: ImageView
     private lateinit var btnSend: MaterialButton
     private lateinit var btnChatSearch: ImageView
     private lateinit var btnAudioCall: ImageView
@@ -53,9 +55,34 @@ class ChatActivity : AppCompatActivity() {
     private lateinit var btnCloseSearch: ImageView
     private lateinit var llSearchEmpty: LinearLayout
 
-    private val messageAdapter = MessageAdapter()
+    private val messageAdapter = MessageAdapter { msg ->
+        val err = FileTransferManager.openAttachment(this, msg)
+        if (err != null) {
+            Snackbar.make(chatRoot, err, Snackbar.LENGTH_SHORT).show()
+        }
+    }
     private val chatRepository by lazy { ChatRepository.get(this) }
     private val searchQueryFlow = MutableStateFlow("")
+
+    private val filePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        if (!MainActivity.isConnectedStatic()) {
+            Snackbar.make(
+                chatRoot,
+                "Not connected — connect to a group on the main screen first",
+                Snackbar.LENGTH_LONG
+            ).show()
+            return@registerForActivityResult
+        }
+        val pid = peerId ?: return@registerForActivityResult
+        val isGroupChat = pid == Constants.GROUP_PEER_ID
+        val recipient = if (isGroupChat) Constants.RECIPIENT_BROADCAST else pid
+        if (!MainActivity.sendFileToStatic(recipient, pid, peerName, uri)) {
+            Snackbar.make(chatRoot, "Failed to start file transfer", Snackbar.LENGTH_SHORT).show()
+        }
+    }
 
     private val searchBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
@@ -73,6 +100,7 @@ class ChatActivity : AppCompatActivity() {
         chatRoot = findViewById(R.id.chatRoot)
         rvMessages = findViewById(R.id.rvMessages)
         etMessage = findViewById(R.id.etMessage)
+        btnAttach = findViewById(R.id.btnAttach)
         btnSend = findViewById(R.id.btnSend)
         btnChatSearch = findViewById(R.id.btnChatSearch)
         btnAudioCall = findViewById(R.id.btnChatAudioCall)
@@ -168,6 +196,7 @@ class ChatActivity : AppCompatActivity() {
         }
         btnAudioCall.setOnClickListener { startCall(video = false) }
         btnVideoCall.setOnClickListener { startCall(video = true) }
+        btnAttach.setOnClickListener { pickAndSendFile() }
         btnSend.setOnClickListener { sendCurrentMessage() }
 
         // Mark this thread as the active one and observe Room Flow
@@ -315,11 +344,35 @@ class ChatActivity : AppCompatActivity() {
         }
     }
 
+    private fun pickAndSendFile() {
+        if (!MainActivity.isConnectedStatic()) {
+            Snackbar.make(
+                chatRoot,
+                "Not connected — connect to a group on the main screen first",
+                Snackbar.LENGTH_LONG
+            ).show()
+            return
+        }
+        val pid = peerId ?: run {
+            Snackbar.make(chatRoot, "Invalid conversation", Snackbar.LENGTH_SHORT).show()
+            return
+        }
+        val isGroupChat = pid == Constants.GROUP_PEER_ID
+        if (!isGroupChat && !MainActivity.currentPeerMatches(pid) && PeerRegistry.nameFor(pid) == null) {
+            Snackbar.make(chatRoot, "That peer is not in the group right now", Snackbar.LENGTH_LONG).show()
+            return
+        }
+        filePickerLauncher.launch(arrayOf("*/*"))
+    }
+
     // ======================== Calling ========================
 
     private fun startCall(video: Boolean) {
-        val started = if (video) MainActivity.startVideoCallStatic()
-                      else MainActivity.startAudioCallStatic()
+        val started = if (video) {
+            MainActivity.startVideoCallStatic(peerId, peerName)
+        } else {
+            MainActivity.startAudioCallStatic(peerId, peerName)
+        }
         if (!started) {
             Snackbar.make(chatRoot, "Connect to this device first", Snackbar.LENGTH_SHORT).show()
         }
@@ -332,9 +385,13 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun updateConnectionUi() {
-        val liveWithThisPeer = MainActivity.isConnectedStatic() &&
-            (peerId == Constants.GROUP_PEER_ID || MainActivity.currentPeerMatches(peerId))
-        tvPeerStatus.text = if (peerId == Constants.GROUP_PEER_ID) {
+        val pid = peerId
+        val liveWithThisPeer = MainActivity.isConnectedStatic() && (
+            pid == Constants.GROUP_PEER_ID ||
+                MainActivity.currentPeerMatches(pid) ||
+                (pid != null && PeerRegistry.nameFor(pid) != null)
+            )
+        tvPeerStatus.text = if (pid == Constants.GROUP_PEER_ID) {
             "${PeerRegistry.snapshotIncludingSelf().size} members"
         } else if (liveWithThisPeer) {
             "online · encrypted"

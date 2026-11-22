@@ -240,6 +240,42 @@ class WiFiDirectManager(
     }
 
     /**
+     * Form an autonomous Wi-Fi Direct group with this device acting as Group Owner
+     * (used during host failover when the previous Group Owner disappears).
+     */
+    @SuppressLint("MissingPermission")
+    fun createAutonomousGroup(onResult: (Boolean) -> Unit = {}) {
+        val mgr = manager ?: run {
+            onResult(false)
+            return
+        }
+        val ch = channel ?: run {
+            onResult(false)
+            return
+        }
+        if (!hasWifiP2pPermission(context)) {
+            onResult(false)
+            return
+        }
+        try {
+            mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    Log.d(TAG, "Autonomous P2P group created (failover host)")
+                    onResult(true)
+                }
+
+                override fun onFailure(reasonCode: Int) {
+                    Log.w(TAG, "createAutonomousGroup failed: ${reasonToString(reasonCode)}")
+                    onResult(false)
+                }
+            })
+        } catch (e: SecurityException) {
+            Log.e(TAG, "createAutonomousGroup permission error: ${e.message}")
+            onResult(false)
+        }
+    }
+
+    /**
      * Disconnect from the current peer.
      */
     fun disconnect() {

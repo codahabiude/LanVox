@@ -1,6 +1,7 @@
 package com.example.wifip2pchat
 
 import android.util.Log
+import java.util.UUID
 
 /**
  * Parsed view of one line on the chat channel.
@@ -8,17 +9,15 @@ import android.util.Log
  * Envelope format (v5.0+):
  *   ENV|<senderId>|<senderName>|<recipientIdOrStar>|<payload>
  *
- * Legacy bare line (pre-v5):
- *   TEXT:hello world
- *
- * Legacy lines are treated as a broadcast from an unknown sender so old
- * clients still interoperate with a v5 Group Owner.
+ * Mesh deduplication tag (v6.0+, backward-compatible inside field 5):
+ *   ENV|<senderId>|<senderName>|<recipientIdOrStar>|MID:<id>:<payload>
  */
 data class Envelope(
     val senderId: String,
     val senderName: String,
     val recipientId: String,   // "*" for broadcast
-    val payload: String        // e.g. "TEXT:hello" or "HELLO" or "PEERS:..."
+    val payload: String,       // e.g. "TEXT:hello" or "HELLO" or "PEERS:..."
+    val msgId: String? = null  // present on mesh packets to prevent duplicate delivery
 ) {
     /** True if this envelope is addressed to [peerId] OR is a broadcast. */
     fun isFor(peerId: String): Boolean =
@@ -27,11 +26,12 @@ data class Envelope(
     companion object {
         private const val TAG = "Envelope"
 
+        fun newMessageId(): String = UUID.randomUUID().toString().replace("-", "").take(10)
+
         /**
          * Try to parse a raw chat-channel line as an envelope.
-         * @return the parsed Envelope, or null if the line is a legacy bare
-         *         message (in which case the caller should treat it as
-         *         broadcast-from-unknown).
+         * Transparently strips any `MID:<id>:` deduplication header so callers
+         * always receive the clean [payload].
          */
         fun parse(line: String): Envelope? {
             val trimmed = line.trimEnd('\r', '\n')
@@ -44,11 +44,23 @@ data class Envelope(
                 Log.w(TAG, "Malformed envelope (got ${parts.size} parts): $trimmed")
                 return null
             }
+            val rawPayload = parts[4]
+            var msgId: String? = null
+            var cleanPayload = rawPayload
+            if (rawPayload.startsWith(Constants.MSG_ID_PREFIX)) {
+                val rest = rawPayload.removePrefix(Constants.MSG_ID_PREFIX)
+                val sepIdx = rest.indexOf(':')
+                if (sepIdx > 0) {
+                    msgId = rest.substring(0, sepIdx)
+                    cleanPayload = rest.substring(sepIdx + 1)
+                }
+            }
             return Envelope(
                 senderId = parts[1],
                 senderName = parts[2],
                 recipientId = parts[3],
-                payload = parts[4]
+                payload = cleanPayload,
+                msgId = msgId
             )
         }
 
@@ -57,16 +69,22 @@ data class Envelope(
             senderId: String,
             senderName: String,
             recipientId: String,
-            payload: String
+            payload: String,
+            msgId: String? = null
         ): String {
             // senderName may not contain '|' — sanitize defensively.
             val safeName = senderName.replace(Constants.ENVELOPE_DELIM, " ")
+            val wirePayload = if (!msgId.isNullOrBlank() && !payload.startsWith(Constants.MSG_ID_PREFIX)) {
+                "${Constants.MSG_ID_PREFIX}$msgId:$payload"
+            } else {
+                payload
+            }
             return listOf(
                 Constants.ENVELOPE_PREFIX,
                 senderId,
                 safeName,
                 recipientId,
-                payload
+                wirePayload
             ).joinToString(Constants.ENVELOPE_DELIM)
         }
     }

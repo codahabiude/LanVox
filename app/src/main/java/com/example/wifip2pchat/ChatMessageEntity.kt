@@ -32,5 +32,17 @@ data class ChatMessageEntity(
     @ColumnInfo(name = "sender_name")
     val senderName: String? = null,
     @ColumnInfo(name = "status")
-    val status: String = MessageStatus.NONE.name
+    val status: String = MessageStatus.NONE.name,
+    @ColumnInfo(name = "attachment_name")
+    val attachmentName: String? = null,
+    @ColumnInfo(name = "attachment_mime")
+    val attachmentMime: String? = null,
+    @ColumnInfo(name = "attachment_size")
+    val attachmentSize: Long = 0L,
+    @ColumnInfo(name = "attachment_path")
+    val attachmentPath: String? = null,
+    @ColumnInfo(name = "attachment_state")
+    val attachmentState: String = AttachmentState.NONE.name,
+    @ColumnInfo(name = "transfer_id")
+    val transferId: String? = null
 )

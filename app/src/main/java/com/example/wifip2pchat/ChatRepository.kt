@@ -56,7 +56,13 @@ class ChatRepository(private val dao: ChatMessageDao) {
             peerId = peerId,
             peerName = peerName,
             senderName = message.senderName,
-            status = message.status.name
+            status = message.status.name,
+            attachmentName = message.attachmentName,
+            attachmentMime = message.attachmentMime,
+            attachmentSize = message.attachmentSize,
+            attachmentPath = message.attachmentPath,
+            attachmentState = message.attachmentState.name,
+            transferId = message.transferId
         )
         return dao.insertMessage(entity)
     }
@@ -95,6 +101,15 @@ class ChatRepository(private val dao: ChatMessageDao) {
         )
     }
 
+    suspend fun updateAttachmentState(
+        transferId: String,
+        attachmentPath: String?,
+        state: AttachmentState
+    ) {
+        if (transferId.isBlank()) return
+        dao.updateAttachmentByTransferId(transferId, attachmentPath, state.name)
+    }
+
     suspend fun deleteMessage(message: ChatMessage) {
         val rowId = message.id.removePrefix("room_").toLongOrNull()
         if (rowId != null) {
@@ -119,13 +134,21 @@ class ChatRepository(private val dao: ChatMessageDao) {
     private fun ChatMessageEntity.toDomain(): ChatMessage {
         val parsedStatus = runCatching { MessageStatus.valueOf(status) }
             .getOrElse { if (isSent == 1) MessageStatus.SENT else MessageStatus.NONE }
+        val parsedAttachmentState = runCatching { AttachmentState.valueOf(attachmentState) }
+            .getOrElse { AttachmentState.NONE }
         return ChatMessage(
             text = text,
             isSentByMe = isSent == 1,
             timestamp = timestamp,
             status = parsedStatus,
             senderName = senderName,
-            id = "room_$id"
+            id = "room_$id",
+            attachmentName = attachmentName,
+            attachmentMime = attachmentMime,
+            attachmentSize = attachmentSize,
+            attachmentPath = attachmentPath,
+            attachmentState = parsedAttachmentState,
+            transferId = transferId
         )
     }
 
