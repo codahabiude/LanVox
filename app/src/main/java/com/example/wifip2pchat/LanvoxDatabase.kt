@@ -10,7 +10,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 /**
  * Room Database holding locally persisted LANVOX chat history.
  */
-@Database(entities = [ChatMessageEntity::class], version = 2, exportSchema = false)
+@Database(entities = [ChatMessageEntity::class], version = 3, exportSchema = false)
 abstract class LanvoxDatabase : RoomDatabase() {
 
     abstract fun chatMessageDao(): ChatMessageDao
@@ -29,6 +29,13 @@ abstract class LanvoxDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN message_id TEXT")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(message_id)")
+            }
+        }
+
         @Volatile
         private var instance: LanvoxDatabase? = null
 
@@ -39,7 +46,7 @@ abstract class LanvoxDatabase : RoomDatabase() {
                     LanvoxDatabase::class.java,
                     DB_NAME
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { instance = it }
             }

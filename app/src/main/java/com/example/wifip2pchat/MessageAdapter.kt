@@ -96,6 +96,7 @@ class MessageAdapter(
                 val oldItem = oldList[oldItemPosition]
                 val newItem = history[newItemPosition]
                 return oldItem.id == newItem.id ||
+                    (oldItem.messageId != null && oldItem.messageId == newItem.messageId) ||
                     (oldItem.transferId != null && oldItem.transferId == newItem.transferId) ||
                     (oldItem.timestamp == newItem.timestamp &&
                         oldItem.isSentByMe == newItem.isSentByMe &&
@@ -188,6 +189,7 @@ class MessageAdapter(
         private val tvMessage: TextView = itemView.findViewById(R.id.tvMessage)
         private val tvTimestamp: TextView = itemView.findViewById(R.id.tvTimestamp)
         private val ivTick: ImageView = itemView.findViewById(R.id.ivTick)
+        private val tvReadStatus: TextView = itemView.findViewById(R.id.tvReadStatus)
 
         fun bind(message: ChatMessage) {
             val ctx = itemView.context
@@ -232,21 +234,34 @@ class MessageAdapter(
                 tvMessage.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_sent_text))
                 tvTimestamp.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_sent_time))
                 ivTick.visibility = View.VISIBLE
+                tvReadStatus.visibility = View.VISIBLE
                 when (message.status) {
                     MessageStatus.READ -> {
+                        val readColor = ContextCompat.getColor(ctx, R.color.tick_read)
                         ivTick.setImageResource(R.drawable.ic_check_double)
-                        ivTick.setColorFilter(ContextCompat.getColor(ctx, R.color.tick_read))
-                        ivTick.contentDescription = "Read"
+                        ivTick.setColorFilter(readColor)
+                        ivTick.contentDescription = ctx.getString(R.string.status_msg_read)
+                        tvReadStatus.text = ctx.getString(R.string.status_msg_read)
+                        tvReadStatus.setTextColor(readColor)
+                        tvReadStatus.setTypeface(tvReadStatus.typeface, android.graphics.Typeface.BOLD)
                     }
                     MessageStatus.DELIVERED -> {
+                        val deliveredColor = ContextCompat.getColor(ctx, R.color.tick_delivered)
                         ivTick.setImageResource(R.drawable.ic_check_double)
-                        ivTick.setColorFilter(ContextCompat.getColor(ctx, R.color.tick_delivered))
-                        ivTick.contentDescription = "Delivered"
+                        ivTick.setColorFilter(deliveredColor)
+                        ivTick.contentDescription = ctx.getString(R.string.status_msg_delivered)
+                        tvReadStatus.text = ctx.getString(R.string.status_msg_delivered)
+                        tvReadStatus.setTextColor(deliveredColor)
+                        tvReadStatus.setTypeface(null, android.graphics.Typeface.NORMAL)
                     }
                     else -> {
+                        val sentColor = ContextCompat.getColor(ctx, R.color.tick_sent)
                         ivTick.setImageResource(R.drawable.ic_check)
-                        ivTick.setColorFilter(ContextCompat.getColor(ctx, R.color.tick_sent))
-                        ivTick.contentDescription = "Sent"
+                        ivTick.setColorFilter(sentColor)
+                        ivTick.contentDescription = ctx.getString(R.string.status_msg_sent)
+                        tvReadStatus.text = ctx.getString(R.string.status_msg_sent)
+                        tvReadStatus.setTextColor(sentColor)
+                        tvReadStatus.setTypeface(null, android.graphics.Typeface.NORMAL)
                     }
                 }
             } else {
@@ -262,6 +277,7 @@ class MessageAdapter(
                 tvMessage.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_received_text))
                 tvTimestamp.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_received_time))
                 ivTick.visibility = View.GONE
+                tvReadStatus.visibility = View.GONE
             }
         }
 

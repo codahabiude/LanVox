@@ -90,12 +90,12 @@ class ChatServerService : Service() {
         }
 
         /** Send a message addressed to one specific peer (direct first, relay fallback). */
-        fun sendTo(recipientId: String, payload: String): Boolean =
-            serviceInstance?.sendToInternal(recipientId, payload) == true
+        fun sendTo(recipientId: String, payload: String, msgId: String? = null): Boolean =
+            serviceInstance?.sendToInternal(recipientId, payload, msgId) == true
 
         /** Send a broadcast message to all directly connected peers (with dedup msgId). */
-        fun sendBroadcast(payload: String): Boolean =
-            serviceInstance?.sendBroadcastInternal(payload) == true
+        fun sendBroadcast(payload: String, msgId: String? = null): Boolean =
+            serviceInstance?.sendBroadcastInternal(payload, msgId) == true
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -523,8 +523,8 @@ class ChatServerService : Service() {
 
     // ======================== Outgoing ========================
 
-    private fun sendToInternal(recipientId: String, payload: String): Boolean {
-        val msgId = Envelope.newMessageId()
+    private fun sendToInternal(recipientId: String, payload: String, explicitMsgId: String? = null): Boolean {
+        val msgId = explicitMsgId?.takeIf { it.isNotBlank() } ?: Envelope.newMessageId()
         markMessageSeen(msgId)
         val line = Envelope.build(
             senderId = PeerRegistry.selfId,
@@ -549,8 +549,8 @@ class ChatServerService : Service() {
         return true
     }
 
-    private fun sendBroadcastInternal(payload: String): Boolean {
-        val msgId = Envelope.newMessageId()
+    private fun sendBroadcastInternal(payload: String, explicitMsgId: String? = null): Boolean {
+        val msgId = explicitMsgId?.takeIf { it.isNotBlank() } ?: Envelope.newMessageId()
         markMessageSeen(msgId)
         val line = Envelope.build(
             senderId = PeerRegistry.selfId,

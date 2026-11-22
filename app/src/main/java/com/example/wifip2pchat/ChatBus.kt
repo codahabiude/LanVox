@@ -16,6 +16,10 @@ object ChatBus {
     @Volatile
     var activeChatPeerId: String? = null
 
+    /** True only while ChatActivity is resumed and visible in the foreground. */
+    @Volatile
+    var isChatScreenForeground: Boolean = false
+
     /** Set by ChatActivity: (saved message, peer id it belongs to). */
     @Volatile
     var onMessageSaved: ((ChatMessage, String) -> Unit)? = null

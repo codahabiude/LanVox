@@ -12,7 +12,8 @@ import androidx.room.PrimaryKey
     tableName = "messages",
     indices = [
         Index(value = ["timestamp"], name = "idx_messages_ts"),
-        Index(value = ["peer_id"], name = "idx_messages_peer")
+        Index(value = ["peer_id"], name = "idx_messages_peer"),
+        Index(value = ["message_id"], name = "idx_messages_msg_id")
     ]
 )
 data class ChatMessageEntity(
@@ -44,5 +45,7 @@ data class ChatMessageEntity(
     @ColumnInfo(name = "attachment_state")
     val attachmentState: String = AttachmentState.NONE.name,
     @ColumnInfo(name = "transfer_id")
-    val transferId: String? = null
+    val transferId: String? = null,
+    @ColumnInfo(name = "message_id")
+    val messageId: String? = null
 )

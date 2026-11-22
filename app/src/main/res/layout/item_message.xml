@@ -242,6 +242,17 @@
                 android:src="@drawable/ic_check"
                 android:tint="@color/tick_sent"
                 android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/tvReadStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="3dp"
+                android:fontFamily="@font/jetbrains_mono"
+                android:letterSpacing="0.02"
+                android:textColor="@color/tick_sent"
+                android:textSize="10sp"
+                android:visibility="gone" />
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

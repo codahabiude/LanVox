@@ -48,7 +48,8 @@ data class ChatMessage(
     val attachmentSize: Long = 0L,
     val attachmentPath: String? = null,
     val attachmentState: AttachmentState = AttachmentState.NONE,
-    val transferId: String? = null
+    val transferId: String? = null,
+    val messageId: String? = if (isSentByMe) Envelope.newMessageId() else null
 ) {
     val isFileMessage: Boolean
         get() = !attachmentName.isNullOrBlank()

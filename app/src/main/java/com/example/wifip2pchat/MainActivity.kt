@@ -91,19 +91,19 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
          * Transmit a text message over the live chat channel.
          * Defaults to the currently connected peer (1:1).
          */
-        fun transmitMessage(text: String): Boolean {
+        fun transmitMessage(text: String, msgId: String? = null): Boolean {
             val instance = staticInstance ?: return false
             val recipient = currentPeerId ?: return false
-            return instance.transmitText(recipient, text)
+            return instance.transmitText(recipient, text, msgId)
         }
 
         /**
          * Transmit a text message addressed to a specific peer.
          * Use "*" for group broadcast.
          */
-        fun transmitMessageTo(recipientId: String, text: String): Boolean {
+        fun transmitMessageTo(recipientId: String, text: String, msgId: String? = null): Boolean {
             val instance = staticInstance ?: return false
-            return instance.transmitText(recipientId, text)
+            return instance.transmitText(recipientId, text, msgId)
         }
 
         fun sendReadReceiptStatic(threadPeerId: String?) {
@@ -910,6 +910,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         updateActiveChatHeader()
         ChatBus.notifyConnectionChanged(connected)
         refreshPeerPickerBottomSheet()
+        if (connected && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            sendReadReceipt(activeThreadPeerId())
+        }
     }
 
     private fun onPeerClicked(device: WifiP2pDevice) {
@@ -1093,10 +1096,10 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             }
             payload.startsWith(Constants.MSG_TYPE_TEXT) -> {
                 val text = payload.removePrefix(Constants.MSG_TYPE_TEXT)
-                onIncomingText(text, env.senderId, env.senderName, env.recipientId)
+                onIncomingText(text, env.senderId, env.senderName, env.recipientId, env.msgId)
             }
             payload.startsWith(Constants.MSG_TYPE_FILE) -> {
-                onIncomingFile(payload, env.senderId, env.senderName, env.recipientId)
+                onIncomingFile(payload, env.senderId, env.senderName, env.recipientId, env.msgId)
             }
             payload.startsWith(Constants.MSG_TYPE_FILE_DONE) -> {
                 val transferId = payload.removePrefix(Constants.MSG_TYPE_FILE_DONE).trim()
@@ -1127,25 +1130,35 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 }
             }
             payload.startsWith(Constants.MSG_TYPE_ACK) -> {
-                val scope = payload.removePrefix(Constants.MSG_TYPE_ACK)
-                val targetThread = if (scope == Constants.GROUP_PEER_ID) {
+                val rawAck = payload.removePrefix(Constants.MSG_TYPE_ACK)
+                val scopeSuffix = rawAck.substringBefore('|')
+                val msgIds = rawAck.substringAfter('|', "")
+                    .split(',')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
                     Constants.GROUP_PEER_ID
                 } else {
                     env.senderId
                 }
                 lifecycleScope.launch {
-                    chatRepository.markThreadDelivered(targetThread)
+                    chatRepository.markMessagesDelivered(targetThread, msgIds)
                 }
             }
             payload.startsWith(Constants.MSG_TYPE_READ) -> {
-                val scope = payload.removePrefix(Constants.MSG_TYPE_READ)
-                val targetThread = if (scope == Constants.GROUP_PEER_ID) {
+                val rawRead = payload.removePrefix(Constants.MSG_TYPE_READ)
+                val scopeSuffix = rawRead.substringBefore('|')
+                val msgIds = rawRead.substringAfter('|', "")
+                    .split(',')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
                     Constants.GROUP_PEER_ID
                 } else {
                     env.senderId
                 }
                 lifecycleScope.launch {
-                    chatRepository.markThreadRead(targetThread)
+                    chatRepository.markMessagesRead(targetThread, msgIds)
                 }
             }
             else -> {
@@ -1183,7 +1196,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         text: String,
         senderId: String,
         senderName: String,
-        recipientId: String
+        recipientId: String,
+        msgId: String? = null
     ) {
         val threadPeerId = if (recipientId == Constants.RECIPIENT_BROADCAST) {
             Constants.GROUP_PEER_ID
@@ -1196,29 +1210,33 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             senderName
         }
         val displaySender = if (recipientId == Constants.RECIPIENT_BROADCAST) senderName else null
-        val message = ChatMessage(text, isSentByMe = false, senderName = displaySender)
+        val isActivelyViewing = (ChatBus.isChatScreenForeground && ChatBus.activeChatPeerId == threadPeerId) ||
+            (threadPeerId == activeThreadPeerId() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+        val canAck = envIsDirectOrKnown(senderId)
+        val message = ChatMessage(
+            text = text,
+            isSentByMe = false,
+            status = if (isActivelyViewing && canAck) MessageStatus.READ else MessageStatus.NONE,
+            senderName = displaySender,
+            messageId = msgId
+        )
 
         lifecycleScope.launch {
             chatRepository.insertMessage(message, threadPeerId, threadPeerName)
+            // Confirm receipt back to sender once persisted locally
+            if (canAck) {
+                val scopeSuffix = if (recipientId == Constants.RECIPIENT_BROADCAST) Constants.GROUP_PEER_ID else ""
+                val idSuffix = msgId?.takeIf { it.isNotBlank() }?.let { "|$it" } ?: ""
+                sendControlMessage(Constants.MSG_TYPE_ACK + scopeSuffix + idSuffix, senderId)
+                if (isActivelyViewing) {
+                    sendControlMessage(Constants.MSG_TYPE_READ + scopeSuffix + idSuffix, senderId)
+                }
+            }
         }
 
         ChatBus.notifyMessageSaved(message, threadPeerId)
 
-        // Emit delivery receipt immediately; emit read receipt if this thread is actively viewed
-        if (envIsDirectOrKnown(senderId)) {
-            val scopeSuffix = if (recipientId == Constants.RECIPIENT_BROADCAST) Constants.GROUP_PEER_ID else ""
-            sendControlMessage(Constants.MSG_TYPE_ACK + scopeSuffix, senderId)
-            val isActivelyViewing = ChatBus.activeChatPeerId == threadPeerId ||
-                (threadPeerId == activeThreadPeerId() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
-            if (isActivelyViewing) {
-                sendControlMessage(Constants.MSG_TYPE_READ + scopeSuffix, senderId)
-            }
-        }
-
-        if (ChatBus.activeChatPeerId != threadPeerId &&
-            threadPeerId != activeThreadPeerId() &&
-            lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-        ) {
+        if (!isActivelyViewing && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
             val from = if (recipientId == Constants.RECIPIENT_BROADCAST) {
                 "$senderName in group"
             } else {
@@ -1232,7 +1250,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         payload: String,
         senderId: String,
         senderName: String,
-        recipientId: String
+        recipientId: String,
+        msgId: String? = null
     ) {
         val offer = FileTransferManager.FileOffer.fromPayload(payload) ?: return
         val threadPeerId = if (recipientId == Constants.RECIPIENT_BROADCAST) {
@@ -1247,21 +1266,35 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
         val displaySender = if (recipientId == Constants.RECIPIENT_BROADCAST) senderName else null
         val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize)
+        val isActivelyViewing = (ChatBus.isChatScreenForeground && ChatBus.activeChatPeerId == threadPeerId) ||
+            (threadPeerId == activeThreadPeerId() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+        val canAck = envIsDirectOrKnown(senderId)
 
         val message = ChatMessage(
             text = summary,
             isSentByMe = false,
+            status = if (isActivelyViewing && canAck) MessageStatus.READ else MessageStatus.NONE,
             senderName = displaySender,
             attachmentName = offer.fileName,
             attachmentMime = offer.mimeType,
             attachmentSize = offer.fileSize,
             attachmentState = AttachmentState.TRANSFERRING,
-            transferId = offer.transferId
+            transferId = offer.transferId,
+            messageId = msgId
         )
 
         lifecycleScope.launch {
             chatRepository.insertMessage(message, threadPeerId, threadPeerName)
             ChatBus.notifyMessageSaved(message, threadPeerId)
+
+            if (canAck) {
+                val scopeSuffix = if (recipientId == Constants.RECIPIENT_BROADCAST) Constants.GROUP_PEER_ID else ""
+                val idSuffix = msgId?.takeIf { it.isNotBlank() }?.let { "|$it" } ?: ""
+                sendControlMessage(Constants.MSG_TYPE_ACK + scopeSuffix + idSuffix, senderId)
+                if (isActivelyViewing) {
+                    sendControlMessage(Constants.MSG_TYPE_READ + scopeSuffix + idSuffix, senderId)
+                }
+            }
 
             val savedFile = FileTransferManager.downloadOffer(
                 applicationContext,
@@ -1272,7 +1305,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             val newState = if (savedFile != null) AttachmentState.COMPLETED else AttachmentState.FAILED
             chatRepository.updateAttachmentState(offer.transferId, savedFile?.absolutePath, newState)
 
-            if (envIsDirectOrKnown(senderId)) {
+            if (canAck) {
                 val receipt = if (savedFile != null) {
                     Constants.MSG_TYPE_FILE_DONE + offer.transferId
                 } else {
@@ -1288,20 +1321,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             }
         }
 
-        if (envIsDirectOrKnown(senderId)) {
-            val scopeSuffix = if (recipientId == Constants.RECIPIENT_BROADCAST) Constants.GROUP_PEER_ID else ""
-            sendControlMessage(Constants.MSG_TYPE_ACK + scopeSuffix, senderId)
-            val isActivelyViewing = ChatBus.activeChatPeerId == threadPeerId ||
-                (threadPeerId == activeThreadPeerId() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
-            if (isActivelyViewing) {
-                sendControlMessage(Constants.MSG_TYPE_READ + scopeSuffix, senderId)
-            }
-        }
-
-        if (ChatBus.activeChatPeerId != threadPeerId &&
-            threadPeerId != activeThreadPeerId() &&
-            lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-        ) {
+        if (!isActivelyViewing && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
             showSnackbar("Incoming file from $senderName: ${offer.fileName}")
         }
     }
@@ -1352,7 +1372,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             ChatBus.notifyMessageSaved(msg, threadPeerId)
 
             val uploaded = FileTransferManager.pushStagedFileToGroup(staged)
-            val signaled = if (uploaded) transmitPayload(recipientId, offer.toPayload()) else false
+            val signaled = if (uploaded) transmitPayload(recipientId, offer.toPayload(), msg.messageId) else false
             if (!signaled) {
                 FileTransferTracker.markSignalFailed(offer.transferId)
                 chatRepository.updateAttachmentState(offer.transferId, staged.localFile.absolutePath, AttachmentState.FAILED)
@@ -1369,10 +1389,25 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
     private fun sendReadReceipt(threadPeerId: String?) {
         if (!isNetworkConnected() || threadPeerId.isNullOrBlank()) return
-        if (threadPeerId == Constants.GROUP_PEER_ID) {
-            sendControlMessage(Constants.MSG_TYPE_READ + Constants.GROUP_PEER_ID, Constants.RECIPIENT_BROADCAST)
-        } else {
-            sendControlMessage(Constants.MSG_TYPE_READ, threadPeerId)
+        lifecycleScope.launch {
+            val unreadCount = chatRepository.countUnreadIncoming(threadPeerId)
+            if (unreadCount <= 0) return@launch
+            val unreadIds = chatRepository.getUnreadIncomingMessageIds(threadPeerId)
+            val isGroup = threadPeerId == Constants.GROUP_PEER_ID
+            val scopeSuffix = if (isGroup) Constants.GROUP_PEER_ID else ""
+            val target = if (isGroup) Constants.RECIPIENT_BROADCAST else threadPeerId
+
+            if (unreadIds.isNotEmpty()) {
+                unreadIds.chunked(25).forEach { chunk ->
+                    sendControlMessage(
+                        Constants.MSG_TYPE_READ + scopeSuffix + "|" + chunk.joinToString(","),
+                        target
+                    )
+                }
+            } else {
+                sendControlMessage(Constants.MSG_TYPE_READ + scopeSuffix, target)
+            }
+            chatRepository.markIncomingThreadRead(threadPeerId)
         }
     }
 
@@ -1398,14 +1433,14 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             threadPeerId
         }
 
+        val message = ChatMessage(text, isSentByMe = true)
         if (isNetworkConnected()) {
-            val sent = transmitText(recipient, text)
+            val sent = transmitText(recipient, text, message.messageId)
             if (!sent) {
                 showSnackbar("Failed to transmit — saved locally")
             }
         }
 
-        val message = ChatMessage(text, isSentByMe = true)
         etMessage.text.clear()
         if (searchQueryFlow.value.isNotBlank()) {
             setSearchOpen(false)
@@ -1476,16 +1511,16 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
      * If [recipientId] is "*" the message goes to the group chat (broadcast).
      * Otherwise it routes directly to that peer (with relay fallback).
      */
-    private fun transmitText(recipientId: String, text: String): Boolean =
-        transmitPayload(recipientId, Constants.MSG_TYPE_TEXT + text)
+    private fun transmitText(recipientId: String, text: String, msgId: String? = null): Boolean =
+        transmitPayload(recipientId, Constants.MSG_TYPE_TEXT + text, msgId)
 
-    private fun transmitPayload(recipientId: String, payload: String): Boolean {
+    private fun transmitPayload(recipientId: String, payload: String, msgId: String? = null): Boolean {
         return try {
             if (!ChatServerService.running) return false
             if (recipientId == Constants.RECIPIENT_BROADCAST) {
-                ChatServerService.sendBroadcast(payload)
+                ChatServerService.sendBroadcast(payload, msgId)
             } else {
-                ChatServerService.sendTo(recipientId, payload)
+                ChatServerService.sendTo(recipientId, payload, msgId)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Transmit failed: ${e.message}")

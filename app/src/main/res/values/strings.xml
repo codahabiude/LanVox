@@ -81,4 +81,7 @@
     <string name="action_disconnect_peer_sub">Close the active Wi-Fi Direct session</string>
     <string name="action_clear_history">Delete All Chat History</string>
     <string name="action_clear_history_sub">Permanently wipe saved messages from this phone</string>
+    <string name="status_msg_sent">Sent</string>
+    <string name="status_msg_delivered">Delivered</string>
+    <string name="status_msg_read">Read</string>
 </resources>

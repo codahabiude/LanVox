@@ -43,11 +43,13 @@ class ChatsAdapter(
     inner class ConversationViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         private val tvAvatar: TextView = itemView.findViewById(R.id.tvAvatar)
         private val tvName: TextView = itemView.findViewById(R.id.tvConvName)
+        private val ivTick: android.widget.ImageView = itemView.findViewById(R.id.ivConvTick)
         private val tvPreview: TextView = itemView.findViewById(R.id.tvConvPreview)
         private val tvTime: TextView = itemView.findViewById(R.id.tvConvTime)
         private val tvCount: TextView = itemView.findViewById(R.id.tvConvCount)
 
         fun bind(conversation: Conversation) {
+            val ctx = itemView.context
             val name = conversation.peerName?.takeIf { it.isNotBlank() }
                 ?: conversation.peerId
             tvName.text = name
@@ -55,6 +57,29 @@ class ChatsAdapter(
 
             val prefix = if (conversation.lastIsSentByMe) "You: " else ""
             tvPreview.text = prefix + conversation.lastText.replace("\n", " ")
+
+            if (conversation.lastIsSentByMe) {
+                ivTick.visibility = View.VISIBLE
+                when (conversation.lastStatus) {
+                    MessageStatus.READ -> {
+                        ivTick.setImageResource(R.drawable.ic_check_double)
+                        ivTick.setColorFilter(androidx.core.content.ContextCompat.getColor(ctx, R.color.tick_read))
+                        ivTick.contentDescription = ctx.getString(R.string.status_msg_read)
+                    }
+                    MessageStatus.DELIVERED -> {
+                        ivTick.setImageResource(R.drawable.ic_check_double)
+                        ivTick.setColorFilter(androidx.core.content.ContextCompat.getColor(ctx, R.color.tick_delivered))
+                        ivTick.contentDescription = ctx.getString(R.string.status_msg_delivered)
+                    }
+                    else -> {
+                        ivTick.setImageResource(R.drawable.ic_check)
+                        ivTick.setColorFilter(androidx.core.content.ContextCompat.getColor(ctx, R.color.tick_sent))
+                        ivTick.contentDescription = ctx.getString(R.string.status_msg_sent)
+                    }
+                }
+            } else {
+                ivTick.visibility = View.GONE
+            }
 
             tvTime.text = if (DateUtils.isToday(conversation.lastTimestamp)) {
                 timeFormat.format(Date(conversation.lastTimestamp))

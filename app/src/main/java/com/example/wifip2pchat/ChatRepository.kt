@@ -14,7 +14,8 @@ data class Conversation(
     val lastText: String,
     val lastIsSentByMe: Boolean,
     val lastTimestamp: Long,
-    val messageCount: Int
+    val messageCount: Int,
+    val lastStatus: MessageStatus = MessageStatus.NONE
 )
 
 /**
@@ -62,7 +63,8 @@ class ChatRepository(private val dao: ChatMessageDao) {
             attachmentSize = message.attachmentSize,
             attachmentPath = message.attachmentPath,
             attachmentState = message.attachmentState.name,
-            transferId = message.transferId
+            transferId = message.transferId,
+            messageId = message.messageId
         )
         return dao.insertMessage(entity)
     }
@@ -92,6 +94,23 @@ class ChatRepository(private val dao: ChatMessageDao) {
         )
     }
 
+    suspend fun markMessagesDelivered(peerId: String, messageIds: List<String>) {
+        if (peerId.isBlank()) return
+        val clean = messageIds.filter { it.isNotBlank() }.distinct()
+        if (clean.isEmpty()) {
+            markThreadDelivered(peerId)
+            return
+        }
+        clean.chunked(500).forEach { chunk ->
+            dao.updateOutgoingStatusByMessageIds(
+                peerId = peerId,
+                messageIds = chunk,
+                newStatus = MessageStatus.DELIVERED.name,
+                fromStatuses = listOf(MessageStatus.SENT.name)
+            )
+        }
+    }
+
     suspend fun markThreadRead(peerId: String) {
         if (peerId.isBlank()) return
         dao.updateOutgoingStatus(
@@ -99,6 +118,38 @@ class ChatRepository(private val dao: ChatMessageDao) {
             newStatus = MessageStatus.READ.name,
             fromStatuses = listOf(MessageStatus.SENT.name, MessageStatus.DELIVERED.name)
         )
+    }
+
+    suspend fun markMessagesRead(peerId: String, messageIds: List<String>) {
+        if (peerId.isBlank()) return
+        val clean = messageIds.filter { it.isNotBlank() }.distinct()
+        if (clean.isEmpty()) {
+            markThreadRead(peerId)
+            return
+        }
+        clean.chunked(500).forEach { chunk ->
+            dao.updateOutgoingStatusByMessageIds(
+                peerId = peerId,
+                messageIds = chunk,
+                newStatus = MessageStatus.READ.name,
+                fromStatuses = listOf(MessageStatus.SENT.name, MessageStatus.DELIVERED.name)
+            )
+        }
+    }
+
+    suspend fun getUnreadIncomingMessageIds(peerId: String): List<String> {
+        if (peerId.isBlank()) return emptyList()
+        return dao.getUnreadIncomingMessageIds(peerId)
+    }
+
+    suspend fun countUnreadIncoming(peerId: String): Int {
+        if (peerId.isBlank()) return 0
+        return dao.countUnreadIncoming(peerId)
+    }
+
+    suspend fun markIncomingThreadRead(peerId: String) {
+        if (peerId.isBlank()) return
+        dao.markIncomingThreadRead(peerId)
     }
 
     suspend fun updateAttachmentState(
@@ -156,16 +207,23 @@ class ChatRepository(private val dao: ChatMessageDao) {
             attachmentSize = attachmentSize,
             attachmentPath = attachmentPath,
             attachmentState = parsedAttachmentState,
-            transferId = transferId
+            transferId = transferId,
+            messageId = messageId
         )
     }
 
-    private fun ConversationTuple.toDomain(): Conversation = Conversation(
-        peerId = peerId,
-        peerName = peerName,
-        lastText = lastText ?: "",
-        lastIsSentByMe = lastIsSent == 1,
-        lastTimestamp = lastTimestamp,
-        messageCount = messageCount
-    )
+    private fun ConversationTuple.toDomain(): Conversation {
+        val parsedLastStatus = lastStatus?.let {
+            runCatching { MessageStatus.valueOf(it) }.getOrNull()
+        } ?: if (lastIsSent == 1) MessageStatus.SENT else MessageStatus.NONE
+        return Conversation(
+            peerId = peerId,
+            peerName = peerName,
+            lastText = lastText ?: "",
+            lastIsSentByMe = lastIsSent == 1,
+            lastTimestamp = lastTimestamp,
+            messageCount = messageCount,
+            lastStatus = parsedLastStatus
+        )
+    }
 }

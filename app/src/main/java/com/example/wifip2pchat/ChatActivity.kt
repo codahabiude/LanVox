@@ -212,11 +212,18 @@ class ChatActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         ChatBus.activeChatPeerId = peerId
+        ChatBus.isChatScreenForeground = true
         updateConnectionUi()
         MainActivity.sendReadReceiptStatic(peerId)
     }
 
+    override fun onPause() {
+        ChatBus.isChatScreenForeground = false
+        super.onPause()
+    }
+
     override fun onDestroy() {
+        ChatBus.isChatScreenForeground = false
         if (ChatBus.activeChatPeerId == peerId) ChatBus.activeChatPeerId = null
         ChatBus.onMessageSaved = null
         ChatBus.onConnectionStateChanged = null
@@ -335,13 +342,13 @@ class ChatActivity : AppCompatActivity() {
                 return
             }
         }
-        if (!MainActivity.transmitMessageTo(recipient, text)) {
+        val message = ChatMessage(text, isSentByMe = true)
+        if (!MainActivity.transmitMessageTo(recipient, text, message.messageId)) {
             Snackbar.make(chatRoot, "Failed to send — no live channel", Snackbar.LENGTH_SHORT).show()
             return
         }
 
         // Persist to this contact's thread (Room Flow updates RecyclerView), clear input
-        val message = ChatMessage(text, isSentByMe = true)
         lifecycleScope.launch {
             chatRepository.insertMessage(message, peerId, peerName)
         }
@@ -404,6 +411,9 @@ class ChatActivity : AppCompatActivity() {
             "online · encrypted"
         } else {
             "offline — history only"
+        }
+        if (liveWithThisPeer && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            MainActivity.sendReadReceiptStatic(pid)
         }
     }
 }

@@ -14,6 +14,7 @@ data class ConversationTuple(
     val peerName: String?,
     val lastText: String?,
     val lastIsSent: Int,
+    val lastStatus: String?,
     val lastTimestamp: Long,
     val messageCount: Int
 )
@@ -61,6 +62,9 @@ interface ChatMessageDao {
             (SELECT m2.is_sent FROM messages m2
               WHERE m2.peer_id = m.peer_id
               ORDER BY m2.timestamp DESC, m2._id DESC LIMIT 1) AS lastIsSent,
+            (SELECT m2.status FROM messages m2
+              WHERE m2.peer_id = m.peer_id
+              ORDER BY m2.timestamp DESC, m2._id DESC LIMIT 1) AS lastStatus,
             MAX(m.timestamp) AS lastTimestamp,
             COUNT(*) AS messageCount
         FROM messages m
@@ -83,6 +87,9 @@ interface ChatMessageDao {
             (SELECT m2.is_sent FROM messages m2
               WHERE m2.peer_id = m.peer_id
               ORDER BY m2.timestamp DESC, m2._id DESC LIMIT 1) AS lastIsSent,
+            (SELECT m2.status FROM messages m2
+              WHERE m2.peer_id = m.peer_id
+              ORDER BY m2.timestamp DESC, m2._id DESC LIMIT 1) AS lastStatus,
             MAX(m.timestamp) AS lastTimestamp,
             COUNT(*) AS messageCount
         FROM messages m
@@ -104,6 +111,30 @@ interface ChatMessageDao {
 
     @Query("UPDATE messages SET status = :newStatus WHERE peer_id = :peerId AND is_sent = 1 AND status IN (:fromStatuses)")
     suspend fun updateOutgoingStatus(peerId: String, newStatus: String, fromStatuses: List<String>): Int
+
+    @Query(
+        "UPDATE messages SET status = :newStatus " +
+            "WHERE peer_id = :peerId AND is_sent = 1 AND message_id IN (:messageIds) AND status IN (:fromStatuses)"
+    )
+    suspend fun updateOutgoingStatusByMessageIds(
+        peerId: String,
+        messageIds: List<String>,
+        newStatus: String,
+        fromStatuses: List<String>
+    ): Int
+
+    @Query(
+        "SELECT message_id FROM messages " +
+            "WHERE peer_id = :peerId AND is_sent = 0 AND status != 'READ' " +
+            "AND message_id IS NOT NULL AND message_id != ''"
+    )
+    suspend fun getUnreadIncomingMessageIds(peerId: String): List<String>
+
+    @Query("SELECT COUNT(*) FROM messages WHERE peer_id = :peerId AND is_sent = 0 AND status != 'READ'")
+    suspend fun countUnreadIncoming(peerId: String): Int
+
+    @Query("UPDATE messages SET status = 'READ' WHERE peer_id = :peerId AND is_sent = 0 AND status != 'READ'")
+    suspend fun markIncomingThreadRead(peerId: String): Int
 
     @Query("UPDATE messages SET attachment_path = :attachmentPath, attachment_state = :attachmentState WHERE transfer_id = :transferId")
     suspend fun updateAttachmentByTransferId(transferId: String, attachmentPath: String?, attachmentState: String): Int

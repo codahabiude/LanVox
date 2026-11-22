@@ -439,33 +439,47 @@ class CallListenerService : Service() {
                 Log.d(TAG, "Peer declined (app closed) — ignoring")
             }
             payload.startsWith(Constants.MSG_TYPE_ACK) -> {
-                val scopeSuffix = payload.removePrefix(Constants.MSG_TYPE_ACK)
+                val rawAck = payload.removePrefix(Constants.MSG_TYPE_ACK)
+                val scopeSuffix = rawAck.substringBefore('|')
+                val msgIds = rawAck.substringAfter('|', "")
+                    .split(',')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
                 val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
                     Constants.GROUP_PEER_ID
                 } else {
                     senderId
                 }
                 scope.launch {
-                    runCatching { ChatRepository.get(applicationContext).markThreadDelivered(targetThread) }
+                    runCatching {
+                        ChatRepository.get(applicationContext).markMessagesDelivered(targetThread, msgIds)
+                    }
                 }
             }
             payload.startsWith(Constants.MSG_TYPE_READ) -> {
-                val scopeSuffix = payload.removePrefix(Constants.MSG_TYPE_READ)
+                val rawRead = payload.removePrefix(Constants.MSG_TYPE_READ)
+                val scopeSuffix = rawRead.substringBefore('|')
+                val msgIds = rawRead.substringAfter('|', "")
+                    .split(',')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
                 val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
                     Constants.GROUP_PEER_ID
                 } else {
                     senderId
                 }
                 scope.launch {
-                    runCatching { ChatRepository.get(applicationContext).markThreadRead(targetThread) }
+                    runCatching {
+                        ChatRepository.get(applicationContext).markMessagesRead(targetThread, msgIds)
+                    }
                 }
             }
             payload.startsWith(Constants.MSG_TYPE_TEXT) -> {
                 val cleanText = payload.removePrefix(Constants.MSG_TYPE_TEXT)
-                onIncomingText(cleanText, senderId, senderName, recipientId)
+                onIncomingText(cleanText, senderId, senderName, recipientId, env?.msgId)
             }
             payload.startsWith(Constants.MSG_TYPE_FILE) -> {
-                onIncomingFile(payload, senderId, senderName, recipientId)
+                onIncomingFile(payload, senderId, senderName, recipientId, env?.msgId)
             }
             payload.startsWith(Constants.MSG_TYPE_FILE_DONE) -> {
                 val transferId = payload.removePrefix(Constants.MSG_TYPE_FILE_DONE).trim()
@@ -628,7 +642,8 @@ class CallListenerService : Service() {
         text: String,
         senderId: String,
         senderName: String,
-        recipientId: String
+        recipientId: String,
+        msgId: String? = null
     ) {
         val threadId = if (recipientId == Constants.RECIPIENT_BROADCAST && senderId != "unknown") {
             Constants.GROUP_PEER_ID
@@ -641,16 +656,26 @@ class CallListenerService : Service() {
             senderName
         }
         val displaySender = if (threadId == Constants.GROUP_PEER_ID) senderName else null
+        val scopeSuffix = if (threadId == Constants.GROUP_PEER_ID) Constants.GROUP_PEER_ID else ""
+        val idSuffix = msgId?.takeIf { it.isNotBlank() }?.let { "|$it" } ?: ""
 
         // Persist via Room so the conversation is complete when the app is opened
         scope.launch {
             try {
                 ChatRepository.get(applicationContext)
                     .insertMessage(
-                        ChatMessage(text, isSentByMe = false, senderName = displaySender),
+                        ChatMessage(
+                            text = text,
+                            isSentByMe = false,
+                            senderName = displaySender,
+                            messageId = msgId
+                        ),
                         threadId,
                         threadName
                     )
+                if (senderId != "unknown") {
+                    sendControl(Constants.MSG_TYPE_ACK + scopeSuffix + idSuffix, senderId)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Could not persist standby message: ${e.message}")
             }
@@ -681,7 +706,8 @@ class CallListenerService : Service() {
         payload: String,
         senderId: String,
         senderName: String,
-        recipientId: String
+        recipientId: String,
+        msgId: String? = null
     ) {
         val offer = FileTransferManager.FileOffer.fromPayload(payload) ?: return
         val threadId = if (recipientId == Constants.RECIPIENT_BROADCAST && senderId != "unknown") {
@@ -696,6 +722,8 @@ class CallListenerService : Service() {
         }
         val displaySender = if (threadId == Constants.GROUP_PEER_ID) senderName else null
         val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize)
+        val scopeSuffix = if (threadId == Constants.GROUP_PEER_ID) Constants.GROUP_PEER_ID else ""
+        val idSuffix = msgId?.takeIf { it.isNotBlank() }?.let { "|$it" } ?: ""
 
         scope.launch {
             try {
@@ -709,11 +737,15 @@ class CallListenerService : Service() {
                         attachmentMime = offer.mimeType,
                         attachmentSize = offer.fileSize,
                         attachmentState = AttachmentState.TRANSFERRING,
-                        transferId = offer.transferId
+                        transferId = offer.transferId,
+                        messageId = msgId
                     ),
                     threadId,
                     threadName
                 )
+                if (senderId != "unknown") {
+                    sendControl(Constants.MSG_TYPE_ACK + scopeSuffix + idSuffix, senderId)
+                }
                 val savedFile = FileTransferManager.downloadOffer(
                     applicationContext,
                     offer,
