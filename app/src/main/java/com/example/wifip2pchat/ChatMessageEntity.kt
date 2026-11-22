@@ -47,5 +47,15 @@ data class ChatMessageEntity(
     @ColumnInfo(name = "transfer_id")
     val transferId: String? = null,
     @ColumnInfo(name = "message_id")
-    val messageId: String? = null
+    val messageId: String? = null,
+    @ColumnInfo(name = "reply_to_id")
+    val replyToId: String? = null,
+    @ColumnInfo(name = "reply_to_sender")
+    val replyToSender: String? = null,
+    @ColumnInfo(name = "reply_to_text")
+    val replyToText: String? = null,
+    @ColumnInfo(name = "reactions")
+    val reactions: String? = null,
+    @ColumnInfo(name = "is_starred")
+    val isStarred: Int = 0
 )

@@ -1,28 +1,28 @@
 package com.example.wifip2pchat
 
 import android.content.Intent
+import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.view.WindowManager
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
 import java.util.Locale
 
 /**
- * Full-screen Activity for an audio call.
- *
- * Improvements:
- *  - Immediate foreground service start with Intent extras (no 500ms postDelayed race)
- *  - Accurate Ringing → Connecting → Connected status driven by [CallSessionBus]
- *  - Software mic mute via [AudioCallService.setMuted] + AudioFocus & communication routing
- *  - Bidirectional hangup signaling ([Constants.MSG_TYPE_CALL_END]) & clean auto-dismissal
- *  - Modern [OnBackPressedCallback]
+ * Full-screen Activity for a WebRTC audio call featuring a floating glassmorphic
+ * active call timer overlay synchronized with [CallSessionBus].
  */
 class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
 
@@ -32,12 +32,18 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         const val EXTRA_PEER_ID = "extra_peer_id"
         const val EXTRA_PEER_NAME = "extra_peer_name"
         const val EXTRA_IS_OUTGOING = "extra_is_outgoing"
+        private const val TIMER_TICK_MS = 500L
     }
 
     private lateinit var ivAvatar: TextView
     private lateinit var tvCallerName: TextView
     private lateinit var tvCallStatus: TextView
     private lateinit var tvCallDuration: TextView
+    private lateinit var audioTopOverlay: LinearLayout
+    private lateinit var audioMainContent: LinearLayout
+    private lateinit var viewTimerDot: View
+    private lateinit var tvTimerState: TextView
+    private lateinit var tvTimerOverlayDuration: TextView
     private lateinit var btnMute: MaterialButton
     private lateinit var btnEndCall: MaterialButton
     private lateinit var btnSpeaker: MaterialButton
@@ -48,14 +54,27 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
 
     private var isMuted = false
     private var isSpeakerOn = false
-    private var callStartTime = 0L
-    private var timerStarted = false
+    private var timerLoopRunning = false
+    private var pulseBright = true
     private var endedLocally = false
 
     private val durationHandler = Handler(Looper.getMainLooper())
-    private var durationRunnable: Runnable? = null
+    private val durationRunnable = object : Runnable {
+        override fun run() {
+            if (isFinishing || isDestroyed || endedLocally) return
+            updateDurationUi()
+            if (CallSessionBus.currentState == CallSessionBus.CallState.CONNECTED) {
+                pulseBright = !pulseBright
+                viewTimerDot.alpha = if (pulseBright) 1.0f else 0.35f
+            } else {
+                viewTimerDot.alpha = 1.0f
+            }
+            durationHandler.postDelayed(this, TIMER_TICK_MS)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_audio_call)
 
@@ -66,6 +85,8 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         isOutgoing = intent.getBooleanExtra(EXTRA_IS_OUTGOING, false)
 
         initViews()
+        applySafeAreaInsets()
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 Toast.makeText(
@@ -77,14 +98,33 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
             }
         })
 
-        CallSessionBus.configureVoiceAudio(this, speakerOnByDefault = false)
+        val reattachingToLiveCall = CallSessionBus.isCallActive() &&
+            AudioCallService.isRunning &&
+            CallSessionBus.activeCallType == Constants.CALL_TYPE_AUDIO &&
+            (peerId == null || CallSessionBus.activePeerId == peerId)
+
         CallSessionBus.addListener(this)
-        CallSessionBus.startSession(
-            callType = Constants.CALL_TYPE_AUDIO,
-            peerId = peerId,
-            initialState = if (isOutgoing) CallSessionBus.CallState.RINGING else CallSessionBus.CallState.CONNECTING
-        )
-        startAudioCall()
+        if (reattachingToLiveCall) {
+            isMuted = CallSessionBus.currentMuted
+            updateMuteUi()
+            onCallStateChanged(CallSessionBus.currentState)
+        } else {
+            CallSessionBus.configureVoiceAudio(this, speakerOnByDefault = false)
+            CallSessionBus.startSession(
+                callType = Constants.CALL_TYPE_AUDIO,
+                peerId = peerId,
+                initialState = if (isOutgoing) CallSessionBus.CallState.RINGING else CallSessionBus.CallState.CONNECTING
+            )
+            onCallStateChanged(CallSessionBus.currentState)
+            startAudioCall()
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        updateDurationUi()
+        onCallStateChanged(CallSessionBus.currentState)
     }
 
     private fun initViews() {
@@ -92,12 +132,18 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         tvCallerName = findViewById(R.id.tvCallerName)
         tvCallStatus = findViewById(R.id.tvCallStatus)
         tvCallDuration = findViewById(R.id.tvCallDuration)
+        audioTopOverlay = findViewById(R.id.audioTopOverlay)
+        audioMainContent = findViewById(R.id.audioMainContent)
+        viewTimerDot = findViewById(R.id.viewTimerDot)
+        tvTimerState = findViewById(R.id.tvTimerState)
+        tvTimerOverlayDuration = findViewById(R.id.tvTimerOverlayDuration)
         btnMute = findViewById(R.id.btnMute)
         btnEndCall = findViewById(R.id.btnEndCall)
         btnSpeaker = findViewById(R.id.btnSpeaker)
 
         tvCallerName.text = peerName
         ivAvatar.text = peerName.trim().take(1).uppercase(Locale.getDefault()).ifBlank { "L" }
+        updateDurationUi()
         updateSpeakerUi()
         updateMuteUi()
 
@@ -106,11 +152,40 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         btnSpeaker.setOnClickListener { toggleSpeaker() }
     }
 
+    private fun applySafeAreaInsets() {
+        val density = resources.displayMetrics.density
+        val baseOverlaySide = (18 * density).toInt()
+        val baseOverlayTop = (14 * density).toInt()
+        val baseMainSide = (24 * density).toInt()
+        val baseMainTop = (80 * density).toInt()
+        val baseMainBottom = (32 * density).toInt()
+
+        val root = findViewById<View>(R.id.audioCallRoot)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            audioTopOverlay.setPadding(
+                baseOverlaySide + bars.left,
+                baseOverlayTop + bars.top,
+                baseOverlaySide + bars.right,
+                audioTopOverlay.paddingBottom
+            )
+            audioMainContent.setPadding(
+                baseMainSide + bars.left,
+                baseMainTop + bars.top,
+                baseMainSide + bars.right,
+                baseMainBottom + bars.bottom
+            )
+            insets
+        }
+    }
+
     private fun startAudioCall() {
         val isGroupOwner = intent.getBooleanExtra(EXTRA_IS_GROUP_OWNER, false)
         val hostAddress = intent.getStringExtra(EXTRA_HOST_ADDRESS)
 
-        tvCallStatus.text = if (isOutgoing) "Ringing…" else "Connecting…"
+        tvCallStatus.text = if (isOutgoing) "Ringing…" else getString(R.string.call_connecting)
 
         val serviceIntent = Intent(this, AudioCallService::class.java).apply {
             putExtra(AudioCallService.EXTRA_IS_GROUP_OWNER, isGroupOwner)
@@ -124,18 +199,48 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
 
     override fun onCallStateChanged(state: CallSessionBus.CallState) {
         if (isFinishing || isDestroyed) return
+        val mint = ContextCompat.getColor(this, R.color.status_online)
+        val amber = ContextCompat.getColor(this, R.color.status_discovering)
+        val rose = ContextCompat.getColor(this, R.color.status_offline)
+
         when (state) {
-            CallSessionBus.CallState.RINGING -> tvCallStatus.text = "Ringing…"
-            CallSessionBus.CallState.CONNECTING -> tvCallStatus.text = getString(R.string.call_connecting)
+            CallSessionBus.CallState.RINGING -> {
+                tvCallStatus.text = "Ringing…"
+                tvTimerState.text = getString(R.string.call_timer_ringing)
+                styleTimerBadge(amber)
+                updateDurationUi()
+            }
+            CallSessionBus.CallState.CONNECTING -> {
+                tvCallStatus.text = getString(R.string.call_connecting)
+                tvTimerState.text = getString(R.string.call_timer_connecting)
+                styleTimerBadge(amber)
+                updateDurationUi()
+            }
             CallSessionBus.CallState.CONNECTED -> {
                 tvCallStatus.text = getString(R.string.call_connected_webrtc)
-                startDurationTimerIfNeeded()
+                tvTimerState.text = getString(R.string.call_timer_live)
+                styleTimerBadge(mint)
+                startDurationTimerLoop()
             }
             CallSessionBus.CallState.RECONNECTING -> {
                 tvCallStatus.text = getString(R.string.call_reconnecting)
+                tvTimerState.text = getString(R.string.call_timer_reconnecting)
+                styleTimerBadge(amber)
+                updateDurationUi()
             }
-            CallSessionBus.CallState.ENDED -> tvCallStatus.text = getString(R.string.call_ended)
+            CallSessionBus.CallState.ENDED -> {
+                tvCallStatus.text = getString(R.string.call_ended)
+                tvTimerState.text = getString(R.string.call_timer_ended)
+                styleTimerBadge(rose)
+                stopDurationTimerLoop()
+            }
         }
+    }
+
+    private fun styleTimerBadge(color: Int) {
+        tvTimerState.setTextColor(color)
+        (viewTimerDot.background?.mutate() as? GradientDrawable)?.setColor(color)
+        viewTimerDot.alpha = 1.0f
     }
 
     override fun onMuteChanged(muted: Boolean) {
@@ -189,8 +294,8 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
     }
 
     private fun cleanupAndFinish() {
+        stopDurationTimerLoop()
         AudioCallService.endCall()
-        durationRunnable?.let { durationHandler.removeCallbacks(it) }
         CallSessionBus.removeListener(this)
         CallSessionBus.restoreVoiceAudio(this)
         CallSessionBus.clearSession()
@@ -199,26 +304,29 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
 
     // ======================== Duration Timer ========================
 
-    private fun startDurationTimerIfNeeded() {
-        if (timerStarted) return
-        timerStarted = true
-        callStartTime = System.currentTimeMillis()
-        durationRunnable = object : Runnable {
-            override fun run() {
-                val elapsed = System.currentTimeMillis() - callStartTime
-                val minutes = (elapsed / 1000) / 60
-                val seconds = (elapsed / 1000) % 60
-                tvCallDuration.text = String.format(Locale.US, "%02d:%02d", minutes, seconds)
-                durationHandler.postDelayed(this, 1000)
-            }
-        }
-        durationHandler.post(durationRunnable!!)
+    private fun startDurationTimerLoop() {
+        updateDurationUi()
+        if (timerLoopRunning) return
+        timerLoopRunning = true
+        durationHandler.removeCallbacks(durationRunnable)
+        durationHandler.postDelayed(durationRunnable, TIMER_TICK_MS)
+    }
+
+    private fun stopDurationTimerLoop() {
+        timerLoopRunning = false
+        durationHandler.removeCallbacks(durationRunnable)
+    }
+
+    private fun updateDurationUi() {
+        val formatted = CallSessionBus.formatDuration(CallSessionBus.elapsedCallMs())
+        tvCallDuration.text = formatted
+        tvTimerOverlayDuration.text = formatted
     }
 
     override fun onDestroy() {
-        durationRunnable?.let { durationHandler.removeCallbacks(it) }
+        stopDurationTimerLoop()
         CallSessionBus.removeListener(this)
-        if (!endedLocally) {
+        if (!endedLocally && isFinishing) {
             AudioCallService.endCall()
             CallSessionBus.restoreVoiceAudio(this)
             CallSessionBus.clearSession()

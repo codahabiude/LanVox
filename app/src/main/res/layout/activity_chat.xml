@@ -247,6 +247,21 @@
                 android:paddingVertical="8dp" />
 
             <TextView
+                android:id="@+id/tvFilterStarred"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/bg_reaction_chip"
+                android:clickable="true"
+                android:focusable="true"
+                android:fontFamily="@font/jetbrains_mono"
+                android:paddingHorizontal="9dp"
+                android:paddingVertical="5dp"
+                android:text="@string/filter_starred"
+                android:textColor="@color/text_secondary"
+                android:textSize="10.5sp" />
+
+            <TextView
                 android:id="@+id/tvSearchCount"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -271,62 +286,142 @@
         </LinearLayout>
 
         <LinearLayout
-            android:id="@+id/composerDock"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom"
             android:layout_marginHorizontal="12dp"
             android:layout_marginBottom="12dp"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp"
-            android:paddingVertical="5dp"
-            android:background="@drawable/bg_glass_composer">
+            android:orientation="vertical"
+            android:clipChildren="false">
 
-            <ImageView
-                android:id="@+id/btnAttach"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="@string/cd_attach_file"
-                android:padding="13dp"
-                android:src="@drawable/ic_attach"
-                android:tint="@color/brand_secondary" />
-
-            <EditText
-                android:id="@+id/etMessage"
-                android:layout_width="0dp"
+            <TextView
+                android:id="@+id/tvTypingPill"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:minHeight="46dp"
-                android:hint="@string/hint_message"
-                android:inputType="text|textCapSentences"
-                android:maxLines="3"
-                android:textSize="14sp"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_tertiary"
-                android:fontFamily="@font/plus_jakarta_sans"
-                android:background="@android:color/transparent"
-                android:paddingVertical="10dp"
-                android:layout_marginEnd="8dp" />
+                android:layout_marginStart="6dp"
+                android:layout_marginBottom="6dp"
+                android:background="@drawable/bg_reaction_chip"
+                android:fontFamily="@font/jetbrains_mono"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="5dp"
+                android:text="@string/typing_single"
+                android:textColor="@color/status_online"
+                android:textSize="11sp"
+                android:visibility="gone" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnSend"
-                android:layout_width="46dp"
-                android:layout_height="46dp"
-                android:contentDescription="@string/cd_send_message"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:insetLeft="0dp"
-                android:insetRight="0dp"
-                app:cornerRadius="23dp"
-                app:backgroundTint="@color/brand_secondary"
-                app:icon="@drawable/ic_send"
-                app:iconGravity="textStart"
-                app:iconPadding="0dp"
-                app:iconSize="19dp"
-                app:iconTint="@color/text_on_primary" />
+            <LinearLayout
+                android:id="@+id/layoutReplyPreview"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="6dp"
+                android:background="@drawable/bg_glass_thread_bar"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingEnd="4dp"
+                android:paddingVertical="6dp"
+                android:visibility="gone">
+
+                <View
+                    android:layout_width="3dp"
+                    android:layout_height="28dp"
+                    android:layout_marginEnd="10dp"
+                    android:background="@color/brand_secondary" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/tvReplyPreviewSender"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:fontFamily="@font/space_grotesk"
+                        android:maxLines="1"
+                        android:textColor="@color/brand_secondary"
+                        android:textSize="11.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvReplyPreviewText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:fontFamily="@font/plus_jakarta_sans"
+                        android:maxLines="1"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <ImageView
+                    android:id="@+id/btnCancelReply"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/cd_cancel_reply"
+                    android:padding="14dp"
+                    android:src="@drawable/ic_close"
+                    android:tint="@color/text_secondary" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/composerDock"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:paddingVertical="5dp"
+                android:background="@drawable/bg_glass_composer">
+
+                <ImageView
+                    android:id="@+id/btnAttach"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/cd_attach_file"
+                    android:padding="13dp"
+                    android:src="@drawable/ic_attach"
+                    android:tint="@color/brand_secondary" />
+
+                <EditText
+                    android:id="@+id/etMessage"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="46dp"
+                    android:hint="@string/hint_message"
+                    android:inputType="text|textCapSentences"
+                    android:maxLines="3"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_primary"
+                    android:textColorHint="@color/text_tertiary"
+                    android:fontFamily="@font/plus_jakarta_sans"
+                    android:background="@android:color/transparent"
+                    android:paddingVertical="10dp"
+                    android:layout_marginEnd="8dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnSend"
+                    android:layout_width="46dp"
+                    android:layout_height="46dp"
+                    android:contentDescription="@string/cd_send_message"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:insetLeft="0dp"
+                    android:insetRight="0dp"
+                    app:cornerRadius="23dp"
+                    app:backgroundTint="@color/brand_secondary"
+                    app:icon="@drawable/ic_send"
+                    app:iconGravity="textStart"
+                    app:iconPadding="0dp"
+                    app:iconSize="19dp"
+                    app:iconTint="@color/text_on_primary" />
+            </LinearLayout>
         </LinearLayout>
     </FrameLayout>
 </LinearLayout>

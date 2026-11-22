@@ -3,6 +3,8 @@ package com.example.wifip2pchat
 import android.content.Context
 import android.text.format.DateFormat
 import android.text.format.DateUtils
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Date
 import java.util.UUID
 
@@ -32,6 +34,25 @@ enum class AttachmentState {
 }
 
 /**
+ * Aggregated emoji reaction pill model for display below a message bubble.
+ */
+data class ReactionChip(
+    val emoji: String,
+    val count: Int,
+    val reactedByMe: Boolean
+)
+
+/**
+ * Decoded quoted-reply envelope payload.
+ */
+data class DecodedReply(
+    val replyToId: String?,
+    val replySender: String?,
+    val replySnippet: String?,
+    val text: String
+)
+
+/**
  * Data class representing a single chat message in a conversation thread.
  *
  * @property timestamp Epoch time in milliseconds when the message was sent or received.
@@ -49,10 +70,49 @@ data class ChatMessage(
     val attachmentPath: String? = null,
     val attachmentState: AttachmentState = AttachmentState.NONE,
     val transferId: String? = null,
-    val messageId: String? = if (isSentByMe) Envelope.newMessageId() else null
+    val messageId: String? = if (isSentByMe) Envelope.newMessageId() else null,
+    val replyToMessageId: String? = null,
+    val replyToSender: String? = null,
+    val replyToText: String? = null,
+    val reactionsJson: String? = null,
+    val isStarred: Boolean = false
 ) {
     val isFileMessage: Boolean
         get() = !attachmentName.isNullOrBlank()
+
+    val hasReplyQuote: Boolean
+        get() = !replyToText.isNullOrBlank()
+
+    fun quoteSnippet(): String {
+        val raw = if (isFileMessage) {
+            "📎 ${attachmentName ?: "Attachment"}"
+        } else {
+            text
+        }
+        val clean = raw.replace('\n', ' ').trim()
+        return if (clean.length > 90) clean.take(87) + "…" else clean
+    }
+
+    fun parsedReactions(): Map<String, List<String>> = parseReactionsJson(reactionsJson)
+
+    fun reactionChips(selfKey: String = SELF_REACTOR_KEY): List<ReactionChip> {
+        val map = parsedReactions()
+        if (map.isEmpty()) return emptyList()
+        return map.entries
+            .filter { it.value.isNotEmpty() }
+            .map { (emoji, actors) ->
+                ReactionChip(
+                    emoji = emoji,
+                    count = actors.size,
+                    reactedByMe = actors.contains(selfKey) || actors.contains(PeerRegistry.selfId)
+                )
+            }
+    }
+
+    fun hasReacted(emoji: String, selfKey: String = SELF_REACTOR_KEY): Boolean {
+        val actors = parsedReactions()[emoji].orEmpty()
+        return actors.contains(selfKey) || actors.contains(PeerRegistry.selfId)
+    }
 
     fun formattedFileSize(): String {
         val bytes = attachmentSize.coerceAtLeast(0L)
@@ -80,6 +140,97 @@ data class ChatMessage(
                     DateUtils.FORMAT_ABBREV_MONTH or
                     DateUtils.FORMAT_SHOW_TIME
             )
+        }
+    }
+
+    companion object {
+        const val SELF_REACTOR_KEY = "__self__"
+        val QUICK_REACTIONS = listOf("❤️", "😂", "😮", "😢", "🙏", "👍")
+
+        fun encodeReplyPayload(
+            replyToId: String?,
+            replySender: String?,
+            replySnippet: String?,
+            text: String
+        ): String {
+            val json = JSONObject().apply {
+                if (!replyToId.isNullOrBlank()) put("rid", replyToId)
+                if (!replySender.isNullOrBlank()) put("rs", replySender.take(60))
+                if (!replySnippet.isNullOrBlank()) put("rt", replySnippet.take(140))
+                put("txt", text)
+            }
+            return Constants.MSG_TYPE_REPLY + json.toString()
+        }
+
+        fun decodeReplyPayload(payload: String): DecodedReply? {
+            if (!payload.startsWith(Constants.MSG_TYPE_REPLY)) return null
+            val raw = payload.removePrefix(Constants.MSG_TYPE_REPLY).trim()
+            return runCatching {
+                val obj = JSONObject(raw)
+                val text = obj.optString("txt")
+                if (text.isEmpty() && !obj.has("txt")) return null
+                DecodedReply(
+                    replyToId = obj.optString("rid").takeIf { it.isNotBlank() },
+                    replySender = obj.optString("rs").takeIf { it.isNotBlank() },
+                    replySnippet = obj.optString("rt").takeIf { it.isNotBlank() },
+                    text = text
+                )
+            }.getOrNull()
+        }
+
+        fun parseReactionsJson(raw: String?): LinkedHashMap<String, MutableList<String>> {
+            val out = LinkedHashMap<String, MutableList<String>>()
+            if (raw.isNullOrBlank()) return out
+            runCatching {
+                val obj = JSONObject(raw)
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val emoji = keys.next()
+                    val arr = obj.optJSONArray(emoji) ?: continue
+                    val list = mutableListOf<String>()
+                    for (i in 0 until arr.length()) {
+                        val actor = arr.optString(i).trim()
+                        if (actor.isNotEmpty() && !list.contains(actor)) {
+                            list.add(actor)
+                        }
+                    }
+                    if (list.isNotEmpty()) {
+                        out[emoji] = list
+                    }
+                }
+            }
+            return out
+        }
+
+        /**
+         * Updates [existingJson] by adding or removing [actorId] under [emoji].
+         * If [forceAdd] is null, toggles membership cleanly.
+         * Returns Pair(newJsonOrNull, addedBoolean).
+         */
+        fun mutateReactionJson(
+            existingJson: String?,
+            emoji: String,
+            actorId: String,
+            forceAdd: Boolean? = null
+        ): Pair<String?, Boolean> {
+            val map = parseReactionsJson(existingJson)
+            val actors = map.getOrPut(emoji) { mutableListOf() }
+            val alreadyPresent = actors.contains(actorId)
+            val shouldAdd = forceAdd ?: !alreadyPresent
+            if (shouldAdd) {
+                if (!alreadyPresent) actors.add(actorId)
+            } else {
+                actors.remove(actorId)
+                if (actors.isEmpty()) map.remove(emoji)
+            }
+            if (map.isEmpty()) return null to shouldAdd
+            val obj = JSONObject()
+            map.forEach { (e, list) ->
+                if (list.isNotEmpty()) {
+                    obj.put(e, JSONArray(list))
+                }
+            }
+            return (if (obj.length() == 0) null else obj.toString()) to shouldAdd
         }
     }
 }

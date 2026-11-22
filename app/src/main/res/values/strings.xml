@@ -84,4 +84,26 @@
     <string name="status_msg_sent">Sent</string>
     <string name="status_msg_delivered">Delivered</string>
     <string name="status_msg_read">Read</string>
+    <string name="call_timer_default">00:00</string>
+    <string name="call_timer_live">LIVE</string>
+    <string name="call_timer_ringing">RINGING</string>
+    <string name="call_timer_connecting">CONNECTING</string>
+    <string name="call_timer_reconnecting">RECONNECTING</string>
+    <string name="call_timer_ended">ENDED</string>
+    <string name="cd_call_timer_overlay">Active call duration timer</string>
+    <string name="action_reply">Reply</string>
+    <string name="action_copy_text">Copy Text</string>
+    <string name="action_star_message">Star Message</string>
+    <string name="action_unstar_message">Remove Star</string>
+    <string name="action_forward">Forward</string>
+    <string name="action_delete_message">Delete</string>
+    <string name="replying_to_fmt">Replying to %1$s</string>
+    <string name="cd_cancel_reply">Cancel reply</string>
+    <string name="filter_starred">★ Starred</string>
+    <string name="msg_copied">Message copied</string>
+    <string name="msg_starred">Message starred</string>
+    <string name="msg_unstarred">Removed from starred</string>
+    <string name="forward_title">Forward message to…</string>
+    <string name="msg_forwarded">Message forwarded</string>
+    <string name="typing_single">typing…</string>
 </resources>

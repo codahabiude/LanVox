@@ -16,7 +16,8 @@ data class ConversationTuple(
     val lastIsSent: Int,
     val lastStatus: String?,
     val lastTimestamp: Long,
-    val messageCount: Int
+    val messageCount: Int,
+    val unreadCount: Int
 )
 
 /**
@@ -66,7 +67,8 @@ interface ChatMessageDao {
               WHERE m2.peer_id = m.peer_id
               ORDER BY m2.timestamp DESC, m2._id DESC LIMIT 1) AS lastStatus,
             MAX(m.timestamp) AS lastTimestamp,
-            COUNT(*) AS messageCount
+            COUNT(*) AS messageCount,
+            SUM(CASE WHEN m.is_sent = 0 AND m.status != 'READ' THEN 1 ELSE 0 END) AS unreadCount
         FROM messages m
         WHERE m.peer_id IS NOT NULL AND m.peer_id != ''
         GROUP BY m.peer_id
@@ -91,7 +93,8 @@ interface ChatMessageDao {
               WHERE m2.peer_id = m.peer_id
               ORDER BY m2.timestamp DESC, m2._id DESC LIMIT 1) AS lastStatus,
             MAX(m.timestamp) AS lastTimestamp,
-            COUNT(*) AS messageCount
+            COUNT(*) AS messageCount,
+            SUM(CASE WHEN m.is_sent = 0 AND m.status != 'READ' THEN 1 ELSE 0 END) AS unreadCount
         FROM messages m
         WHERE m.peer_id IS NOT NULL AND m.peer_id != ''
         GROUP BY m.peer_id
@@ -108,6 +111,18 @@ interface ChatMessageDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(entity: ChatMessageEntity): Long
+
+    @Query("SELECT * FROM messages WHERE _id = :id LIMIT 1")
+    suspend fun getById(id: Long): ChatMessageEntity?
+
+    @Query("SELECT * FROM messages WHERE peer_id = :peerId AND message_id = :messageId ORDER BY _id DESC LIMIT 1")
+    suspend fun getByMessageId(peerId: String, messageId: String): ChatMessageEntity?
+
+    @Query("UPDATE messages SET reactions = :reactions WHERE _id = :id")
+    suspend fun updateReactionsById(id: Long, reactions: String?): Int
+
+    @Query("UPDATE messages SET is_starred = :starred WHERE _id = :id")
+    suspend fun updateStarredById(id: Long, starred: Int): Int
 
     @Query("UPDATE messages SET status = :newStatus WHERE peer_id = :peerId AND is_sent = 1 AND status IN (:fromStatuses)")
     suspend fun updateOutgoingStatus(peerId: String, newStatus: String, fromStatuses: List<String>): Int

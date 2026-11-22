@@ -15,7 +15,8 @@ data class Conversation(
     val lastIsSentByMe: Boolean,
     val lastTimestamp: Long,
     val messageCount: Int,
-    val lastStatus: MessageStatus = MessageStatus.NONE
+    val lastStatus: MessageStatus = MessageStatus.NONE,
+    val unreadCount: Int = 0
 )
 
 /**
@@ -64,7 +65,12 @@ class ChatRepository(private val dao: ChatMessageDao) {
             attachmentPath = message.attachmentPath,
             attachmentState = message.attachmentState.name,
             transferId = message.transferId,
-            messageId = message.messageId
+            messageId = message.messageId,
+            replyToId = message.replyToMessageId,
+            replyToSender = message.replyToSender,
+            replyToText = message.replyToText,
+            reactions = message.reactionsJson,
+            isStarred = if (message.isStarred) 1 else 0
         )
         return dao.insertMessage(entity)
     }
@@ -84,6 +90,41 @@ class ChatRepository(private val dao: ChatMessageDao) {
 
     suspend fun count(peerId: String? = null): Int =
         if (peerId == null) dao.countAll() else dao.countForPeer(peerId)
+
+    /**
+     * Toggles or sets a reaction from [actorId] on [message] in Room.
+     * Returns `true` if added, `false` if removed, or `null` if the row wasn't found.
+     */
+    suspend fun setReactionForLocalMessage(
+        message: ChatMessage,
+        emoji: String,
+        actorId: String = ChatMessage.SELF_REACTOR_KEY,
+        forceAdd: Boolean? = null
+    ): Boolean? {
+        val rowId = message.id.removePrefix("room_").toLongOrNull() ?: return null
+        val entity = dao.getById(rowId) ?: return null
+        val (updatedJson, added) = ChatMessage.mutateReactionJson(entity.reactions, emoji, actorId, forceAdd)
+        dao.updateReactionsById(entity.id, updatedJson)
+        return added
+    }
+
+    suspend fun applyRemoteReaction(
+        threadPeerId: String,
+        targetMessageId: String,
+        emoji: String,
+        actorId: String,
+        add: Boolean
+    ) {
+        if (threadPeerId.isBlank() || targetMessageId.isBlank() || emoji.isBlank()) return
+        val entity = dao.getByMessageId(threadPeerId, targetMessageId) ?: return
+        val (updatedJson, _) = ChatMessage.mutateReactionJson(entity.reactions, emoji, actorId, forceAdd = add)
+        dao.updateReactionsById(entity.id, updatedJson)
+    }
+
+    suspend fun setStarred(message: ChatMessage, starred: Boolean) {
+        val rowId = message.id.removePrefix("room_").toLongOrNull() ?: return
+        dao.updateStarredById(rowId, if (starred) 1 else 0)
+    }
 
     suspend fun markThreadDelivered(peerId: String) {
         if (peerId.isBlank()) return
@@ -208,7 +249,12 @@ class ChatRepository(private val dao: ChatMessageDao) {
             attachmentPath = attachmentPath,
             attachmentState = parsedAttachmentState,
             transferId = transferId,
-            messageId = messageId
+            messageId = messageId,
+            replyToMessageId = replyToId,
+            replyToSender = replyToSender,
+            replyToText = replyToText,
+            reactionsJson = reactions,
+            isStarred = isStarred == 1
         )
     }
 
@@ -223,7 +269,8 @@ class ChatRepository(private val dao: ChatMessageDao) {
             lastIsSentByMe = lastIsSent == 1,
             lastTimestamp = lastTimestamp,
             messageCount = messageCount,
-            lastStatus = parsedLastStatus
+            lastStatus = parsedLastStatus,
+            unreadCount = unreadCount
         )
     }
 }

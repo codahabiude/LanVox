@@ -1,5 +1,6 @@
 package com.example.wifip2pchat
 
+import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.drawable.GradientDrawable
@@ -7,8 +8,11 @@ import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
 import android.util.LruCache
+import android.view.GestureDetector
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -27,12 +31,18 @@ import java.io.File
 import java.util.concurrent.Executors
 
 /**
- * RecyclerView adapter for binding and displaying sent and received [ChatMessage] items,
- * supporting both text bubbles and interactive file/image attachment bubbles with live
- * determinate progress and multi-peer upload/download status indicators.
+ * RecyclerView adapter for binding sent and received [ChatMessage] items, supporting:
+ *  - Text bubbles, file/image attachment cards with live multi-peer progress
+ *  - WhatsApp/IG/FB quote-reply blocks (tap to jump to quoted message)
+ *  - IG-style double-tap ❤️ quick reactions, reaction chip bars, and long-press action sheets
+ *  - Starred badges and live Sent/Delivered/Read receipt labels
  */
 class MessageAdapter(
-    private val onAttachmentClick: ((ChatMessage) -> Unit)? = null
+    private val onAttachmentClick: ((ChatMessage) -> Unit)? = null,
+    private val onDoubleTapReact: ((ChatMessage) -> Unit)? = null,
+    private val onLongPressMessage: ((ChatMessage) -> Unit)? = null,
+    private val onReactionChipClick: ((ChatMessage, String) -> Unit)? = null,
+    private val onQuoteClick: ((String) -> Unit)? = null
 ) : RecyclerView.Adapter<MessageAdapter.MessageViewHolder>() {
 
     companion object {
@@ -61,6 +71,11 @@ class MessageAdapter(
 
     fun setMessages(history: List<ChatMessage>) {
         submitMessages(history, activeQuery)
+    }
+
+    fun findPositionByMessageId(targetMsgId: String): Int {
+        if (targetMsgId.isBlank()) return -1
+        return messages.indexOfFirst { it.messageId == targetMsgId || it.id == targetMsgId }
     }
 
     fun updateTransferSnapshots(newSnapshots: Map<String, FileTransferTracker.TransferSnapshot>) {
@@ -115,7 +130,12 @@ class MessageAdapter(
                     oldItem.attachmentMime == newItem.attachmentMime &&
                     oldItem.attachmentSize == newItem.attachmentSize &&
                     oldItem.attachmentPath == newItem.attachmentPath &&
-                    oldItem.attachmentState == newItem.attachmentState
+                    oldItem.attachmentState == newItem.attachmentState &&
+                    oldItem.replyToMessageId == newItem.replyToMessageId &&
+                    oldItem.replyToSender == newItem.replyToSender &&
+                    oldItem.replyToText == newItem.replyToText &&
+                    oldItem.reactionsJson == newItem.reactionsJson &&
+                    oldItem.isStarred == newItem.isStarred
             }
         })
         messages.clear()
@@ -168,8 +188,12 @@ class MessageAdapter(
         private val viewType: Int
     ) : RecyclerView.ViewHolder(itemView) {
 
+        private val messageColumn: LinearLayout = itemView.findViewById(R.id.messageColumn)
         private val bubbleContainer: LinearLayout = itemView.findViewById(R.id.bubbleContainer)
         private val tvSenderName: TextView = itemView.findViewById(R.id.tvSenderName)
+        private val layoutReplyQuote: LinearLayout = itemView.findViewById(R.id.layoutReplyQuote)
+        private val tvQuoteSender: TextView = itemView.findViewById(R.id.tvQuoteSender)
+        private val tvQuoteText: TextView = itemView.findViewById(R.id.tvQuoteText)
         private val layoutAttachment: LinearLayout = itemView.findViewById(R.id.layoutAttachment)
         private val cardFilePreview: MaterialCardView = itemView.findViewById(R.id.cardFilePreview)
         private val ivFilePreview: ImageView = itemView.findViewById(R.id.ivFilePreview)
@@ -187,16 +211,58 @@ class MessageAdapter(
         private val tvTransferPeerCount: TextView = itemView.findViewById(R.id.tvTransferPeerCount)
         private val llPeerTransferChips: LinearLayout = itemView.findViewById(R.id.llPeerTransferChips)
         private val tvMessage: TextView = itemView.findViewById(R.id.tvMessage)
+        private val ivStarred: ImageView = itemView.findViewById(R.id.ivStarred)
         private val tvTimestamp: TextView = itemView.findViewById(R.id.tvTimestamp)
         private val ivTick: ImageView = itemView.findViewById(R.id.ivTick)
         private val tvReadStatus: TextView = itemView.findViewById(R.id.tvReadStatus)
+        private val llReactionsRow: LinearLayout = itemView.findViewById(R.id.llReactionsRow)
+
+        private var boundMessage: ChatMessage? = null
+
+        private val gestureDetector = GestureDetector(
+            itemView.context,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onDoubleTap(e: MotionEvent): Boolean {
+                    val msg = boundMessage ?: return false
+                    bubbleContainer.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                    bubbleContainer.animate()
+                        .scaleX(1.04f)
+                        .scaleY(1.04f)
+                        .setDuration(90L)
+                        .withEndAction {
+                            bubbleContainer.animate().scaleX(1f).scaleY(1f).setDuration(110L).start()
+                        }
+                        .start()
+                    onDoubleTapReact?.invoke(msg)
+                    return true
+                }
+
+                override fun onLongPress(e: MotionEvent) {
+                    val msg = boundMessage ?: return
+                    bubbleContainer.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    onLongPressMessage?.invoke(msg)
+                }
+            }
+        )
+
+        init {
+            @SuppressLint("ClickableViewAccessibility")
+            bubbleContainer.setOnTouchListener { _, event ->
+                gestureDetector.onTouchEvent(event)
+                false
+            }
+        }
 
         fun bind(message: ChatMessage) {
+            boundMessage = message
             val ctx = itemView.context
             val isSent = viewType == VIEW_TYPE_SENT || message.isSentByMe
             val formattedTime = message.formattedTimestamp(ctx)
             val highlightColor = ContextCompat.getColor(ctx, R.color.search_highlight)
 
+            bindQuoteReply(message)
             bindAttachment(message, highlightColor)
 
             if (message.isFileMessage) {
@@ -205,6 +271,8 @@ class MessageAdapter(
                 tvMessage.visibility = View.VISIBLE
                 tvMessage.text = ChatSearchHelper.highlight(message.text, activeQuery, highlightColor)
             }
+
+            ivStarred.visibility = if (message.isStarred) View.VISIBLE else View.GONE
 
             tvTimestamp.visibility = View.VISIBLE
             tvTimestamp.text = ChatSearchHelper.highlight(formattedTime, activeQuery, highlightColor)
@@ -215,17 +283,25 @@ class MessageAdapter(
             }
 
             val sideMarginPx = (48 * ctx.resources.displayMetrics.density).toInt()
-            val lp = bubbleContainer.layoutParams as FrameLayout.LayoutParams
+            val colLp = messageColumn.layoutParams as FrameLayout.LayoutParams
+            val bubbleLp = bubbleContainer.layoutParams as LinearLayout.LayoutParams
+            val reactLp = llReactionsRow.layoutParams as LinearLayout.LayoutParams
             if (isSent) {
-                lp.gravity = Gravity.END
-                lp.marginStart = sideMarginPx
-                lp.marginEnd = 0
+                colLp.gravity = Gravity.END
+                colLp.marginStart = sideMarginPx
+                colLp.marginEnd = 0
+                bubbleLp.gravity = Gravity.END
+                reactLp.gravity = Gravity.END
             } else {
-                lp.gravity = Gravity.START
-                lp.marginStart = 0
-                lp.marginEnd = sideMarginPx
+                colLp.gravity = Gravity.START
+                colLp.marginStart = 0
+                colLp.marginEnd = sideMarginPx
+                bubbleLp.gravity = Gravity.START
+                reactLp.gravity = Gravity.START
             }
-            bubbleContainer.layoutParams = lp
+            messageColumn.layoutParams = colLp
+            bubbleContainer.layoutParams = bubbleLp
+            llReactionsRow.layoutParams = reactLp
 
             if (isSent) {
                 bubbleContainer.setBackgroundResource(R.drawable.bubble_sent)
@@ -279,6 +355,83 @@ class MessageAdapter(
                 ivTick.visibility = View.GONE
                 tvReadStatus.visibility = View.GONE
             }
+
+            bindReactions(message)
+        }
+
+        private fun bindQuoteReply(message: ChatMessage) {
+            if (!message.hasReplyQuote) {
+                layoutReplyQuote.visibility = View.GONE
+                layoutReplyQuote.setOnClickListener(null)
+                return
+            }
+            layoutReplyQuote.visibility = View.VISIBLE
+            tvQuoteSender.text = message.replyToSender?.takeIf { it.isNotBlank() } ?: "Reply"
+            tvQuoteText.text = message.replyToText.orEmpty()
+            val targetId = message.replyToMessageId
+            if (!targetId.isNullOrBlank()) {
+                layoutReplyQuote.setOnClickListener { onQuoteClick?.invoke(targetId) }
+            } else {
+                layoutReplyQuote.setOnClickListener(null)
+            }
+        }
+
+        private fun bindReactions(message: ChatMessage) {
+            val chips = message.reactionChips()
+            if (chips.isEmpty()) {
+                llReactionsRow.removeAllViews()
+                llReactionsRow.visibility = View.GONE
+                return
+            }
+            val ctx = itemView.context
+            val density = ctx.resources.displayMetrics.density
+            val cyan = ContextCompat.getColor(ctx, R.color.brand_secondary)
+            val borderNeutral = ContextCompat.getColor(ctx, R.color.glass_border)
+            val chipBgNeutral = ColorUtils.setAlphaComponent(
+                ContextCompat.getColor(ctx, R.color.surface_card),
+                230
+            )
+            val mono = ResourcesCompat.getFont(ctx, R.font.jetbrains_mono)
+
+            llReactionsRow.removeAllViews()
+            llReactionsRow.visibility = View.VISIBLE
+
+            chips.forEachIndexed { idx, chip ->
+                val pill = TextView(ctx).apply {
+                    text = if (chip.count > 1) "${chip.emoji} ${chip.count}" else chip.emoji
+                    textSize = 11.5f
+                    typeface = mono
+                    setTextColor(ContextCompat.getColor(ctx, R.color.text_primary))
+                    setPadding(
+                        (8 * density).toInt(),
+                        (3 * density).toInt(),
+                        (8 * density).toInt(),
+                        (3 * density).toInt()
+                    )
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = 999f * density
+                        setColor(
+                            if (chip.reactedByMe) ColorUtils.setAlphaComponent(cyan, 46)
+                            else chipBgNeutral
+                        )
+                        setStroke(
+                            (1 * density).toInt().coerceAtLeast(1),
+                            if (chip.reactedByMe) cyan else borderNeutral
+                        )
+                    }
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        if (idx > 0) marginStart = (4 * density).toInt()
+                    }
+                    setOnClickListener {
+                        onReactionChipClick?.invoke(message, chip.emoji)
+                    }
+                }
+                llReactionsRow.addView(pill)
+            }
         }
 
         private fun bindAttachment(message: ChatMessage, highlightColor: Int) {
@@ -289,6 +442,7 @@ class MessageAdapter(
                 ivFilePreview.tag = null
                 ivFilePreview.setImageDrawable(null)
                 layoutAttachment.setOnClickListener(null)
+                layoutAttachment.setOnLongClickListener(null)
                 return
             }
 
@@ -322,6 +476,11 @@ class MessageAdapter(
             layoutAttachment.setOnClickListener {
                 onAttachmentClick?.invoke(message)
             }
+            layoutAttachment.setOnLongClickListener {
+                bubbleContainer.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                onLongPressMessage?.invoke(message)
+                true
+            }
         }
 
         fun bindTransferProgress(message: ChatMessage) {
@@ -346,7 +505,6 @@ class MessageAdapter(
                     else -> cyan
                 }
 
-                // Header subtitle & right pill badge
                 val headerAction = when {
                     snapshot.hasFailures && snapshot.completedPeerCount == 0 -> "Transfer failed"
                     snapshot.isFinished && message.attachmentPath != null -> "Tap to open"
@@ -365,13 +523,11 @@ class MessageAdapter(
                 }
                 styleBadgePill(tvFileProgressBadge, accentColor)
 
-                // Determinate progress bar
                 linearFileProgress.isIndeterminate = false
                 linearFileProgress.setProgressCompat(snapshot.overallPercent, true)
                 linearFileProgress.setIndicatorColor(accentColor)
                 linearFileProgress.trackColor = ColorUtils.setAlphaComponent(accentColor, 34)
 
-                // Byte telemetry line
                 val transferredLabel = FileTransferTracker.formatBytesShort(snapshot.bytesTransferred)
                 val totalLabel = FileTransferTracker.formatBytesShort(
                     snapshot.totalBytes.coerceAtLeast(message.attachmentSize)
@@ -394,7 +550,6 @@ class MessageAdapter(
                     tvTransferPeerCount.visibility = View.GONE
                 }
 
-                // Multi-peer status chip rows
                 val showChips = snapshot.peerStatuses.isNotEmpty() && (
                     snapshot.direction == FileTransferTracker.TransferDirection.SENDING ||
                         !snapshot.isFinished ||
@@ -408,7 +563,6 @@ class MessageAdapter(
                     llPeerTransferChips.visibility = View.GONE
                 }
             } else {
-                // Persisted state without active in-memory snapshot (e.g. after app restart)
                 val stateLabel = when (message.attachmentState) {
                     AttachmentState.TRANSFERRING -> if (message.isSentByMe) "Sending…" else "Receiving…"
                     AttachmentState.FAILED -> "Transfer failed"

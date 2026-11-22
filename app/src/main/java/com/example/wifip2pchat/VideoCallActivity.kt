@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
@@ -13,30 +14,30 @@ import android.os.Looper
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.util.Locale
 
 /**
- * Full-screen Activity for a bidirectional video call.
- *
- * Improvements:
- *  - Sets `surfaceLocal.setZOrderMediaOverlay(true)` so PiP always renders on top of remote video
- *  - Dynamically attaches/detaches PiP surface via [VideoCallService.attachLocalPreviewSurface]
- *  - Decodes JPEG frames on a conflated [Dispatchers.Default] pipeline and draws aspect-preserving
- *    center-crop directly onto Canvas (eliminating main-thread jank and extra bitmap allocations)
- *  - Uses MODE_IN_COMMUNICATION, speaker-on default, software mute, and [CallSessionBus] signaling
+ * Full-screen Activity for a bidirectional video call with a floating glassmorphic
+ * active call timer overlay synchronized with [CallSessionBus].
  */
 class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
 
@@ -47,11 +48,17 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         const val EXTRA_PEER_ID = "extra_peer_id"
         const val EXTRA_PEER_NAME = "extra_peer_name"
         const val EXTRA_IS_OUTGOING = "extra_is_outgoing"
+        private const val TIMER_TICK_MS = 500L
     }
 
     // Views
     private lateinit var surfaceRemote: SurfaceView
     private lateinit var surfaceLocal: SurfaceView
+    private lateinit var cardLocalPreview: MaterialCardView
+    private lateinit var videoTopOverlay: LinearLayout
+    private lateinit var videoBottomControls: LinearLayout
+    private lateinit var viewTimerDot: View
+    private lateinit var tvTimerState: TextView
     private lateinit var tvCallerName: TextView
     private lateinit var tvCallDuration: TextView
     private lateinit var btnMute: MaterialButton
@@ -65,12 +72,24 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
 
     private var isMuted = false
     private var isSpeakerOn = true
-    private var callStartTime = 0L
-    private var timerStarted = false
+    private var timerLoopRunning = false
+    private var pulseBright = true
     private var endedLocally = false
 
     private val durationHandler = Handler(Looper.getMainLooper())
-    private var durationRunnable: Runnable? = null
+    private val durationRunnable = object : Runnable {
+        override fun run() {
+            if (isFinishing || isDestroyed || endedLocally) return
+            updateDurationUi()
+            if (CallSessionBus.currentState == CallSessionBus.CallState.CONNECTED) {
+                pulseBright = !pulseBright
+                viewTimerDot.alpha = if (pulseBright) 1.0f else 0.35f
+            } else {
+                viewTimerDot.alpha = 1.0f
+            }
+            durationHandler.postDelayed(this, TIMER_TICK_MS)
+        }
+    }
 
     @Volatile private var remoteSurfaceReady = false
     private val surfaceLock = Any()
@@ -79,6 +98,7 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
     private var renderJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_video_call)
 
@@ -89,29 +109,51 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         isOutgoing = intent.getBooleanExtra(EXTRA_IS_OUTGOING, false)
 
         initViews()
+        applySafeAreaInsets()
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 Toast.makeText(this@VideoCallActivity, "Tap End Call to hang up", Toast.LENGTH_SHORT).show()
             }
         })
 
-        CallSessionBus.configureVoiceAudio(this, speakerOnByDefault = true)
+        val reattachingToLiveCall = CallSessionBus.isCallActive() &&
+            VideoCallService.isRunning &&
+            CallSessionBus.activeCallType == Constants.CALL_TYPE_VIDEO &&
+            (peerId == null || CallSessionBus.activePeerId == peerId)
+
         CallSessionBus.addListener(this)
-        CallSessionBus.startSession(
-            callType = Constants.CALL_TYPE_VIDEO,
-            peerId = peerId,
-            initialState = if (isOutgoing) CallSessionBus.CallState.RINGING else CallSessionBus.CallState.CONNECTING
-        )
+        if (reattachingToLiveCall) {
+            isMuted = CallSessionBus.currentMuted
+            updateMuteUi()
+            onCallStateChanged(CallSessionBus.currentState)
+            VideoCallService.onRemoteVideoFrame = { frameBytes ->
+                remoteFrameChannel.trySend(frameBytes)
+            }
+        } else {
+            CallSessionBus.configureVoiceAudio(this, speakerOnByDefault = true)
+            CallSessionBus.startSession(
+                callType = Constants.CALL_TYPE_VIDEO,
+                peerId = peerId,
+                initialState = if (isOutgoing) CallSessionBus.CallState.RINGING else CallSessionBus.CallState.CONNECTING
+            )
+            onCallStateChanged(CallSessionBus.currentState)
+            startVideoCall()
+        }
 
         setupRemoteSurface()
         setupLocalSurface()
         startFrameDecoder()
-        startVideoCall()
     }
 
     private fun initViews() {
         surfaceRemote = findViewById(R.id.surfaceRemote)
         surfaceLocal = findViewById(R.id.surfaceLocal)
+        cardLocalPreview = findViewById(R.id.cardLocalPreview)
+        videoTopOverlay = findViewById(R.id.videoTopOverlay)
+        videoBottomControls = findViewById(R.id.videoBottomControls)
+        viewTimerDot = findViewById(R.id.viewTimerDot)
+        tvTimerState = findViewById(R.id.tvTimerState)
         tvCallerName = findViewById(R.id.tvCallerName)
         tvCallDuration = findViewById(R.id.tvCallDuration)
         btnMute = findViewById(R.id.btnMute)
@@ -123,7 +165,7 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         surfaceLocal.setZOrderMediaOverlay(true)
 
         tvCallerName.text = peerName
-        tvCallDuration.text = if (isOutgoing) "Ringing…" else "Connecting…"
+        tvCallDuration.text = getString(R.string.call_timer_default)
         updateMuteUi()
         updateSpeakerUi()
 
@@ -131,6 +173,40 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         btnEndCall.setOnClickListener { endCall() }
         btnSwitchCamera.setOnClickListener { VideoCallService.switchCamera() }
         btnSpeaker.setOnClickListener { toggleSpeaker() }
+    }
+
+    private fun applySafeAreaInsets() {
+        val density = resources.displayMetrics.density
+        val baseTopPad = (14 * density).toInt()
+        val baseBottomPad = (24 * density).toInt()
+        val baseSidePad = (16 * density).toInt()
+        val baseBottomSidePad = (24 * density).toInt()
+        val basePipTop = (86 * density).toInt()
+        val basePipEnd = (14 * density).toInt()
+
+        val root = findViewById<View>(R.id.videoCallRoot)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            videoTopOverlay.setPadding(
+                baseSidePad + bars.left,
+                baseTopPad + bars.top,
+                baseSidePad + bars.right,
+                videoTopOverlay.paddingBottom
+            )
+            videoBottomControls.setPadding(
+                baseBottomSidePad + bars.left,
+                baseBottomPad,
+                baseBottomSidePad + bars.right,
+                baseBottomPad + bars.bottom
+            )
+            val pipLp = cardLocalPreview.layoutParams as ViewGroup.MarginLayoutParams
+            pipLp.topMargin = basePipTop + bars.top
+            pipLp.marginEnd = basePipEnd + bars.right
+            cardLocalPreview.layoutParams = pipLp
+            insets
+        }
     }
 
     private fun setupRemoteSurface() {
@@ -251,13 +327,43 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
 
     override fun onCallStateChanged(state: CallSessionBus.CallState) {
         if (isFinishing || isDestroyed) return
+        val mint = ContextCompat.getColor(this, R.color.status_online)
+        val amber = ContextCompat.getColor(this, R.color.status_discovering)
+        val rose = ContextCompat.getColor(this, R.color.status_offline)
+
         when (state) {
-            CallSessionBus.CallState.RINGING -> if (!timerStarted) tvCallDuration.text = "Ringing…"
-            CallSessionBus.CallState.CONNECTING -> if (!timerStarted) tvCallDuration.text = "Connecting…"
-            CallSessionBus.CallState.CONNECTED -> startDurationTimerIfNeeded()
-            CallSessionBus.CallState.RECONNECTING -> if (!timerStarted) tvCallDuration.text = "Reconnecting…"
-            CallSessionBus.CallState.ENDED -> tvCallDuration.text = "Call ended"
+            CallSessionBus.CallState.RINGING -> {
+                tvTimerState.text = getString(R.string.call_timer_ringing)
+                styleTimerBadge(amber)
+                updateDurationUi()
+            }
+            CallSessionBus.CallState.CONNECTING -> {
+                tvTimerState.text = getString(R.string.call_timer_connecting)
+                styleTimerBadge(amber)
+                updateDurationUi()
+            }
+            CallSessionBus.CallState.CONNECTED -> {
+                tvTimerState.text = getString(R.string.call_timer_live)
+                styleTimerBadge(mint)
+                startDurationTimerLoop()
+            }
+            CallSessionBus.CallState.RECONNECTING -> {
+                tvTimerState.text = getString(R.string.call_timer_reconnecting)
+                styleTimerBadge(amber)
+                updateDurationUi()
+            }
+            CallSessionBus.CallState.ENDED -> {
+                tvTimerState.text = getString(R.string.call_timer_ended)
+                styleTimerBadge(rose)
+                stopDurationTimerLoop()
+            }
         }
+    }
+
+    private fun styleTimerBadge(color: Int) {
+        tvTimerState.setTextColor(color)
+        (viewTimerDot.background?.mutate() as? GradientDrawable)?.setColor(color)
+        viewTimerDot.alpha = 1.0f
     }
 
     override fun onMuteChanged(muted: Boolean) {
@@ -311,13 +417,13 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
     }
 
     private fun cleanupAndFinish() {
+        stopDurationTimerLoop()
         VideoCallService.onRemoteVideoFrame = null
         VideoCallService.attachLocalPreviewSurface(null)
         VideoCallService.endCall()
         AudioCallService.endCall()
         renderJob?.cancel()
         remoteFrameChannel.close()
-        durationRunnable?.let { durationHandler.removeCallbacks(it) }
         CallSessionBus.removeListener(this)
         CallSessionBus.restoreVoiceAudio(this)
         CallSessionBus.clearSession()
@@ -326,28 +432,29 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
 
     // ======================== Duration Timer ========================
 
-    private fun startDurationTimerIfNeeded() {
-        if (timerStarted) return
-        timerStarted = true
-        callStartTime = System.currentTimeMillis()
-        durationRunnable = object : Runnable {
-            override fun run() {
-                val elapsed = System.currentTimeMillis() - callStartTime
-                val minutes = (elapsed / 1000) / 60
-                val seconds = (elapsed / 1000) % 60
-                tvCallDuration.text = String.format(Locale.US, "%02d:%02d", minutes, seconds)
-                durationHandler.postDelayed(this, 1000)
-            }
-        }
-        durationHandler.post(durationRunnable!!)
+    private fun startDurationTimerLoop() {
+        updateDurationUi()
+        if (timerLoopRunning) return
+        timerLoopRunning = true
+        durationHandler.removeCallbacks(durationRunnable)
+        durationHandler.postDelayed(durationRunnable, TIMER_TICK_MS)
+    }
+
+    private fun stopDurationTimerLoop() {
+        timerLoopRunning = false
+        durationHandler.removeCallbacks(durationRunnable)
+    }
+
+    private fun updateDurationUi() {
+        tvCallDuration.text = CallSessionBus.formatDuration(CallSessionBus.elapsedCallMs())
     }
 
     override fun onDestroy() {
-        durationRunnable?.let { durationHandler.removeCallbacks(it) }
+        stopDurationTimerLoop()
         renderJob?.cancel()
         remoteFrameChannel.close()
         CallSessionBus.removeListener(this)
-        if (!endedLocally) {
+        if (!endedLocally && isFinishing) {
             VideoCallService.onRemoteVideoFrame = null
             VideoCallService.attachLocalPreviewSurface(null)
             VideoCallService.endCall()

@@ -474,6 +474,45 @@ class CallListenerService : Service() {
                     }
                 }
             }
+            payload.startsWith(Constants.MSG_TYPE_TYPING) -> {
+                // Ephemeral typing indicator — ignored while UI is in standby
+            }
+            payload.startsWith(Constants.MSG_TYPE_REACT) -> {
+                val rawReact = payload.removePrefix(Constants.MSG_TYPE_REACT)
+                val parts = rawReact.split('|', limit = 4)
+                if (parts.size >= 4) {
+                    val scopeSuffix = parts[0]
+                    val targetMsgId = parts[1].trim()
+                    val emoji = parts[2]
+                    val add = parts[3].trim() == "1"
+                    val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
+                        Constants.GROUP_PEER_ID
+                    } else {
+                        senderId
+                    }
+                    scope.launch {
+                        runCatching {
+                            ChatRepository.get(applicationContext)
+                                .applyRemoteReaction(targetThread, targetMsgId, emoji, senderId, add)
+                        }
+                    }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_REPLY) -> {
+                val decoded = ChatMessage.decodeReplyPayload(payload)
+                if (decoded != null) {
+                    onIncomingText(
+                        text = decoded.text,
+                        senderId = senderId,
+                        senderName = senderName,
+                        recipientId = recipientId,
+                        msgId = env?.msgId,
+                        replyToId = decoded.replyToId,
+                        replyToSender = decoded.replySender,
+                        replyToText = decoded.replySnippet
+                    )
+                }
+            }
             payload.startsWith(Constants.MSG_TYPE_TEXT) -> {
                 val cleanText = payload.removePrefix(Constants.MSG_TYPE_TEXT)
                 onIncomingText(cleanText, senderId, senderName, recipientId, env?.msgId)
@@ -643,7 +682,10 @@ class CallListenerService : Service() {
         senderId: String,
         senderName: String,
         recipientId: String,
-        msgId: String? = null
+        msgId: String? = null,
+        replyToId: String? = null,
+        replyToSender: String? = null,
+        replyToText: String? = null
     ) {
         val threadId = if (recipientId == Constants.RECIPIENT_BROADCAST && senderId != "unknown") {
             Constants.GROUP_PEER_ID
@@ -668,7 +710,10 @@ class CallListenerService : Service() {
                             text = text,
                             isSentByMe = false,
                             senderName = displaySender,
-                            messageId = msgId
+                            messageId = msgId,
+                            replyToMessageId = replyToId,
+                            replyToSender = replyToSender,
+                            replyToText = replyToText
                         ),
                         threadId,
                         threadName

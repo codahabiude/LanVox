@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/videoCallRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000">
@@ -11,10 +12,11 @@
         android:layout_height="match_parent" />
 
     <com.google.android.material.card.MaterialCardView
-        android:layout_width="120dp"
-        android:layout_height="164dp"
+        android:id="@+id/cardLocalPreview"
+        android:layout_width="118dp"
+        android:layout_height="162dp"
         android:layout_gravity="top|end"
-        android:layout_marginTop="60dp"
+        android:layout_marginTop="96dp"
         android:layout_marginEnd="14dp"
         app:cardCornerRadius="18dp"
         app:cardElevation="6dp"
@@ -27,50 +29,101 @@
             android:layout_height="match_parent" />
     </com.google.android.material.card.MaterialCardView>
 
+    <!-- Floating Top HUD & Active Call Timer Overlay -->
     <LinearLayout
+        android:id="@+id/videoTopOverlay"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_gravity="top"
         android:orientation="vertical"
-        android:gravity="center_horizontal"
-        android:paddingTop="22dp"
-        android:paddingBottom="16dp"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="14dp"
+        android:paddingBottom="18dp"
         android:background="@drawable/call_gradient_top_overlay">
 
-        <TextView
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/encrypted_short"
-            android:textSize="10sp"
-            android:textColor="@color/brand_secondary"
-            android:fontFamily="@font/jetbrains_mono"
-            android:background="@drawable/pill_green_small"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="4dp"
-            android:layout_marginBottom="8dp" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="10dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/encrypted_short"
+                android:textSize="10sp"
+                android:textColor="@color/brand_secondary"
+                android:fontFamily="@font/jetbrains_mono"
+                android:background="@drawable/pill_green_small"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="5dp" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:id="@+id/layoutCallTimerOverlay"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="@drawable/bg_timer_overlay_pill"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="6dp"
+                android:elevation="4dp"
+                android:contentDescription="@string/cd_call_timer_overlay">
+
+                <View
+                    android:id="@+id/viewTimerDot"
+                    android:layout_width="8dp"
+                    android:layout_height="8dp"
+                    android:layout_marginEnd="7dp"
+                    android:background="@drawable/bg_timer_dot" />
+
+                <TextView
+                    android:id="@+id/tvTimerState"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/call_timer_connecting"
+                    android:textSize="9.5sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.06"
+                    android:textColor="@color/status_discovering"
+                    android:fontFamily="@font/jetbrains_mono"
+                    android:layout_marginEnd="8dp" />
+
+                <TextView
+                    android:id="@+id/tvCallDuration"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/call_timer_default"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.04"
+                    android:textColor="@color/text_primary"
+                    android:fontFamily="@font/jetbrains_mono" />
+            </LinearLayout>
+        </LinearLayout>
 
         <TextView
             android:id="@+id/tvCallerName"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_gravity="start"
             android:text="Connected Peer"
-            android:textSize="19sp"
+            android:textSize="18sp"
             android:textStyle="bold"
             android:textColor="@color/text_primary"
             android:fontFamily="@font/space_grotesk"
             android:shadowColor="#80000000"
             android:shadowRadius="4" />
-
-        <TextView
-            android:id="@+id/tvCallDuration"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="00:00"
-            android:textSize="13sp"
-            android:textColor="@color/brand_secondary"
-            android:fontFamily="@font/jetbrains_mono" />
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/videoBottomControls"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"

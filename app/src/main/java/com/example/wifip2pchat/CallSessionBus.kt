@@ -7,11 +7,13 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
+import java.util.Locale
 
 /**
- * Coordinates live audio/video call signaling state, audio focus, and
- * communication-mode routing across services and call activities.
+ * Coordinates live audio/video call signaling state, active call timing,
+ * audio focus, and communication-mode routing across services and call activities.
  */
 object CallSessionBus {
 
@@ -40,6 +42,8 @@ object CallSessionBus {
         private set
     @Volatile var currentMuted: Boolean = false
         private set
+    @Volatile var connectedAtElapsedMs: Long? = null
+        private set
 
     private val listeners = mutableSetOf<Listener>()
 
@@ -51,6 +55,11 @@ object CallSessionBus {
         activeCallType = callType
         activePeerId = peerId
         currentMuted = false
+        connectedAtElapsedMs = if (initialState == CallState.CONNECTED) {
+            SystemClock.elapsedRealtime()
+        } else {
+            null
+        }
         updateState(initialState)
     }
 
@@ -58,10 +67,28 @@ object CallSessionBus {
         activeCallType = null
         activePeerId = null
         currentMuted = false
+        connectedAtElapsedMs = null
         currentState = CallState.ENDED
     }
 
     fun isCallActive(): Boolean = currentState != CallState.ENDED
+
+    fun elapsedCallMs(): Long {
+        val startedAt = connectedAtElapsedMs ?: return 0L
+        return (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
+    }
+
+    fun formatDuration(elapsedMs: Long): String {
+        val totalSeconds = (elapsedMs / 1000L).coerceAtLeast(0L)
+        val hours = totalSeconds / 3600L
+        val minutes = (totalSeconds % 3600L) / 60L
+        val seconds = totalSeconds % 60L
+        return if (hours > 0L) {
+            String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format(Locale.US, "%02d:%02d", minutes, seconds)
+        }
+    }
 
     fun addListener(listener: Listener) {
         synchronized(listeners) { listeners.add(listener) }
@@ -72,6 +99,11 @@ object CallSessionBus {
     }
 
     fun updateState(state: CallState) {
+        if (state == CallState.CONNECTED && connectedAtElapsedMs == null) {
+            connectedAtElapsedMs = SystemClock.elapsedRealtime()
+        } else if (state == CallState.ENDED) {
+            connectedAtElapsedMs = null
+        }
         currentState = state
         val snapshot = synchronized(listeners) { listeners.toList() }
         mainHandler.post {
@@ -86,6 +118,9 @@ object CallSessionBus {
     }
 
     fun notifyConnected() {
+        if (connectedAtElapsedMs == null) {
+            connectedAtElapsedMs = SystemClock.elapsedRealtime()
+        }
         updateState(CallState.CONNECTED)
     }
 
@@ -106,6 +141,7 @@ object CallSessionBus {
     fun notifyEnded(reason: String) {
         currentState = CallState.ENDED
         currentMuted = false
+        connectedAtElapsedMs = null
         val snapshot = synchronized(listeners) { listeners.toList() }
         mainHandler.post {
             snapshot.forEach { it.onCallEnded(reason) }

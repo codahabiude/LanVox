@@ -79,9 +79,16 @@ class ChatsActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                chatRepository.observeConversations().collect { conversations ->
-                    latestStoredConversations = conversations
-                    submitMergedConversations(conversations)
+                launch {
+                    chatRepository.observeConversations().collect { conversations ->
+                        latestStoredConversations = conversations
+                        submitMergedConversations(conversations)
+                    }
+                }
+                launch {
+                    ChatBus.typingPeers.collect { typingMap ->
+                        chatsAdapter.updateTyping(typingMap)
+                    }
                 }
             }
         }
