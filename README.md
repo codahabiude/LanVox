@@ -1,93 +1,84 @@
 # LANVOX — Android App (Kotlin)
 
-A peer-to-peer communication app that uses **Wi-Fi Direct (P2P)** to connect Android phones directly — **no internet, router, or server required**. Supports **real-time text messaging**, **file & media sharing**, **WebRTC audio calling**, and **Camera2 video calling**.
+A peer-to-peer communication app that connects **two or more Android phones directly** over **Wi-Fi Direct (P2P)** and **local Wi-Fi / Mobile Hotspot mDNS mesh (`NSD`)** — **no internet, router account, or central server required**. Supports **1:1 and multi-phone group messaging**, **per-message delivery & read receipts**, **file & media sharing with multi-peer progress**, **WebRTC audio calling**, and **Camera2 video calling**.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| 💬 **Inline & Thread Text Chat** | `RecyclerView`-based chat interface directly in `MainActivity` plus dedicated per-contact `ChatActivity` threads using `ChatMessage` & `DiffUtil`-backed `MessageAdapter` |
-| 📎 **P2P File & Media Sharing** | Zero-permission SAF document picker (`OpenDocument`) + dedicated TCP port `8991` binary streaming (`FileTransferManager`) with Room attachment persistence, inline image previews, and `FileProvider` tap-to-open |
-| ✓✓ **Delivery & Read Receipts** | Real-time single/double checkmark indicators (`SENT`, `DELIVERED`, `READ`) driven by `ACK:` / `READ:` control envelopes and persisted in Room |
+| 💬 **1:1 & Multi-Phone Mesh Chat** | Symmetric `ChatServerService` (`8988`) runs on every phone with direct peer links + Group Chat (`__group__`) broadcast routing and `MID:` packet deduplication — no single central host bottleneck |
+| 🌐 **Hostless Wi-Fi / Hotspot NSD** | `LocalMeshDiscovery` (`_lanvox._tcp.`) automatically discovers and connects nearby LANVOX devices sharing the same Wi-Fi network or mobile hotspot alongside Wi-Fi Direct |
+| ✓✓ **Per-Message Delivery & Read Receipts** | Outgoing messages attach a `messageId` (`MID:<id>:`), transition **Sent** (`✓`) → **Delivered** (`✓✓` after recipient Room persistence via `ACK:`), and **Read** (`✓✓` bold mint label via `READ:` only when the recipient actively views the thread in foreground) |
+| 📎 **P2P File Sharing & Multi-Peer Progress** | Zero-permission SAF picker (`OpenDocument`) + binary TCP port `8991` (`FileTransferManager`) up to 250 MB, inline thumbnails, `FileProvider` tap-to-open, plus live `LinearProgressIndicator`, byte counters, and per-peer upload/download chips (`FileTransferTracker`) |
 | 🗑️ **Swipe-to-Delete Messages** | `ItemTouchHelper` swipe gesture (`MessageSwipeHelper`) removes individual bubbles from both UI and Room with an **Undo** Snackbar |
 | 🔎 **In-Chat Message Search** | Frosted glass search bar in both `MainActivity` and `ChatActivity` filters messages live by body text, sender name, file name, MIME type, or timestamp (`14:30`, `3:54 PM`, `Nov 21`, `today`) with match highlights and hit counter |
 | 📡 **Peer Picker Bottom Sheet** | Interactive `PeerPickerBottomSheet` with live sweeping `RadarView`, outward sonar ring ripple during scans, an illustrated empty state (`img_no_peers_empty`) with embedded radar & **Start Scan** CTA, discovered peer list, and one-tap connect/disconnect |
 | 🔐 **Wi-Fi P2P Runtime Permissions** | Android 13+ `NEARBY_WIFI_DEVICES` and Android 7–12 `ACCESS_FINE_LOCATION` permission flow with rationale dialog and Settings fallback |
-| 💾 **Room Database Persistence** | Every message & attachment auto-saved locally via **Room** (`LanvoxDatabase` v2, `ChatMessageEntity`, `ChatMessageDao`, `ChatRepository`) + reactive Kotlin `Flow` — history survives app close and restart |
+| 💾 **Room Database Persistence (v3)** | Every message, `message_id` receipt state, and file attachment auto-saved locally via **Room** (`LanvoxDatabase` v3 with `MIGRATION_1_2` and `MIGRATION_2_3`) + reactive Kotlin `Flow` |
 | 📞 **WebRTC P2P Audio Call** | Background-resilient **WebRTC** (`io.github.webrtc-sdk:android`) Opus/SRTP voice calling inside a `microphone` foreground service with hardware AEC/NS, wake/Wi-Fi locks, and notification Mute/Hangup controls |
-| 📹 **Video Call** | Live video call with Camera2 + PiP preview + WebRTC audio |
-| 🔍 **Peer Discovery** | Find nearby devices via Wi-Fi Direct |
-| 🔀 **Camera Switch** | Toggle front/back camera during video calls |
-| 🔇 **Mute / Speaker** | Audio controls during calls |
-| 🌙 **Dark Mode** | Full dark theme support |
-| 🔔 **Call Ringtone** | Custom ringtone for incoming calls |
-| 📖 **Onboarding** | First-launch tutorial with permission explanations |
-| 👥 **Per-Contact Chats** | WhatsApp-style chats list — each device gets its own conversation thread |
-| 📲 **Calls With App Closed** | Incoming calls ring over the lock screen even when LANVOX isn't opened — answers from the lock screen |
-| 📨 **Messages While Closed** | Messages received while the app is closed are persisted to Room and shown as notifications |
-| 🔄 **Auto-Reconnect** | Chat channel and audio/video sockets retry silently after glitches or handovers |
-| 📤 **Export Chats** | Save all conversations as a `.txt` file in the Downloads folder |
-| 🗑️ **Clear History** | Wipe one conversation (long-press) or everything, with confirmation |
+| 📹 **Direct 1:1 Video Call** | Live Camera2 JPEG-over-TCP video call (`8990`) + PiP preview + WebRTC audio; in multi-phone sessions (>2 phones), prompts you to pick the target peer and streams directly between caller and callee |
+| 🔀 **Camera Switch, Mute & Speaker** | Switch front/back camera during video calls and toggle mute/speakerphone |
+| 🌙 **Dark Mode & Cryo-Cyan HUD** | Obsidian Glassmorphism UI with ambient blurred orbs and bundled Space Grotesk / Plus Jakarta Sans / JetBrains Mono fonts |
+| 📖 **Onboarding & Standby Alerts** | First-launch tutorial plus `CallListenerService` background standby so incoming calls, messages, files, and `ACK:` receipts work even when the app is closed |
+| 👥 **Per-Contact & Group Chats** | Conversations list (`ChatsActivity`) with unread-friendly preview ticks (`✓` / `✓✓`) and per-contact or Group Chat threads |
+| 🔄 **Auto-Reconnect** | Chat mesh links and audio/video call sockets automatically retry after transient drops or handovers |
+| 📤 **Export & Clear History** | Export all conversations to a `.txt` file in Downloads, delete one thread (long-press), or clear all history |
 
 ## How It Works
 
-### Wi-Fi Direct Connection & Runtime Permissions
-1. **Runtime Permissions**: On launch/discovery, `MainActivity` requests `NEARBY_WIFI_DEVICES` (Android 13+) or `ACCESS_FINE_LOCATION` (Android 7–12) using `ActivityResultContracts.RequestMultiplePermissions()`, falling back to rationale prompts and a Settings action if permanently denied.
-2. **Peer Discovery Bottom Sheet**: Tap **Scan** or **Devices** to open `PeerPickerBottomSheet`, which displays the live animated `RadarView` (with sonar ring ripple while actively scanning), an illustrated empty state (`img_no_peers_empty`) with a direct **Start Scan** CTA when no peers are found yet, discovered Wi-Fi Direct peers via `PeerAdapter`, and connect/disconnect actions.
-3. **P2P Link**: One device becomes the **Group Owner (GO)** acting as the access point, while the other device connects as a **client**.
+### Multi-Phone Discovery & Hostless Mesh (`WiFiDirectManager` + `LocalMeshDiscovery`)
+1. **Runtime Permissions**: On launch/discovery, `MainActivity` requests `NEARBY_WIFI_DEVICES` (Android 13+) or `ACCESS_FINE_LOCATION` (Android 7–12) using `ActivityResultContracts.RequestMultiplePermissions()`, with rationale prompts and a Settings fallback.
+2. **Peer Discovery Bottom Sheet**: Tap **Scan** or **Devices** to open `PeerPickerBottomSheet`, which displays the animated `RadarView`, sonar scan ring, illustrated empty state (`img_no_peers_empty`) with a **Start Scan** CTA, and discovered peers.
+3. **Hostless Mesh & Failover**:
+   - Every phone receives a stable `DeviceIdentity` (`lvx_...` or valid MAC) and runs `ChatServerService` listening on port `8988`.
+   - Over **Wi-Fi Direct**, devices exchange `PEERS:id:name@ip` membership tables and open direct client-to-client TCP links (`selfId < peer.id` tie-breaker) so communication keeps working directly without routing everything through a single Group Owner.
+   - Over **Wi-Fi / Mobile Hotspot**, `LocalMeshDiscovery` (`NSD` for `_lanvox._tcp.`) automatically discovers other LANVOX nodes on the same subnet so 2+ phones can chat, transfer files, and call with zero Group Owner setup.
 
-### Text Chat & File Sharing (`MainActivity` & `ChatActivity`)
-- Port `8988`: GO hosts a `ServerSocket`, client connects to it using a newline-delimited protocol over TCP.
-- Port `8991`: `FileTransferManager` runs a dedicated binary TCP relay/file server on the Group Owner for streaming files up to 250 MB (GO serves directly via `GET <transferId>`; Clients upload via `PUT <transferId> <size>` and other peers fetch via `GET`), advertised via `FILE:<json>` envelopes on `8988`.
-- **`MainActivity` Inline Chat**: Features an embedded `RecyclerView` (`rvMessages`), empty-state view, live peer header (`tvActiveChatTitle` / `tvActiveChatSubtitle`), frosted glass search bar (`btnSearchMessages`), paperclip SAF file picker (`btnAttach`), and message composer (`etMessage`, `btnSend`).
-- **`ChatMessage` & `MessageAdapter`**: Dedicated `ChatMessage` data class (`text`, `isSentByMe`, `timestamp`, `status: MessageStatus`, `senderName`, `id`, plus optional attachment fields `attachmentName`, `attachmentMime`, `attachmentSize`, `attachmentPath`, `attachmentState`, `transferId`) with locale-aware bubble timestamp formatting (`formattedTimestamp`), `ChatSearchHelper` live filtering & highlights, image thumbnail previews, tap-to-open via `FileProvider`, `DiffUtil` updates, and single/double checkmark delivery & read receipt icons (`SENT`, `DELIVERED`, `READ`) persisted in Room (`v2` with `MIGRATION_1_2`).
+### Text Chat & Per-Message Acknowledgements (`ACK:` & `READ:`)
+- **Wire Envelope (`Envelope.kt`)**: Messages travel over port `8988` as `ENV|<senderId>|<senderName>|<recipientIdOrStar>|MID:<msgId>:<payload>`, allowing targeted 1:1 routing, Group Chat (`*`) broadcasts, and duplicate suppression across mesh paths.
+- **Acknowledgement Lifecycle**:
+  1. **Sent (`✓`)**: Outgoing messages are saved to Room with a unique `messageId` and `MessageStatus.SENT`.
+  2. **Delivered (`✓✓`)**: Once the recipient's device parses and persists the text/file in Room (either in foreground `MainActivity` or background `CallListenerService`), it replies with `ACK:<scope>|<messageId>`, upgrading the sender's bubble and conversation preview to **Delivered**.
+  3. **Read (`✓✓` Mint Bold)**: `ChatBus.isChatScreenForeground` ensures backgrounded/locked devices do not send false read receipts. When the recipient actively views the thread (or resumes/reconnects to a thread with unread incoming messages), it emits `READ:<scope>|<id1,id2,...>`, updating the sender's bubble to **Read**.
+- **Chat UI (`MessageAdapter` & `ChatsAdapter`)**: Both `MainActivity` inline chat and `ChatActivity` thread views support `ChatSearchHelper` live filtering/highlighting, `MessageSwipeHelper` swipe-to-delete with Undo, and live status ticks alongside timestamps.
 
-### Persistent Chat Storage (Room Database)
-- Every sent and received message (including file attachments) is persisted to an app-private **Room Database** (`/data/data/com.example.lanvox/databases/lanvox_room_chat.db`) via KSP code generation:
-  - `ChatMessageEntity` (`@Entity(tableName = "messages")`): stores `text`, `is_sent`, `timestamp`, `peer_id` (Wi-Fi Direct MAC), `peer_name`, `sender_name`, `status`, and file attachment metadata (`attachment_name`, `attachment_mime`, `attachment_size`, `attachment_path`, `attachment_state`, `transfer_id`), indexed on `timestamp` and `peer_id`.
-  - `ChatMessageDao` (`@Dao`): provides reactive `Flow<List<ChatMessageEntity>>`, `Flow<Int>` total count, `Flow<List<ConversationTuple>>`, `updateOutgoingStatus(...)`, `updateAttachmentByTransferId(...)`, and `suspend` insert/delete/query operations.
-  - `LanvoxDatabase` (`@Database(version = 2)`): singleton Room database instance with non-destructive `MIGRATION_1_2` preserving existing message history on schema upgrade.
-  - `ChatRepository`: maps entities/tuples to domain `ChatMessage` and `Conversation` models and exposes `Flow` streams collected with `repeatOnLifecycle(Lifecycle.State.STARTED)` in the UI.
-- **Offline History**: Saved conversations and downloaded files remain available immediately after closing and reopening the app; sending new messages or files requires connecting to a peer.
-- **Channel & Data Sheet** (`⋯` More Menu → `MainActionsBottomSheet`): Houses secondary and destructive actions cleanly off the main header — **Export Chat History** writes all conversations to `Downloads/LANVOX_chats_<timestamp>.txt` (Android 10+) or app Documents (Android 7–9), **Show Inline Radar**, **Disconnect Peer**, and a separated danger-zone **Delete All Chat History** (also available from `ChatsActivity`, or long-press a conversation to delete one thread).
+### File & Media Sharing with Progress Tracking (`FileTransferManager` + `FileTransferTracker`)
+- **Direct & Relay TCP Transfer (`8991`)**: Files up to 250 MB are staged from Android's zero-permission Storage Access Framework (`OpenDocument`). Senders serve files directly from their local `FileTransferManager` server (`host` field in `FILE:<json>`) or upload via `PUT <transferId> <size>` to a relay peer when client isolation applies.
+- **Multi-Peer Progress UI**: `FileTransferTracker` publishes ~10 Hz `StateFlow<Map<String, TransferSnapshot>>` updates directly to `MessageAdapter` (via partial `PAYLOAD_PROGRESS` binds) showing:
+  - Determinate `LinearProgressIndicator` (`0–100%`) and percentage pill badge
+  - Byte telemetry readout (e.g., `4.2 MB / 12.0 MB · Uploading · 1/2 done`)
+  - Per-peer status chips (`⏳` waiting, `↑ <peer> <pct>%`, `✓ <peer>`, `✕ <peer>`) in multi-phone Group Chat transfers
+  - End-to-end `FILE_DONE:` / `FILE_FAIL:` confirmation from each recipient before marking completion.
 
-### Audio Call (WebRTC Foreground Service)
-- **`WebRtcAudioCallManager` (`io.github.webrtc-sdk:android`)**: Full-duplex **WebRTC** Unified Plan `PeerConnection` using `JavaAudioDeviceModule` (hardware Acoustic Echo Canceler, Noise Suppressor, Auto Gain Control), Opus codec over DTLS-SRTP/UDP with adaptive NetEQ jitter buffering, and buffered remote ICE candidate queuing.
-- **P2P Signaling (`Constants.AUDIO_PORT` `8989`)**: Group Owner hosts a `ServerSocket` (`reuseAddress = true`) and acts as the SDP offerer; the client connects (up to 30 retries) as the SDP answerer, exchanging newline-delimited JSON `offer` / `answer` / `ice` / `bye` signaling packets while media flows peer-to-peer over ICE host candidates on the Wi-Fi Direct LAN.
-- **Background Stability (`AudioCallService`)**: Runs as a `FOREGROUND_SERVICE_TYPE_MICROPHONE` foreground service holding a `PowerManager.PARTIAL_WAKE_LOCK`, `WifiManager.WifiLock` (`WIFI_MODE_FULL_LOW_LATENCY`), `AudioFocusRequest` (API 26+), `AudioManager.MODE_IN_COMMUNICATION`, and an interactive call notification (tap to reopen `AudioCallActivity`, **Mute/Unmute**, and **End Call** actions).
+### Persistent Chat Storage (Room Database v3)
+- Saved locally in `/data/data/com.example.lanvox/databases/lanvox_room_chat.db`:
+  - `ChatMessageEntity` (`@Entity(tableName = "messages")`): stores `text`, `is_sent`, `timestamp`, `peer_id`, `peer_name`, `sender_name`, `status`, `message_id` (indexed as `idx_messages_msg_id`), and attachment columns (`attachment_name`, `attachment_mime`, `attachment_size`, `attachment_path`, `attachment_state`, `transfer_id`).
+  - `ChatMessageDao` (`@Dao`): reactive `Flow` message/conversation queries (`ConversationTuple` includes `lastStatus` for list ticks), `updateOutgoingStatusByMessageIds(...)`, `getUnreadIncomingMessageIds(...)`, and `markIncomingThreadRead(...)`.
+  - `LanvoxDatabase` (`@Database(version = 3)`): non-destructive `MIGRATION_1_2` and `MIGRATION_2_3` preserve prior messages.
 
-### Video Call
-- Port `8990`: Dedicated TCP socket for length-prefixed JPEG frames fed through a single conflated `Channel` and single-writer coroutine (no concurrent socket writes or frame corruption)
-- Camera2 (`CONTROL_AF_MODE_CONTINUOUS_VIDEO` + dynamic `JPEG_ORIENTATION`) → 15 FPS paced `ImageReader` → `OutputStream` → [WiFi Direct] → `InputStream` → off-UI `Dispatchers.Default` JPEG decode → aspect-preserving center-crop `Canvas` draw on `SurfaceView`
-- Local PiP overlay uses `setZOrderMediaOverlay(true)` and dynamically attaches/reconfigures when its `SurfaceView` becomes ready; camera switch serialized on `cameraHandler` and `HandlerThread` cleanly stopped on exit
-- Simultaneously manages `AudioCallService` (speakerphone enabled by default) and `CallSessionBus` lifecycle
+### Audio & Video Calling (1:1 Direct Calls Across 2+ Phones)
+- **Audio (`WebRtcAudioCallManager` & `AudioCallService`, port `8989`)**: Full-duplex WebRTC `PeerConnection` (`JavaAudioDeviceModule` with hardware AEC/NS/AGC, Opus DTLS-SRTP, NetEQ jitter buffer) over LAN ICE host candidates inside a `microphone` foreground service with wake/Wi-Fi locks and notification Mute/End controls.
+- **Video (`VideoCallService` & `VideoCallActivity`, port `8990`)**: Camera2 (`CONTROL_AF_MODE_CONTINUOUS_VIDEO` + dynamic orientation) streams 15 FPS length-prefixed JPEG frames via a conflated `Channel` with a local PiP overlay (`setZOrderMediaOverlay(true)`), off-UI JPEG decoding, and simultaneous WebRTC audio.
+- **Behavior With >2 Phones Connected**: Audio and video calls are **1-to-1 peer-to-peer sessions** (not multi-way group conferences). When multiple peers are connected in Group Chat or the mesh, tapping **Audio Call** or **Video Call** prompts you to select which connected peer to ring; the caller hosts the direct call sockets (`CALL_REQ:<type>|<localIp>`) and connects directly to that peer without needing a central Group Owner relay.
 
-### Receive Calls, Messages & Files Even When the App Is Closed
-LANVOX keeps a **standby listener** (`CallListenerService`) running as a foreground service, so incoming calls, messages, and file offers reach the phone even when the app was swiped away or rebooted:
-1. **Standby listener** — keeps a socket alive on port `8988` in both GO and Client roles, configures `FileTransferManager` on port `8991`, and decodes full v5 `Envelope` packets (`HELLO`, `PEERS`, `TEXT`, `FILE`, `ACK`, `READ`, `CALL_REQ`, `CALL_END`).
-2. **Boot receiver** — `BootReceiver` restarts the listener after reboot or app update.
-3. **Incoming call while closed** — wakes the screen, plays ringtone, forwards caller peer ID/name, and shows `IncomingCallActivity` over the lock screen.
-4. **Messages & files while closed** — incoming texts and `FILE:` attachments are saved/downloaded via `ChatRepository` & `FileTransferManager` into Room and posted as notifications.
-5. **Handover** — reopening the app seamlessly hands the chat socket back from the standby listener.
-
-Required setup (prompted by the app):
-- **Notification permission** (Android 13+) for incoming call/message alerts
-- **Battery optimization exemption** for reliable background receiving
+### Standby Listener When App Is Closed (`CallListenerService`)
+- Keeps listening on `8988` (and configures `FileTransferManager` on `8991`), restarted after reboot by `BootReceiver`.
+- Receives incoming calls over the lock screen (`IncomingCallActivity`), persists incoming texts & files to Room, replies with `ACK:` delivery confirmations, processes incoming `ACK:` / `READ:` updates, and hands sockets back smoothly when `MainActivity` opens.
 
 ## App Flow
 
 ```
-Splash → Onboarding (first launch) → MainActivity (Permissions + PeerPickerBottomSheet + Inline Chat)
-                                          ├── ✉ ChatsActivity → ChatActivity (Per-contact Room history)
-                                          ├── 📞 AudioCallActivity
-                                          └── 📹 VideoCallActivity
+Splash → Onboarding (first launch) → MainActivity (Permissions + PeerPickerBottomSheet + Inline Mesh Chat)
+                                          ├── ✉ ChatsActivity → ChatActivity (Per-contact / Group Room history)
+                                          ├── 📞 AudioCallActivity (1:1 WebRTC voice)
+                                          └── 📹 VideoCallActivity (1:1 Camera2 + WebRTC audio)
 ```
 
 ## Prerequisites
 
 - **Android Studio** (AGP 9.1.1 / Gradle 9.3.1 compatible)
 - **Android device** running **API 24+** (Android 7.0+)
-- **Wi-Fi Direct capable** hardware for live P2P discovery (UI & Room chat history work on emulators; live P2P requires two physical devices)
+- **Wi-Fi Direct or shared Wi-Fi/Hotspot** hardware for live P2P discovery (UI & Room history work on emulators; live P2P requires physical devices)
 - **Camera and microphone** for audio/video calls
 
 ## Setup & Build
@@ -110,61 +101,61 @@ gradle installDebug
 
 ## Usage
 
-### Connect Two Phones
+### Connect Two or More Phones
 
-| Phone A | Phone B |
-|---------|---------|
-| 1. Open app, grant Wi-Fi P2P permissions | 1. Open app, grant Wi-Fi P2P permissions |
-| 2. Open **Devices** sheet (`PeerPickerBottomSheet`) and tap **Scan** | 2. Open **Devices** sheet and tap **Scan** |
-| 3. Phone B appears in peer list | 3. Phone A appears in peer list |
-| 4. Tap Phone B to connect | (Connection established) |
+1. Open **LANVOX** on each phone and grant Wi-Fi / location permissions.
+2. Either connect devices on the same **Wi-Fi / Mobile Hotspot** (automatic `LocalMeshDiscovery` via mDNS) **or** open **Devices** (`PeerPickerBottomSheet`), tap **Scan**, and connect via **Wi-Fi Direct**.
+3. Use **Group Chat** to message or send files to all connected phones at once, or open a specific contact thread from **Chats** for 1:1 messaging and direct calls.
 
-### Text Chat & File Sharing
-- Type messages in the bottom composer of `MainActivity` (or inside a thread in `ChatActivity`) and tap **Send**
-- Tap the paperclip button (`btnAttach`) in the composer to pick any document, image, audio, or video file (up to 250 MB) and stream it directly over Wi-Fi Direct; tap any received attachment bubble to open or share it
-- Swipe any message bubble to delete it (with **Undo**), or tap the search icon to filter by message text, file name, or timestamp
+### Text Chat, Read Receipts & File Sharing
+- Type in the bottom composer of `MainActivity` or `ChatActivity` and tap **Send**; watch message ticks advance from **Sent (`✓`)** → **Delivered (`✓✓`)** → **Read (`✓✓`)**.
+- Tap the paperclip button (`btnAttach`) to pick any document, image, audio, or video file (up to 250 MB) and track real-time upload/download progress bars and per-peer chips inside the bubble.
+- Swipe any bubble to delete it (with **Undo**), or tap the search icon to filter by text, sender, file name, or timestamp.
 
 ### Audio & Video Calls
-- Tap **📞 Audio Call** or **📹 Video Call** once connected
-- Controls: Mute, Speaker, Switch Camera (video), End Call
+- Tap **Audio Call** or **Video Call** in a peer thread (or pick the target peer from the dialog when multiple devices are connected in Group Chat).
+- Controls: Mute, Speaker, Switch Camera (video), End Call.
 
 ## Project Structure
 
 ```
 app/src/main/java/com/example/wifip2pchat/
-├── Constants.kt                    — Ports (8988–8991), audio/video config, file limits & message prefixes
-├── Envelope.kt                     — Wire message framing helpers
-├── PeerRegistry.kt                 — Multi-peer membership tracking across Group Owner & clients
-├── WiFiDirectManager.kt            — Core Wi-Fi Direct logic, permission guards & session restore
+├── Constants.kt                    — Ports (8988–8991), audio/video config, file limits & envelope prefixes
+├── DeviceIdentity.kt               — Persistent node ID (`lvx_...`/MAC) & local IPv4 interface resolver
+├── Envelope.kt                     — Wire envelope (`ENV|...|MID:<id>:<payload>`) builder & parser
+├── PeerRegistry.kt                 — Multi-peer membership & IP registry across Wi-Fi Direct and LAN mesh
+├── LocalMeshDiscovery.kt           — Hostless LAN / Hotspot mDNS (`NSD`) service advertisement & discovery
+├── WiFiDirectManager.kt            — Wi-Fi Direct lifecycle, permission guards & session restore
 ├── WiFiDirectBroadcastReceiver.kt  — P2P system event listener (Android 13+ compatible)
-├── ChatServerService.kt            — Text chat socket server (GO)
-├── ChatClient.kt                   — Text chat socket client (with auto-reconnect)
-├── FileTransferManager.kt          — Binary TCP file staging, GO relay server (8991), download & FileProvider open helper
-├── CallListenerService.kt          — Standby listener: receives calls, messages & files while app closed
-├── BootReceiver.kt                 — Restarts the standby listener after boot
-├── LastSession.kt                  — Remembers last connection (role, GO IP, peer)
-├── ChatMessage.kt                  — Domain ChatMessage model, MessageStatus, AttachmentState & timestamp/size formatters
+├── ChatServerService.kt            — Symmetric multi-peer P2P mesh server/client router (8988) + MID dedup
+├── ChatClient.kt                   — Dedicated Group Owner uplink socket client (with auto-reconnect)
+├── FileTransferManager.kt          — Binary TCP file server/relay (8991), direct host fetch & FileProvider helper
+├── FileTransferTracker.kt          — Live ~10 Hz StateFlow progress & multi-peer status chip state
+├── CallListenerService.kt          — Standby foreground service: closed-app calls, messages, files & ACKs
+├── BootReceiver.kt                 — Restarts the standby listener after device reboot/update
+├── LastSession.kt                  — Remembers last session role, host IP & peer info
+├── ChatMessage.kt                  — Domain ChatMessage model (`messageId`, `MessageStatus`, `AttachmentState`)
 ├── ChatMessageEntity.kt            — Room @Entity table definition ("messages")
-├── ChatMessageDao.kt               — Room @Dao queries (Flow & suspend) + ConversationTuple
-├── LanvoxDatabase.kt               — Room @Database v2 singleton ("lanvox_room_chat.db") with MIGRATION_1_2
-├── ChatRepository.kt               — Repository layer & Conversation domain model
-├── ChatBus.kt                      — Event bus between main screen and chat threads
-├── CallSessionBus.kt               — Shared call signaling state (`RINGING`/`CONNECTING`/`CONNECTED`/`RECONNECTING`/`ENDED`), mute sync & AudioFocus manager
-├── WebRtcAudioCallManager.kt       — WebRTC PeerConnection, JavaAudioDeviceModule (AEC/NS/AGC), SDP Offer/Answer & ICE candidate queue
-├── AudioCallService.kt             — Microphone foreground service hosting WebRTC P2P audio, wake/Wi-Fi locks & ongoing notification controls
-├── VideoCallService.kt             — Video streaming foreground service (Camera2 + conflated TCP writer)
+├── ChatMessageDao.kt               — Room @Dao queries (Flow & suspend), receipt updates & ConversationTuple
+├── LanvoxDatabase.kt               — Room @Database v3 singleton ("lanvox_room_chat.db") with v1→v2→v3 migrations
+├── ChatRepository.kt               — Repository layer, receipt transitions & Conversation domain model
+├── ChatBus.kt                      — Foreground thread & message event bus (`activeChatPeerId`, `isChatScreenForeground`)
+├── CallSessionBus.kt               — Shared call signaling state, mute sync & AudioFocus manager
+├── WebRtcAudioCallManager.kt       — WebRTC PeerConnection, JavaAudioDeviceModule (AEC/NS/AGC) & ICE queue
+├── AudioCallService.kt             — Microphone foreground service hosting WebRTC P2P audio & notification actions
+├── VideoCallService.kt             — Video streaming foreground service (Camera2 + conflated TCP frame writer)
 ├── AudioCallActivity.kt            — Audio call UI
 ├── VideoCallActivity.kt            — Video call UI
-├── IncomingCallActivity.kt         — Incoming call screen (app open or closed)
-├── MainActivity.kt                 — Main screen: streamlined Obsidian Glass header, PeerPickerBottomSheet, inline RecyclerView chat, file sharing & call controls
-├── MainActionsBottomSheet.kt       — Material BottomSheetDialog for secondary/destructive actions (Export, Inline Radar, Disconnect, Clear History)
-├── PeerPickerBottomSheet.kt        — Material BottomSheetDialog for peer discovery, illustrated empty state with embedded radar & selection
-├── ChatsActivity.kt                — Chats list (all conversations observed via Room Flow)
-├── ChatsAdapter.kt                 — RecyclerView adapter for the chats list
-├── ChatActivity.kt                 — Per-contact chat thread with search, swipe-to-delete & file sharing
+├── IncomingCallActivity.kt         — Incoming call lock-screen UI
+├── MainActivity.kt                 — Main HUD: PeerPickerBottomSheet, inline mesh chat, file sharing & 1:1 call routing
+├── MainActionsBottomSheet.kt       — Material BottomSheetDialog for secondary/destructive actions
+├── PeerPickerBottomSheet.kt        — Material BottomSheetDialog for peer discovery, RadarView & empty-state CTA
+├── ChatsActivity.kt                — Conversations list (observed via Room Flow with delivery/read ticks)
+├── ChatsAdapter.kt                 — RecyclerView adapter for the conversations list
+├── ChatActivity.kt                 — Per-contact / Group thread with search, receipts, swipe-to-delete & file sharing
 ├── PeerAdapter.kt                  — RecyclerView adapter for discovered peers
-├── MessageAdapter.kt               — RecyclerView adapter for ChatMessage text & file/image bubbles (sent/received + DiffUtil + async thumbnails)
-├── ChatSearchHelper.kt             — Live message filtering by content, sender, filename, MIME, or timestamp + span highlighting
+├── MessageAdapter.kt               — RecyclerView adapter for text/file bubbles, receipt labels & live progress bars
+├── ChatSearchHelper.kt             — Live message filtering by text, sender, filename, MIME, or timestamp
 ├── MessageSwipeHelper.kt           — ItemTouchHelper swipe-to-delete on message bubbles (UI + Room + Undo)
 ├── GlassEffects.kt                 — RenderEffect backdrop blur & luminous glow shadows
 ├── OnboardingActivity.kt           — First-launch tutorial
@@ -179,7 +170,7 @@ app/src/main/java/com/example/wifip2pchat/
 | Permission | Purpose |
 |---|---|
 | `ACCESS_WIFI_STATE` | Check Wi-Fi status |
-| `CHANGE_WIFI_STATE` | Enable Wi-Fi Direct |
+| `CHANGE_WIFI_STATE` | Enable Wi-Fi Direct & NSD multicast lock |
 | `ACCESS_FINE_LOCATION` | Required for peer discovery on Android 7–12 |
 | `ACCESS_COARSE_LOCATION` | Fallback location |
 | `NEARBY_WIFI_DEVICES` | Runtime permission for Wi-Fi Direct discovery on Android 13+ |
@@ -202,26 +193,21 @@ app/src/main/java/com/example/wifip2pchat/
 
 ## Troubleshooting
 
-- **No peers found**: Both phones need Wi-Fi ON, Location enabled (on Android <13), and Wi-Fi P2P permissions granted. Move closer together.
-- **Can't start call**: Ensure both phones are connected (green indicator) before tapping call.
-- **File transfer failed / can't open file**: Ensure both phones remain connected on the Wi-Fi Direct group during transfer and an app capable of viewing the file type is installed (otherwise use the share sheet fallback).
-- **No video**: Check that camera permission is granted.
-- **No audio during call**: Check microphone permission and try toggling speaker on/off.
-- **Calls not received while app is closed**: Make sure LANVOX was granted notification permission and battery-optimization exemption.
-- **Poor video quality**: Wi-Fi Direct range is typically 10–50m; video quality drops with distance.
+- **No peers found**: Ensure Wi-Fi is ON and Wi-Fi P2P / location permissions are granted, or connect phones to the same Wi-Fi network / mobile hotspot for automatic `LocalMeshDiscovery`.
+- **Can't start call**: Ensure at least one peer is connected (green status) before tapping call; when 2+ peers are connected in Group Chat, select the specific peer to call.
+- **Read receipt stuck on Delivered**: `Read` (`✓✓` mint) is sent only when the recipient actively opens and views the matching conversation in the foreground while connected.
+- **File transfer failed / can't open file**: Keep devices connected during transfer and ensure a compatible viewer app is installed (otherwise use the share sheet fallback).
+- **Calls not received while app is closed**: Grant notification permission and battery-optimization exemption when prompted.
+- **Poor video quality**: Wi-Fi Direct range is typically 10–50m; video quality drops with distance or multi-peer congestion.
 
 ## Technical Details
 
 - **Language**: Kotlin (AGP 9.1.1 built-in Kotlin, Gradle 9.3.1)
 - **Min SDK**: 24 (Android 7.0)
 - **Target SDK**: 34 (Android 14)
-- **Persistence**: AndroidX Room (`2.7.1`, schema v2 with `MIGRATION_1_2`) with KSP (`2.3.5`), Repository pattern, and Kotlin `Flow` / `StateFlow`
-- **File Sharing**: Zero-permission SAF (`ActivityResultContracts.OpenDocument`), TCP binary `PUT`/`GET` relay on port `8991` (`FileTransferManager`), and `androidx.core.content.FileProvider` (`res/xml/file_paths.xml`)
-- **Architecture**: P2P Group Owner / Client sockets + Repository-backed Room persistence
-- **Audio**: WebRTC (`io.github.webrtc-sdk:android`) `PeerConnection` + `JavaAudioDeviceModule` (Opus SRTP, hardware AEC/NS/AGC) over Wi-Fi Direct LAN ICE candidates with JSON TCP signaling (`8989`) inside a `microphone` foreground service
-- **Video**: Camera2 API → JPEG frames → length-prefixed TCP protocol
-- **Concurrency**: Kotlin Coroutines & Flow (`kotlinx.coroutines`)
-- **UI / UX**: Glassmorphism & Cryo-Cyan Orbital HUD aesthetic (`#050811` void, `#00F0FF` cryo-cyan, semi-transparent frosted chat & attachment bubbles with soft glow borders, `RenderEffect` blurred ambient light orbs via `GlassEffects.kt`, floating glass composer dock), `RadarView` conical `SweepGradient`, sonar ripple animation (`pulse_scan.xml`), custom no-peers illustration (`img_no_peers_empty`), bundled `Space Grotesk`, `Plus Jakarta Sans`, & `JetBrains Mono` typography (`res/font/`), `BottomSheetDialog`, `RecyclerView` (`DiffUtil` + `ItemTouchHelper`), and ViewBinding
+- **Persistence**: AndroidX Room (`2.7.1`, schema v3 with `MIGRATION_1_2` & `MIGRATION_2_3`) with KSP (`2.3.5`), Repository pattern, and Kotlin `Flow` / `StateFlow`
+- **Networking**: Symmetric TCP mesh (`8988`), Wi-Fi Direct + Android NSD (`_lanvox._tcp.`), TCP binary file server/relay (`8991`), WebRTC audio (`8989`), and Camera2 JPEG video (`8990`)
+- **UI / UX**: Glassmorphism & Cryo-Cyan Orbital HUD aesthetic (`#050811` void, `#00F0FF` cryo-cyan, `#00F5A0` read-receipt mint), `RadarView` conical sweep & sonar pulse, custom no-peers illustration, bundled `Space Grotesk`, `Plus Jakarta Sans`, & `JetBrains Mono` typography (`res/font/`), `MaterialProgressIndicator`, `BottomSheetDialog`, `RecyclerView` (`DiffUtil` + `ItemTouchHelper`), and ViewBinding
 
 ## License
 
