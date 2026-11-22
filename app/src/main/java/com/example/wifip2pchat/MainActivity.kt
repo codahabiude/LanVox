@@ -394,6 +394,11 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                         }
                     }
                 }
+                launch {
+                    FileTransferTracker.snapshots.collect { snapshots ->
+                        messageAdapter.updateTransferSnapshots(snapshots)
+                    }
+                }
             }
         }
 
@@ -585,7 +590,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         btnAudioCall.setOnClickListener { startAudioCall() }
         btnVideoCall.setOnClickListener { startVideoCall() }
         btnAttach.setOnClickListener {
-            if (!wifiManager.isConnected) {
+            if (!isNetworkConnected()) {
                 showSnackbar("Connect to a peer first to send files")
             } else {
                 filePickerLauncher.launch(arrayOf("*/*"))
@@ -1093,6 +1098,34 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             payload.startsWith(Constants.MSG_TYPE_FILE) -> {
                 onIncomingFile(payload, env.senderId, env.senderName, env.recipientId)
             }
+            payload.startsWith(Constants.MSG_TYPE_FILE_DONE) -> {
+                val transferId = payload.removePrefix(Constants.MSG_TYPE_FILE_DONE).trim()
+                if (transferId.isNotEmpty()) {
+                    FileTransferTracker.markPeerCompleted(transferId, env.senderId, env.senderName)
+                    val snap = FileTransferTracker.snapshotFor(transferId)
+                    if (snap == null || snap.isFinished) {
+                        lifecycleScope.launch {
+                            chatRepository.updateAttachmentStateOnly(transferId, AttachmentState.COMPLETED)
+                        }
+                    }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_FILE_FAIL) -> {
+                val transferId = payload.removePrefix(Constants.MSG_TYPE_FILE_FAIL).trim()
+                if (transferId.isNotEmpty()) {
+                    FileTransferTracker.markPeerFailed(transferId, env.senderId, env.senderName)
+                    val snap = FileTransferTracker.snapshotFor(transferId)
+                    if (snap != null && snap.isFinished) {
+                        val allFailed = snap.peerStatuses.values.all {
+                            it.state == FileTransferTracker.PeerTransferStatus.FAILED
+                        }
+                        val finalState = if (allFailed) AttachmentState.FAILED else AttachmentState.COMPLETED
+                        lifecycleScope.launch {
+                            chatRepository.updateAttachmentStateOnly(transferId, finalState)
+                        }
+                    }
+                }
+            }
             payload.startsWith(Constants.MSG_TYPE_ACK) -> {
                 val scope = payload.removePrefix(Constants.MSG_TYPE_ACK)
                 val targetThread = if (scope == Constants.GROUP_PEER_ID) {
@@ -1230,9 +1263,24 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             chatRepository.insertMessage(message, threadPeerId, threadPeerName)
             ChatBus.notifyMessageSaved(message, threadPeerId)
 
-            val savedFile = FileTransferManager.downloadOffer(applicationContext, offer, senderId)
+            val savedFile = FileTransferManager.downloadOffer(
+                applicationContext,
+                offer,
+                senderId,
+                senderName
+            )
             val newState = if (savedFile != null) AttachmentState.COMPLETED else AttachmentState.FAILED
             chatRepository.updateAttachmentState(offer.transferId, savedFile?.absolutePath, newState)
+
+            if (envIsDirectOrKnown(senderId)) {
+                val receipt = if (savedFile != null) {
+                    Constants.MSG_TYPE_FILE_DONE + offer.transferId
+                } else {
+                    Constants.MSG_TYPE_FILE_FAIL + offer.transferId
+                }
+                sendControlMessage(receipt, senderId)
+            }
+
             if (savedFile == null) {
                 runOnUiThread {
                     showSnackbar("Failed to receive ${offer.fileName}")
@@ -1278,6 +1326,16 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 return@launch
             }
             val offer = staged.offer
+            val targets = if (recipientId == Constants.RECIPIENT_BROADCAST) {
+                PeerRegistry.snapshot()
+            } else {
+                val targetPeer = PeerRegistry.snapshot().firstOrNull { it.id == recipientId }
+                    ?: PeerRegistry.Peer(recipientId, threadPeerName, isGroupOwner = false)
+                listOf(targetPeer)
+            }
+
+            FileTransferTracker.registerOutgoing(offer.transferId, offer.fileSize, targets)
+
             val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize)
             val msg = ChatMessage(
                 text = summary,
@@ -1295,14 +1353,13 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
             val uploaded = FileTransferManager.pushStagedFileToGroup(staged)
             val signaled = if (uploaded) transmitPayload(recipientId, offer.toPayload()) else false
-            val finalState = if (uploaded && signaled) {
-                AttachmentState.COMPLETED
-            } else {
-                AttachmentState.FAILED
-            }
-            chatRepository.updateAttachmentState(offer.transferId, staged.localFile.absolutePath, finalState)
-            if (finalState == AttachmentState.FAILED) {
+            if (!signaled) {
+                FileTransferTracker.markSignalFailed(offer.transferId)
+                chatRepository.updateAttachmentState(offer.transferId, staged.localFile.absolutePath, AttachmentState.FAILED)
                 showSnackbar("Failed to send ${offer.fileName}")
+            } else if (targets.isEmpty()) {
+                FileTransferTracker.markOutgoingNoTargets(offer.transferId)
+                chatRepository.updateAttachmentState(offer.transferId, staged.localFile.absolutePath, AttachmentState.COMPLETED)
             }
         }
     }

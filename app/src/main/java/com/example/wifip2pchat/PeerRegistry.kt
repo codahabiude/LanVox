@@ -70,6 +70,14 @@ object PeerRegistry {
         }
     }
 
+    /** Look up a peer by its direct IP address. */
+    fun peerForIp(ip: String?): Peer? {
+        if (ip.isNullOrBlank()) return null
+        return synchronized(peers) {
+            peers.values.firstOrNull { it.ipAddress == ip }
+        }
+    }
+
     /** Merge/replace peers received from a PEERS: payload (preserving any known direct IPs). */
     fun mergeFromPeersPayload(list: List<Peer>) {
         synchronized(peers) {

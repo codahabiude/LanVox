@@ -182,6 +182,7 @@ object FileTransferManager {
                 val input = s.getInputStream()
                 val output = s.getOutputStream()
                 val header = readHeaderLine(input) ?: return
+                val remoteIp = s.inetAddress?.hostAddress
                 val parts = header.trim().split(' ')
                 when (parts.firstOrNull()) {
                     "GET" -> {
@@ -190,8 +191,11 @@ object FileTransferManager {
                         if (file != null && file.exists() && file.isFile) {
                             val len = file.length()
                             writeHeaderLine(output, "OK $len")
+                            FileTransferTracker.updateOutgoingPeerStream(transferId, remoteIp, 0L, len)
                             FileInputStream(file).use { fis ->
-                                copyFixedOrAll(fis, output, len)
+                                copyFixedOrAll(fis, output, len) { sent ->
+                                    FileTransferTracker.updateOutgoingPeerStream(transferId, remoteIp, sent, len)
+                                }
                             }
                             output.flush()
                         } else {
@@ -352,30 +356,39 @@ object FileTransferManager {
     suspend fun downloadOffer(
         context: Context,
         offer: FileOffer,
-        senderId: String? = null
+        senderId: String? = null,
+        senderName: String? = null
     ): File? = withContext(Dispatchers.IO) {
         val dir = attachmentsDir(context)
         val destFile = File(dir, "${sanitizeFileName(offer.transferId)}_${sanitizeFileName(offer.fileName)}")
         if (destFile.exists() && destFile.length() == offer.fileSize) {
+            FileTransferTracker.markIncomingCompleted(offer.transferId, offer.fileSize, senderId, senderName)
             return@withContext destFile
         }
+
+        FileTransferTracker.updateIncomingDownload(offer.transferId, 0L, offer.fileSize, senderId, senderName)
 
         val localStaged = stagedFiles[offer.transferId]
         if (localStaged != null && localStaged.exists() && localStaged.length() > 0L) {
             val tmp = File(dir, "${destFile.name}.tmp")
             return@withContext try {
+                val totalLen = localStaged.length()
                 FileInputStream(localStaged).use { fis ->
                     FileOutputStream(tmp).use { fos ->
-                        copyFixedOrAll(fis, fos, localStaged.length())
+                        copyFixedOrAll(fis, fos, totalLen) { done ->
+                            FileTransferTracker.updateIncomingDownload(offer.transferId, done, totalLen, senderId, senderName)
+                        }
                     }
                 }
                 if (destFile.exists()) destFile.delete()
                 tmp.renameTo(destFile)
                 stagedFiles[offer.transferId] = destFile
+                FileTransferTracker.markIncomingCompleted(offer.transferId, destFile.length(), senderId, senderName)
                 destFile
             } catch (e: Exception) {
                 tmp.delete()
                 Log.w(TAG, "Local copy failed: ${e.message}")
+                FileTransferTracker.markIncomingFailed(offer.transferId, senderId, senderName)
                 null
             }
         }
@@ -393,8 +406,13 @@ object FileTransferManager {
                 destFile = destFile,
                 offer = offer,
                 dir = dir,
-                attempts = 3
-            )?.let { return@withContext it }
+                attempts = 3,
+                senderId = senderId,
+                senderName = senderName
+            )?.let {
+                FileTransferTracker.markIncomingCompleted(offer.transferId, it.length(), senderId, senderName)
+                return@withContext it
+            }
         }
 
         // 2. Fallback: ask relay host to stream from senderHost or serve cached transferId
@@ -406,8 +424,13 @@ object FileTransferManager {
                     destFile = destFile,
                     offer = offer,
                     dir = dir,
-                    attempts = 2
-                )?.let { return@withContext it }
+                    attempts = 2,
+                    senderId = senderId,
+                    senderName = senderName
+                )?.let {
+                    FileTransferTracker.markIncomingCompleted(offer.transferId, it.length(), senderId, senderName)
+                    return@withContext it
+                }
             }
             fetchViaTcp(
                 connectHost = fallbackHost,
@@ -415,9 +438,15 @@ object FileTransferManager {
                 destFile = destFile,
                 offer = offer,
                 dir = dir,
-                attempts = 2
-            )?.let { return@withContext it }
+                attempts = 2,
+                senderId = senderId,
+                senderName = senderName
+            )?.let {
+                FileTransferTracker.markIncomingCompleted(offer.transferId, it.length(), senderId, senderName)
+                return@withContext it
+            }
         }
+        FileTransferTracker.markIncomingFailed(offer.transferId, senderId, senderName)
         null
     }
 
@@ -427,7 +456,9 @@ object FileTransferManager {
         destFile: File,
         offer: FileOffer,
         dir: File,
-        attempts: Int
+        attempts: Int,
+        senderId: String? = null,
+        senderName: String? = null
     ): File? {
         repeat(attempts) { attempt ->
             val tmp = File(dir, "${destFile.name}.tmp")
@@ -448,8 +479,11 @@ object FileTransferManager {
                     if (expectedLen <= 0L || expectedLen > Constants.MAX_FILE_TRANSFER_BYTES) {
                         return null
                     }
+                    FileTransferTracker.updateIncomingDownload(offer.transferId, 0L, expectedLen, senderId, senderName)
                     val bytesRead = FileOutputStream(tmp).use { fos ->
-                        copyExactBytes(input, fos, expectedLen)
+                        copyExactBytes(input, fos, expectedLen) { bytesDone ->
+                            FileTransferTracker.updateIncomingDownload(offer.transferId, bytesDone, expectedLen, senderId, senderName)
+                        }
                     }
                     if (bytesRead == expectedLen) {
                         if (destFile.exists()) destFile.delete()
@@ -553,28 +587,54 @@ object FileTransferManager {
         return null
     }
 
-    private fun copyFixedOrAll(input: InputStream, output: OutputStream, expectedMax: Long): Long {
+    private fun copyFixedOrAll(
+        input: InputStream,
+        output: OutputStream,
+        expectedMax: Long,
+        onProgress: ((Long) -> Unit)? = null
+    ): Long {
         val buf = ByteArray(BUFFER_SIZE)
         var total = 0L
+        var lastEmitMs = 0L
         while (total < expectedMax) {
             val toRead = minOf(buf.size.toLong(), expectedMax - total).toInt()
             val read = input.read(buf, 0, toRead)
             if (read <= 0) break
             output.write(buf, 0, read)
             total += read
+            if (onProgress != null) {
+                val now = System.currentTimeMillis()
+                if (total >= expectedMax || now - lastEmitMs >= 90L) {
+                    lastEmitMs = now
+                    onProgress(total)
+                }
+            }
         }
         return total
     }
 
-    private fun copyExactBytes(input: InputStream, output: OutputStream, expectedSize: Long): Long {
+    private fun copyExactBytes(
+        input: InputStream,
+        output: OutputStream,
+        expectedSize: Long,
+        onProgress: ((Long) -> Unit)? = null
+    ): Long {
         val buf = ByteArray(BUFFER_SIZE)
         var total = 0L
+        var lastEmitMs = 0L
         while (total < expectedSize) {
             val toRead = minOf(buf.size.toLong(), expectedSize - total).toInt()
             val read = input.read(buf, 0, toRead)
             if (read <= 0) break
             output.write(buf, 0, read)
             total += read
+            if (onProgress != null) {
+                val now = System.currentTimeMillis()
+                if (total >= expectedSize || now - lastEmitMs >= 90L) {
+                    lastEmitMs = now
+                    onProgress(total)
+                }
+            }
         }
         output.flush()
         return total

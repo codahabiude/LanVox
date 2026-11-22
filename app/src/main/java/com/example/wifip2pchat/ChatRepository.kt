@@ -110,6 +110,14 @@ class ChatRepository(private val dao: ChatMessageDao) {
         dao.updateAttachmentByTransferId(transferId, attachmentPath, state.name)
     }
 
+    suspend fun updateAttachmentStateOnly(
+        transferId: String,
+        state: AttachmentState
+    ) {
+        if (transferId.isBlank()) return
+        dao.updateAttachmentStateOnlyByTransferId(transferId, state.name)
+    }
+
     suspend fun deleteMessage(message: ChatMessage) {
         val rowId = message.id.removePrefix("room_").toLongOrNull()
         if (rowId != null) {

@@ -58,6 +58,8 @@ object Constants {
     // Message type prefixes for multiplexing on the chat channel
     const val MSG_TYPE_TEXT = "TEXT:"
     const val MSG_TYPE_FILE = "FILE:"
+    const val MSG_TYPE_FILE_DONE = "FILE_DONE:"
+    const val MSG_TYPE_FILE_FAIL = "FILE_FAIL:"
     const val MSG_TYPE_ACK = "ACK:"
     const val MSG_TYPE_READ = "READ:"
     const val MSG_TYPE_CALL_REQUEST = "CALL_REQ:"

@@ -467,6 +467,40 @@ class CallListenerService : Service() {
             payload.startsWith(Constants.MSG_TYPE_FILE) -> {
                 onIncomingFile(payload, senderId, senderName, recipientId)
             }
+            payload.startsWith(Constants.MSG_TYPE_FILE_DONE) -> {
+                val transferId = payload.removePrefix(Constants.MSG_TYPE_FILE_DONE).trim()
+                if (transferId.isNotEmpty()) {
+                    FileTransferTracker.markPeerCompleted(transferId, senderId, senderName)
+                    val snap = FileTransferTracker.snapshotFor(transferId)
+                    if (snap == null || snap.isFinished) {
+                        scope.launch {
+                            runCatching {
+                                ChatRepository.get(applicationContext)
+                                    .updateAttachmentStateOnly(transferId, AttachmentState.COMPLETED)
+                            }
+                        }
+                    }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_FILE_FAIL) -> {
+                val transferId = payload.removePrefix(Constants.MSG_TYPE_FILE_FAIL).trim()
+                if (transferId.isNotEmpty()) {
+                    FileTransferTracker.markPeerFailed(transferId, senderId, senderName)
+                    val snap = FileTransferTracker.snapshotFor(transferId)
+                    if (snap != null && snap.isFinished) {
+                        val allFailed = snap.peerStatuses.values.all {
+                            it.state == FileTransferTracker.PeerTransferStatus.FAILED
+                        }
+                        val finalState = if (allFailed) AttachmentState.FAILED else AttachmentState.COMPLETED
+                        scope.launch {
+                            runCatching {
+                                ChatRepository.get(applicationContext)
+                                    .updateAttachmentStateOnly(transferId, finalState)
+                            }
+                        }
+                    }
+                }
+            }
             else -> {
                 if (env == null) {
                     onIncomingText(payload, senderId, senderName, recipientId)
@@ -680,9 +714,20 @@ class CallListenerService : Service() {
                     threadId,
                     threadName
                 )
-                val savedFile = FileTransferManager.downloadOffer(applicationContext, offer, senderId)
+                val savedFile = FileTransferManager.downloadOffer(
+                    applicationContext,
+                    offer,
+                    senderId,
+                    senderName
+                )
                 val state = if (savedFile != null) AttachmentState.COMPLETED else AttachmentState.FAILED
                 repo.updateAttachmentState(offer.transferId, savedFile?.absolutePath, state)
+                val receipt = if (savedFile != null) {
+                    Constants.MSG_TYPE_FILE_DONE + offer.transferId
+                } else {
+                    Constants.MSG_TYPE_FILE_FAIL + offer.transferId
+                }
+                sendControl(receipt, senderId)
             } catch (e: Exception) {
                 Log.e(TAG, "Could not handle standby file offer: ${e.message}")
             }

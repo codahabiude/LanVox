@@ -228,23 +228,30 @@ class ChatActivity : AppCompatActivity() {
     private fun observeHistory() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                combine(
-                    chatRepository.observeHistory(peerId),
-                    searchQueryFlow
-                ) { history, query ->
-                    Pair(history, query)
-                }.collect { (history, query) ->
-                    val trimmed = query.trim()
-                    val filtered = if (trimmed.isEmpty()) {
-                        history
-                    } else {
-                        ChatSearchHelper.filter(this@ChatActivity, history, trimmed)
+                launch {
+                    combine(
+                        chatRepository.observeHistory(peerId),
+                        searchQueryFlow
+                    ) { history, query ->
+                        Pair(history, query)
+                    }.collect { (history, query) ->
+                        val trimmed = query.trim()
+                        val filtered = if (trimmed.isEmpty()) {
+                            history
+                        } else {
+                            ChatSearchHelper.filter(this@ChatActivity, history, trimmed)
+                        }
+                        val prevCount = messageAdapter.itemCount
+                        messageAdapter.submitMessages(filtered, trimmed)
+                        updateSearchUi(filtered.size, trimmed)
+                        if (trimmed.isEmpty() && filtered.size > prevCount) {
+                            rvMessages.post { scrollToBottom() }
+                        }
                     }
-                    val prevCount = messageAdapter.itemCount
-                    messageAdapter.submitMessages(filtered, trimmed)
-                    updateSearchUi(filtered.size, trimmed)
-                    if (trimmed.isEmpty() && filtered.size > prevCount) {
-                        rvMessages.post { scrollToBottom() }
+                }
+                launch {
+                    FileTransferTracker.snapshots.collect { snapshots ->
+                        messageAdapter.updateTransferSnapshots(snapshots)
                     }
                 }
             }
