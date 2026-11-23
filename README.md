@@ -214,7 +214,7 @@ app/src/main/java/com/example/wifip2pchat/
 - **Target SDK**: 34 (Android 14)
 - **Persistence**: AndroidX Room (`2.7.1`, schema v4 with `MIGRATION_1_2`, `MIGRATION_2_3` & `MIGRATION_3_4`) with KSP (`2.3.5`), Repository pattern, and Kotlin `Flow` / `StateFlow`
 - **Networking**: Symmetric TCP mesh (`8988`), Wi-Fi Direct + Android NSD (`_lanvox._tcp.`), TCP binary file server/relay (`8991`), WebRTC audio (`8989`), and Camera2 JPEG video (`8990`)
-- **UI / UX**: Glassmorphism & Cryo-Cyan Orbital HUD aesthetic (`#050811` void, `#00F0FF` cryo-cyan, `#00F5A0` read-receipt mint), IG Direct / Messenger chat badge, `RadarView` conical sweep & sonar pulse, custom no-peers illustration, bundled `Space Grotesk`, `Plus Jakarta Sans`, & `JetBrains Mono` typography (`res/font/`), `MaterialProgressIndicator`, `BottomSheetDialog`, `RecyclerView` (`DiffUtil` + `ItemTouchHelper`), and ViewBinding
+- **UI / UX**: Glassmorphism & Cryo-Cyan Orbital HUD aesthetic (`#050811` void, `#00F0FF` cryo-cyan, `#00F5A0` read-receipt mint), custom Cryo-Cyan adaptive launcher icon (`ic_launcher_foreground` 66dp safe zone + `ic_launcher_round`), IG Direct / Messenger chat badge, `RadarView` conical sweep & sonar pulse, custom no-peers illustration, bundled `Space Grotesk`, `Plus Jakarta Sans`, & `JetBrains Mono` typography (`res/font/`), `MaterialProgressIndicator`, `BottomSheetDialog`, `RecyclerView` (`DiffUtil` + `ItemTouchHelper`), and ViewBinding
 
 ## License
 
