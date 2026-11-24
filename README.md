@@ -2,6 +2,16 @@
 
 A peer-to-peer communication app that connects **two or more Android phones directly** over **Wi-Fi Direct (P2P)** and **local Wi-Fi / Mobile Hotspot mDNS mesh (`NSD`)** — **no internet, router account, or central server required**. Supports **1:1 and multi-phone group messaging**, **per-message delivery & read receipts**, **file & media sharing with multi-peer progress**, **WebRTC audio calling**, and **Camera2 video calling**.
 
+## Download
+
+Get the latest APK from the **[Releases page](https://github.com/codahabiude/LanVox/releases/latest)**.
+
+1. Open the link on your Android phone and download the `.apk` file under **Assets**.
+2. Open the file and allow installing from unknown sources if Android asks.
+3. Install LANVOX on every phone that should chat with each other.
+
+Requires Android 7.0 (API 24) or newer. This is a debug build, not from the Play Store.
+
 ## Features
 
 | Feature | Description |
