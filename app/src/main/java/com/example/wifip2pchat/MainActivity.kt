@@ -803,7 +803,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 )
             )
         } catch (_: Exception) {
-            showSnackbar("Open Settings → Apps → LANVOX → Permissions")
+            showSnackbar("Open Settings → Apps → LanVox → Permissions")
         }
     }
 
@@ -1102,8 +1102,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         MaterialAlertDialogBuilder(this)
             .setTitle("Receive calls in background")
             .setMessage(
-                "To receive LANVOX calls and messages even when the app is closed, " +
-                    "allow LANVOX to run without battery restrictions."
+                "To receive LanVox calls and messages even when the app is closed, " +
+                    "allow LanVox to run without battery restrictions."
             )
             .setNegativeButton("Not now", null)
             .setPositiveButton("Allow") { _, _ ->
@@ -1939,10 +1939,10 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private suspend fun writeExportFile(conversations: List<Conversation>): Result<String> {
         val fullFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-        val fileName = "LANVOX_chats_$stamp.txt"
+        val fileName = "LanVox_chats_$stamp.txt"
 
         val content = buildString {
-            appendLine("LANVOX — Chat Export")
+            appendLine("LanVox — Chat Export")
             appendLine("Exported: ${fullFormat.format(Date())}")
             appendLine("Conversations: ${conversations.size}")
             var total = 0
@@ -2140,9 +2140,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
         if (shouldShowRationale) {
             val detail = if (video) {
-                "LANVOX needs microphone and camera permissions to place a video call."
+                "LanVox needs microphone and camera permissions to place a video call."
             } else {
-                "LANVOX needs microphone permission to place an audio call."
+                "LanVox needs microphone permission to place an audio call."
             }
             MaterialAlertDialogBuilder(this)
                 .setTitle("Call permission required")

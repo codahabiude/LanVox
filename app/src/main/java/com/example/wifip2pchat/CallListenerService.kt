@@ -402,7 +402,7 @@ class CallListenerService : Service() {
             ?: "unknown"
         val senderName = env?.senderName?.takeIf { it.isNotBlank() && it != "Unknown" }
             ?: LastSession.peerName(this)?.takeIf { it.isNotBlank() }
-            ?: "LANVOX contact"
+            ?: "LanVox contact"
         val recipientId = env?.recipientId ?: Constants.RECIPIENT_BROADCAST
 
         when {
@@ -616,7 +616,7 @@ class CallListenerService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL_CALLS)
             .setSmallIcon(android.R.drawable.sym_action_call)
             .setContentTitle("Incoming ${callLabel.replaceFirstChar { it.uppercase() }}")
-            .setContentText("$callerName is calling on LANVOX")
+            .setContentText("$callerName is calling on LanVox")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setFullScreenIntent(answerIntent, true)
@@ -842,7 +842,7 @@ class CallListenerService : Service() {
                 CHANNEL_STANDBY, "Background listener",
                 NotificationManager.IMPORTANCE_MIN
             ).apply {
-                description = "Keeps LANVOX ready to receive calls"
+                description = "Keeps LanVox ready to receive calls"
                 setShowBadge(false)
             }
         )
@@ -851,7 +851,7 @@ class CallListenerService : Service() {
                 CHANNEL_CALLS, "Incoming calls",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Ringing notifications for incoming LANVOX calls"
+                description = "Ringing notifications for incoming LanVox calls"
             }
         )
         mgr.createNotificationChannel(
@@ -873,7 +873,7 @@ class CallListenerService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_STANDBY)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle("LANVOX")
+            .setContentTitle("LanVox")
             .setContentText("Ready to receive calls — app closed mode")
             .setContentIntent(openApp)
             .setOngoing(true)

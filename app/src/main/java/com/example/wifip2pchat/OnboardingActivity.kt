@@ -54,13 +54,13 @@ class OnboardingActivity : AppCompatActivity() {
     private val pages = listOf(
         OnboardingPage(
             iconResId = R.drawable.ic_brand_logo,
-            title = "Welcome to LANVOX",
+            title = "Welcome to LanVox",
             description = "Connect two phones directly over Wi-Fi — no internet, no router, no cellular data. Just Wi-Fi and proximity."
         ),
         OnboardingPage(
             iconResId = R.drawable.ic_search,
             title = "Discover Nearby Devices",
-            description = "Tap Discover to find other phones running LANVOX nearby. Both phones need Wi-Fi on and Location permissions granted for discovery to work."
+            description = "Tap Discover to find other phones running LanVox nearby. Both phones need Wi-Fi on and Location permissions granted for discovery to work."
         ),
         OnboardingPage(
             iconResId = R.drawable.ic_send,

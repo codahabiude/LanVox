@@ -25,7 +25,7 @@ object ChatFeatureActions {
         val text = message.text.trim()
         if (text.isEmpty()) return
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        cm?.setPrimaryClip(ClipData.newPlainText("LANVOX Message", text))
+        cm?.setPrimaryClip(ClipData.newPlainText("LanVox Message", text))
         Snackbar.make(rootView, R.string.msg_copied, Snackbar.LENGTH_SHORT).show()
     }
 

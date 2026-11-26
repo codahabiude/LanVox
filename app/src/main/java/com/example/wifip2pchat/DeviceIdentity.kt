@@ -60,7 +60,7 @@ object DeviceIdentity {
         return generated
     }
 
-    fun defaultDeviceName(): String = Build.MODEL?.takeIf { it.isNotBlank() } ?: "LANVOX Device"
+    fun defaultDeviceName(): String = Build.MODEL?.takeIf { it.isNotBlank() } ?: "LanVox Device"
 
     /**
      * Resolves the best local non-loopback IPv4 address for direct peer connections.

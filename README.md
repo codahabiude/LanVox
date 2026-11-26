@@ -1,4 +1,4 @@
-# LANVOX — Android App (Kotlin)
+# LanVox — Android App (Kotlin)
 
 A peer-to-peer communication app that connects **two or more Android phones directly** over **Wi-Fi Direct (P2P)** and **local Wi-Fi / Mobile Hotspot mDNS mesh (`NSD`)** — **no internet, router account, or central server required**. Supports **1:1 and multi-phone group messaging**, **per-message delivery & read receipts**, **file & media sharing with multi-peer progress**, **WebRTC audio calling**, and **Camera2 video calling**.
 
@@ -8,7 +8,7 @@ Get the latest APK from the **[Releases page](https://github.com/codahabiude/Lan
 
 1. Open the link on your Android phone and download the `.apk` file under **Assets**.
 2. Open the file and allow installing from unknown sources if Android asks.
-3. Install LANVOX on every phone that should chat with each other.
+3. Install LanVox on every phone that should chat with each other.
 
 Requires Android 7.0 (API 24) or newer. This is a debug build, not from the Play Store.
 
@@ -17,7 +17,7 @@ Requires Android 7.0 (API 24) or newer. This is a debug build, not from the Play
 | Feature | Description |
 |---------|-------------|
 | 💬 **1:1 & Multi-Phone Mesh Chat** | Symmetric `ChatServerService` (`8988`) runs on every phone with direct peer links + Group Chat (`__group__`) broadcast routing, `MID:` packet deduplication, and an IG Direct / Messenger-style chat icon (`ic_chats`) — no single central host bottleneck |
-| 🌐 **Hostless Wi-Fi / Hotspot NSD** | `LocalMeshDiscovery` (`_lanvox._tcp.`) automatically discovers and connects nearby LANVOX devices sharing the same Wi-Fi network or mobile hotspot alongside Wi-Fi Direct |
+| 🌐 **Hostless Wi-Fi / Hotspot NSD** | `LocalMeshDiscovery` (`_lanvox._tcp.`) automatically discovers and connects nearby LanVox devices sharing the same Wi-Fi network or mobile hotspot alongside Wi-Fi Direct |
 | ❤️ **Reactions, Double-Tap & Action Sheet** | Instagram-style **double-tap bubble** to heart (`❤️`), interactive clickable reaction chips (`REACT:`), and a frosted long-press **Message Action Sheet** (`❤️ 😂 😮 😢 🙏 👍`, Reply, Copy, Star, Forward, Delete) |
 | ↩️ **Swipe-to-Reply & Quote Jump** | WhatsApp/Messenger-style **swipe-right** on any bubble (`MessageSwipeHelper`) opens the composer reply bar (`REPLY:` JSON wire payload) and renders a quote card inside the bubble — tap the quote to smoothly scroll & pulse the original message; **swipe-left** deletes with **Undo** |
 | ⌨️ **Live Typing Indicators** | Throttled `TYPING:` wire packets (`ChatBus.typingPeers` with 3.8s auto-expiry) surface live typing pills above the composer, in chat headers, and as mint italic previews inside `ChatsActivity` rows |
@@ -45,7 +45,7 @@ Requires Android 7.0 (API 24) or newer. This is a debug build, not from the Play
 3. **Hostless Mesh & Failover**:
    - Every phone receives a stable `DeviceIdentity` (`lvx_...` or valid MAC) and runs `ChatServerService` listening on port `8988`.
    - Over **Wi-Fi Direct**, devices exchange `PEERS:id:name@ip` membership tables and open direct client-to-client TCP links (`selfId < peer.id` tie-breaker) so communication keeps working directly without routing everything through a single Group Owner.
-   - Over **Wi-Fi / Mobile Hotspot**, `LocalMeshDiscovery` (`NSD` for `_lanvox._tcp.`) automatically discovers other LANVOX nodes on the same subnet so 2+ phones can chat, transfer files, and call with zero Group Owner setup.
+   - Over **Wi-Fi / Mobile Hotspot**, `LocalMeshDiscovery` (`NSD` for `_lanvox._tcp.`) automatically discovers other LanVox nodes on the same subnet so 2+ phones can chat, transfer files, and call with zero Group Owner setup.
 
 ### Text Chat & Per-Message Acknowledgements (`ACK:` & `READ:`)
 - **Wire Envelope (`Envelope.kt`)**: Messages travel over port `8988` as `ENV|<senderId>|<senderName>|<recipientIdOrStar>|MID:<msgId>:<payload>`, allowing targeted 1:1 routing, Group Chat (`*`) broadcasts, and duplicate suppression across mesh paths.
@@ -117,7 +117,7 @@ gradle installDebug
 
 ### Connect Two or More Phones
 
-1. Open **LANVOX** on each phone and grant Wi-Fi / location permissions.
+1. Open **LanVox** on each phone and grant Wi-Fi / location permissions.
 2. Either connect devices on the same **Wi-Fi / Mobile Hotspot** (automatic `LocalMeshDiscovery` via mDNS) **or** open **Devices** (`PeerPickerBottomSheet`), tap **Scan**, and connect via **Wi-Fi Direct**.
 3. Use **Group Chat** to message or send files to all connected phones at once, or open a specific contact thread from **Chats** for 1:1 messaging and direct calls.
 

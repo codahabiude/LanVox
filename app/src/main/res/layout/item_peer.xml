@@ -51,7 +51,7 @@
             android:fontFamily="@font/space_grotesk"
             android:maxLines="1"
             android:ellipsize="end"
-            android:text="LANVOX-Device" />
+            android:text="LanVox-Device" />
 
         <LinearLayout
             android:layout_width="match_parent"
