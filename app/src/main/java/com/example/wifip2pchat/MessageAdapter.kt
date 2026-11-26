@@ -44,7 +44,8 @@ class MessageAdapter(
     private val onLongPressMessage: ((ChatMessage) -> Unit)? = null,
     private val onReactionChipClick: ((ChatMessage, String) -> Unit)? = null,
     private val onQuoteClick: ((String) -> Unit)? = null,
-    private val onCallBackClick: ((ChatMessage) -> Unit)? = null
+    private val onCallBackClick: ((ChatMessage) -> Unit)? = null,
+    private val onPollVoteClick: ((ChatMessage, Int) -> Unit)? = null
 ) : RecyclerView.Adapter<MessageAdapter.MessageViewHolder>() {
 
     companion object {
@@ -245,6 +246,10 @@ class MessageAdapter(
         private val seekVoiceNote: SeekBar = itemView.findViewById(R.id.seekVoiceNote)
         private val tvVoiceDuration: TextView = itemView.findViewById(R.id.tvVoiceDuration)
         private val tvVoiceStateBadge: TextView = itemView.findViewById(R.id.tvVoiceStateBadge)
+        private val layoutPollCard: LinearLayout = itemView.findViewById(R.id.layoutPollCard)
+        private val tvPollQuestion: TextView = itemView.findViewById(R.id.tvPollQuestion)
+        private val llPollOptions: LinearLayout = itemView.findViewById(R.id.llPollOptions)
+        private val tvPollMeta: TextView = itemView.findViewById(R.id.tvPollMeta)
         private val tvMessage: TextView = itemView.findViewById(R.id.tvMessage)
         private val ivPinnedBadge: ImageView = itemView.findViewById(R.id.ivPinnedBadge)
         private val ivStarred: ImageView = itemView.findViewById(R.id.ivStarred)
@@ -335,20 +340,33 @@ class MessageAdapter(
                 !message.attachmentPath.isNullOrBlank() &&
                 message.attachmentState != AttachmentState.FAILED
 
-            if (showVoiceInline) {
-                layoutAttachment.visibility = View.GONE
-                layoutVoiceNote.visibility = View.VISIBLE
-                bindVoiceNote(message)
-            } else {
-                layoutVoiceNote.visibility = View.GONE
-                bindAttachment(message, highlightColor)
-            }
-
-            if (message.isFileMessage) {
-                tvMessage.visibility = View.GONE
-            } else {
-                tvMessage.visibility = View.VISIBLE
-                tvMessage.text = ChatSearchHelper.highlight(message.text, activeQuery, highlightColor)
+            when {
+                message.isPoll -> {
+                    layoutAttachment.visibility = View.GONE
+                    layoutVoiceNote.visibility = View.GONE
+                    tvMessage.visibility = View.GONE
+                    bindPoll(message, highlightColor)
+                }
+                showVoiceInline -> {
+                    layoutPollCard.visibility = View.GONE
+                    layoutAttachment.visibility = View.GONE
+                    layoutVoiceNote.visibility = View.VISIBLE
+                    bindVoiceNote(message)
+                    tvMessage.visibility = View.GONE
+                }
+                message.isFileMessage -> {
+                    layoutPollCard.visibility = View.GONE
+                    layoutVoiceNote.visibility = View.GONE
+                    bindAttachment(message, highlightColor)
+                    tvMessage.visibility = View.GONE
+                }
+                else -> {
+                    layoutPollCard.visibility = View.GONE
+                    layoutVoiceNote.visibility = View.GONE
+                    bindAttachment(message, highlightColor)
+                    tvMessage.visibility = View.VISIBLE
+                    tvMessage.text = ChatSearchHelper.highlight(message.text, activeQuery, highlightColor)
+                }
             }
 
             ivPinnedBadge.visibility = if (message.isPinned) View.VISIBLE else View.GONE
@@ -447,6 +465,140 @@ class MessageAdapter(
             }
 
             bindReactions(message)
+        }
+
+        private fun bindPoll(message: ChatMessage, highlightColor: Int) {
+            val poll = message.parsedPoll()
+            if (poll == null) {
+                layoutPollCard.visibility = View.GONE
+                tvMessage.visibility = View.VISIBLE
+                tvMessage.text = ChatSearchHelper.highlight(message.text, activeQuery, highlightColor)
+                return
+            }
+
+            layoutPollCard.visibility = View.VISIBLE
+            tvPollQuestion.text = ChatSearchHelper.highlight(poll.question, activeQuery, highlightColor)
+
+            val ctx = itemView.context
+            val density = ctx.resources.displayMetrics.density
+            val cyan = ContextCompat.getColor(ctx, R.color.brand_secondary)
+            val borderNeutral = ContextCompat.getColor(ctx, R.color.glass_border)
+            val cardBg = ColorUtils.setAlphaComponent(ContextCompat.getColor(ctx, R.color.surface_card), 185)
+            val textPrimary = ContextCompat.getColor(ctx, R.color.text_primary)
+            val textSecondary = ContextCompat.getColor(ctx, R.color.text_secondary)
+            val fontSans = ResourcesCompat.getFont(ctx, R.font.plus_jakarta_sans)
+            val fontMono = ResourcesCompat.getFont(ctx, R.font.jetbrains_mono)
+
+            val totalVotes = poll.totalVotes
+            val myVotedIndex = poll.votedOptionIndex(PeerRegistry.selfId)
+
+            llPollOptions.removeAllViews()
+            poll.options.forEachIndexed { idx, opt ->
+                val votes = opt.voters.size
+                val pct = if (totalVotes > 0) ((votes * 100f) / totalVotes).toInt() else 0
+                val isSelected = idx == myVotedIndex
+
+                val rowFrame = FrameLayout(ctx).apply {
+                    isClickable = true
+                    isFocusable = true
+                    minimumHeight = (40 * density).toInt()
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        if (idx > 0) topMargin = (6 * density).toInt()
+                    }
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = 10f * density
+                        setColor(cardBg)
+                        setStroke(
+                            (1 * density).toInt().coerceAtLeast(1),
+                            if (isSelected) cyan else borderNeutral
+                        )
+                    }
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        onPollVoteClick?.invoke(message, idx)
+                    }
+                    setOnLongClickListener {
+                        bubbleContainer.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        onLongPressMessage?.invoke(message)
+                        true
+                    }
+                }
+
+                // Proportional vote fill bar
+                val fillView = View(ctx).apply {
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = 10f * density
+                        setColor(
+                            ColorUtils.setAlphaComponent(
+                                cyan,
+                                if (isSelected) 64 else 32
+                            )
+                        )
+                    }
+                    layoutParams = FrameLayout.LayoutParams(0, FrameLayout.LayoutParams.MATCH_PARENT)
+                }
+                rowFrame.addView(fillView)
+                rowFrame.post {
+                    val w = rowFrame.width
+                    if (w > 0) {
+                        val targetW = if (pct > 0) ((w * pct) / 100).coerceAtLeast((8 * density).toInt()) else 0
+                        val lp = fillView.layoutParams
+                        if (lp.width != targetW) {
+                            lp.width = targetW
+                            fillView.layoutParams = lp
+                        }
+                    }
+                }
+
+                val contentRow = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(
+                        (10 * density).toInt(),
+                        (8 * density).toInt(),
+                        (10 * density).toInt(),
+                        (8 * density).toInt()
+                    )
+                    layoutParams = FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT
+                    )
+                }
+
+                val tvOpt = TextView(ctx).apply {
+                    text = if (isSelected) "✓ ${opt.text}" else opt.text
+                    textSize = 12.5f
+                    typeface = fontSans
+                    setTextColor(if (isSelected) cyan else textPrimary)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val tvCount = TextView(ctx).apply {
+                    text = if (totalVotes > 0) "$pct% ($votes)" else "0"
+                    textSize = 10.5f
+                    typeface = fontMono
+                    setTextColor(if (isSelected) cyan else textSecondary)
+                }
+                contentRow.addView(tvOpt)
+                contentRow.addView(tvCount)
+                rowFrame.addView(contentRow)
+                llPollOptions.addView(rowFrame)
+            }
+
+            tvPollMeta.text = when {
+                totalVotes == 0 -> "Tap an option to vote"
+                totalVotes == 1 -> "1 vote · Tap to change or remove"
+                else -> "$totalVotes votes · Tap to vote"
+            }
+            layoutPollCard.setOnLongClickListener {
+                bubbleContainer.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                onLongPressMessage?.invoke(message)
+                true
+            }
         }
 
         private fun bindVoiceNote(message: ChatMessage) {

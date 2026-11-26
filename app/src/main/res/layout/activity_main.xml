@@ -26,17 +26,46 @@
             android:paddingEnd="6dp">
 
             <FrameLayout
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:layout_marginEnd="11dp"
-                android:background="@drawable/circle_outline_green">
+                android:id="@+id/flSelfProfile"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="-6dp"
+                android:layout_marginEnd="6dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:clickable="true"
+                android:contentDescription="@string/cd_profile_avatar"
+                android:focusable="true">
+
+                <TextView
+                    android:id="@+id/tvSelfAvatarInitial"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/circle_green_avatar"
+                    android:fontFamily="@font/space_grotesk"
+                    android:gravity="center"
+                    android:text="L"
+                    android:textColor="@color/text_on_primary"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
 
                 <ImageView
-                    android:layout_width="19dp"
-                    android:layout_height="19dp"
+                    android:id="@+id/ivSelfAvatar"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
                     android:layout_gravity="center"
-                    android:src="@drawable/ic_brand_logo"
-                    android:contentDescription="LanVox" />
+                    android:contentDescription="@string/cd_profile_avatar"
+                    android:scaleType="centerCrop"
+                    android:visibility="gone" />
+
+                <View
+                    android:id="@+id/viewSelfPresenceDot"
+                    android:layout_width="11dp"
+                    android:layout_height="11dp"
+                    android:layout_gravity="bottom|end"
+                    android:layout_marginEnd="4dp"
+                    android:layout_marginBottom="4dp"
+                    android:background="@drawable/online_dot" />
             </FrameLayout>
 
             <LinearLayout
@@ -988,13 +1017,31 @@
                     app:iconTint="@color/text_on_primary" />
             </LinearLayout>
 
+            <!-- Quick-Reply Templates + Quick Poll Strip (toggled by bolt button) -->
+            <HorizontalScrollView
+                android:id="@+id/hsvQuickReplies"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="6dp"
+                android:scrollbars="none"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/llQuickReplyChips"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="2dp" />
+            </HorizontalScrollView>
+
             <LinearLayout
                 android:id="@+id/composerDock"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:paddingStart="6dp"
+                android:paddingStart="4dp"
                 android:paddingEnd="6dp"
                 android:paddingVertical="5dp"
                 android:background="@drawable/bg_glass_composer">
@@ -1018,6 +1065,16 @@
                     android:padding="13dp"
                     android:src="@drawable/ic_mic"
                     android:tint="@color/brand_secondary" />
+
+                <ImageView
+                    android:id="@+id/btnQuickReplies"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/cd_quick_replies"
+                    android:padding="13dp"
+                    android:src="@drawable/ic_bolt"
+                    android:tint="@color/text_secondary" />
 
                 <EditText
                     android:id="@+id/etMessage"

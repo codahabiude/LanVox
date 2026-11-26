@@ -61,6 +61,12 @@ object DeviceIdentity {
     }
 
     private const val KEY_CUSTOM_NAME = "custom_display_name"
+    private const val KEY_STATUS_PRESET = "status_preset"
+    private const val KEY_CUSTOM_BIO = "custom_bio"
+
+    const val STATUS_AVAILABLE = "AVAILABLE"
+    const val STATUS_BUSY = "BUSY"
+    const val STATUS_AWAY = "AWAY"
 
     fun getCustomName(context: Context): String? {
         val raw = context.applicationContext
@@ -81,6 +87,88 @@ object DeviceIdentity {
             editor.putString(KEY_CUSTOM_NAME, clean)
         }
         editor.apply()
+    }
+
+    fun getStatusPreset(context: Context): String {
+        val raw = context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_STATUS_PRESET, STATUS_AVAILABLE)
+            ?.trim()
+        return when (raw) {
+            STATUS_BUSY, STATUS_AWAY -> raw
+            else -> STATUS_AVAILABLE
+        }
+    }
+
+    fun setStatusPreset(context: Context, status: String) {
+        val normalized = when (status) {
+            STATUS_BUSY, STATUS_AWAY -> status
+            else -> STATUS_AVAILABLE
+        }
+        context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_STATUS_PRESET, normalized)
+            .apply()
+    }
+
+    fun getCustomBio(context: Context): String? {
+        val raw = context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_CUSTOM_BIO, null)
+            ?.replace('\r', ' ')
+            ?.replace('\n', ' ')
+            ?.trim()
+        return raw?.takeIf { it.isNotBlank() }
+    }
+
+    fun setCustomBio(context: Context, bio: String?) {
+        val clean = bio?.replace('\r', ' ')?.replace('\n', ' ')?.trim()?.take(80)
+        val editor = context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+        if (clean.isNullOrBlank()) {
+            editor.remove(KEY_CUSTOM_BIO)
+        } else {
+            editor.putString(KEY_CUSTOM_BIO, clean)
+        }
+        editor.apply()
+    }
+
+    fun statusDisplayLabel(status: String): String = when (status) {
+        STATUS_BUSY -> "Busy"
+        STATUS_AWAY -> "Away"
+        else -> "Available"
+    }
+
+    fun buildProfilePayload(context: Context): String {
+        val obj = org.json.JSONObject().apply {
+            put("name", defaultDeviceName(context))
+            put("status", getStatusPreset(context))
+            put("bio", getCustomBio(context).orEmpty())
+        }
+        return Constants.MSG_TYPE_PROFILE + obj.toString()
+    }
+
+    data class PeerProfile(
+        val name: String?,
+        val status: String,
+        val bio: String?
+    )
+
+    fun parseProfilePayload(payload: String): PeerProfile? {
+        if (!payload.startsWith(Constants.MSG_TYPE_PROFILE)) return null
+        val raw = payload.removePrefix(Constants.MSG_TYPE_PROFILE).trim()
+        return runCatching {
+            val obj = org.json.JSONObject(raw)
+            val name = obj.optString("name").trim().takeIf { it.isNotBlank() }
+            val status = when (obj.optString("status").trim()) {
+                STATUS_BUSY, STATUS_AWAY -> obj.optString("status").trim()
+                else -> STATUS_AVAILABLE
+            }
+            val bio = obj.optString("bio").trim().takeIf { it.isNotBlank() }
+            PeerProfile(name = name, status = status, bio = bio)
+        }.getOrNull()
     }
 
     fun defaultDeviceName(context: Context? = null): String {

@@ -12,6 +12,7 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -65,6 +66,11 @@ class ChatActivity : AppCompatActivity() {
     private lateinit var tvPeerName: TextView
     private lateinit var tvPeerStatus: TextView
     private lateinit var tvAvatar: TextView
+    private lateinit var ivChatAvatar: ImageView
+    private lateinit var viewChatPresenceDot: View
+    private lateinit var pillChatNudge: View
+    private lateinit var pillChatPoll: View
+    private lateinit var pillChatGallery: View
     private lateinit var layoutPinnedBanner: View
     private lateinit var tvPinnedSender: TextView
     private lateinit var tvPinnedText: TextView
@@ -85,6 +91,11 @@ class ChatActivity : AppCompatActivity() {
     private lateinit var progressVoiceAmp: LinearProgressIndicator
     private lateinit var btnVoiceCancel: View
     private lateinit var btnVoiceSend: View
+    private lateinit var hsvQuickReplies: HorizontalScrollView
+    private lateinit var llQuickReplyChips: LinearLayout
+    private lateinit var btnQuickReplies: ImageView
+
+    private var registryListenerToken: (() -> Unit)? = null
 
     private val messageAdapter: MessageAdapter = MessageAdapter(
         onAttachmentClick = { msg ->
@@ -103,7 +114,8 @@ class ChatActivity : AppCompatActivity() {
         },
         onCallBackClick = { msg ->
             startCall(video = msg.attachmentMime == Constants.CALL_TYPE_VIDEO)
-        }
+        },
+        onPollVoteClick = { msg, optionIndex -> voteOnPoll(msg, optionIndex) }
     )
 
     private val chatRepository by lazy { ChatRepository.get(this) }
@@ -198,6 +210,11 @@ class ChatActivity : AppCompatActivity() {
         tvPeerName = findViewById(R.id.tvChatPeerName)
         tvPeerStatus = findViewById(R.id.tvChatPeerStatus)
         tvAvatar = findViewById(R.id.tvChatAvatar)
+        ivChatAvatar = findViewById(R.id.ivChatAvatar)
+        viewChatPresenceDot = findViewById(R.id.viewChatPresenceDot)
+        pillChatNudge = findViewById(R.id.pillChatNudge)
+        pillChatPoll = findViewById(R.id.pillChatPoll)
+        pillChatGallery = findViewById(R.id.pillChatGallery)
         layoutPinnedBanner = findViewById(R.id.layoutPinnedBanner)
         tvPinnedSender = findViewById(R.id.tvPinnedSender)
         tvPinnedText = findViewById(R.id.tvPinnedText)
@@ -218,6 +235,9 @@ class ChatActivity : AppCompatActivity() {
         progressVoiceAmp = findViewById(R.id.progressVoiceAmp)
         btnVoiceCancel = findViewById(R.id.btnVoiceCancel)
         btnVoiceSend = findViewById(R.id.btnVoiceSend)
+        hsvQuickReplies = findViewById(R.id.hsvQuickReplies)
+        llQuickReplyChips = findViewById(R.id.llQuickReplyChips)
+        btnQuickReplies = findViewById(R.id.btnQuickReplies)
         onBackPressedDispatcher.addCallback(this, searchBackCallback)
 
         peerName = if (peerId == Constants.GROUP_PEER_ID) {
@@ -230,7 +250,6 @@ class ChatActivity : AppCompatActivity() {
         }
 
         tvPeerName.text = peerName
-        tvAvatar.text = peerName.trim().take(1).uppercase()
 
         if (peerId != Constants.GROUP_PEER_ID && intent.getStringExtra(EXTRA_PEER_NAME) == null) {
             lifecycleScope.launch {
@@ -238,7 +257,7 @@ class ChatActivity : AppCompatActivity() {
                 if (!resolved.isNullOrBlank()) {
                     peerName = resolved
                     tvPeerName.text = resolved
-                    tvAvatar.text = resolved.trim().take(1).uppercase()
+                    refreshHeaderProfileUi()
                 }
             }
         }
@@ -246,11 +265,11 @@ class ChatActivity : AppCompatActivity() {
         // Group Chat: different avatar, hide the call buttons (calls are 1:1)
         val isGroupChat = peerId == Constants.GROUP_PEER_ID
         if (isGroupChat) {
-            tvAvatar.text = "#"
             tvPeerStatus.text = "${PeerRegistry.snapshotIncludingSelf().size} members"
             btnAudioCall.visibility = View.GONE
             btnVideoCall.visibility = View.GONE
         }
+        refreshHeaderProfileUi()
 
         val layoutManager = LinearLayoutManager(this)
         layoutManager.stackFromEnd = true
@@ -343,12 +362,32 @@ class ChatActivity : AppCompatActivity() {
             }
         }
 
+        pillChatNudge.setOnClickListener { sendNudge() }
+        pillChatPoll.setOnClickListener { openPollCreator() }
+        pillChatGallery.setOnClickListener { openMediaGallery() }
+        QuickReplyStripHelper.bind(
+            context = this,
+            toggleButton = btnQuickReplies,
+            scrollContainer = hsvQuickReplies,
+            chipRow = llQuickReplyChips,
+            targetEditText = etMessage,
+            onCreatePoll = { openPollCreator() },
+            onFeedback = { msg -> Snackbar.make(chatRoot, msg, Snackbar.LENGTH_SHORT).show() }
+        )
+
         ChatFeatureActions.styleStarredFilterChip(this, tvFilterStarred, false)
 
         // Mark this thread as the active one and observe Room Flow
         ChatBus.activeChatPeerId = peerId
         ChatBus.onConnectionStateChanged = {
-            runOnUiThread { updateConnectionUi() }
+            runOnUiThread {
+                refreshHeaderProfileUi()
+                updateConnectionUi()
+            }
+        }
+        registryListenerToken = PeerRegistry.addListener {
+            refreshHeaderProfileUi()
+            updateConnectionUi()
         }
 
         observeHistory()
@@ -360,6 +399,7 @@ class ChatActivity : AppCompatActivity() {
         super.onResume()
         ChatBus.activeChatPeerId = peerId
         ChatBus.isChatScreenForeground = true
+        refreshHeaderProfileUi()
         updateEphemeralIconUi()
         updateConnectionUi()
         MainActivity.sendReadReceiptStatic(peerId)
@@ -377,6 +417,8 @@ class ChatActivity : AppCompatActivity() {
         voiceTimerHandler.removeCallbacks(voiceTimerRunnable)
         voiceRecorder.cancel()
         VoiceNoteManager.stopPlayback()
+        registryListenerToken?.let { PeerRegistry.removeListener(it) }
+        registryListenerToken = null
         ChatBus.isChatScreenForeground = false
         if (ChatBus.activeChatPeerId == peerId) ChatBus.activeChatPeerId = null
         ChatBus.onMessageSaved = null
@@ -439,6 +481,11 @@ class ChatActivity : AppCompatActivity() {
                             tvTypingPill.visibility = View.GONE
                         }
                         updateConnectionUi()
+                    }
+                }
+                launch {
+                    AvatarManager.avatarVersion.collect {
+                        refreshHeaderProfileUi()
                     }
                 }
                 launch {
@@ -850,6 +897,95 @@ class ChatActivity : AppCompatActivity() {
 
     // ======================== UI state ========================
 
+    private fun sendNudge() {
+        val pid = peerId ?: return
+        val isGroup = pid == Constants.GROUP_PEER_ID
+        val recipient = if (isGroup) Constants.RECIPIENT_BROADCAST else pid
+        if (!MainActivity.sendNudgeTo(recipient, isGroup)) {
+            Snackbar.make(chatRoot, "Not connected — connect to a peer first", Snackbar.LENGTH_SHORT).show()
+            return
+        }
+        Snackbar.make(chatRoot, getString(R.string.nudge_sent_fmt, peerName), Snackbar.LENGTH_SHORT).show()
+    }
+
+    private fun openPollCreator() {
+        val pid = peerId ?: return
+        val isGroup = pid == Constants.GROUP_PEER_ID
+        val recipient = if (isGroup) Constants.RECIPIENT_BROADCAST else pid
+        PollCreatorDialog.show(this) { poll ->
+            val ttlSeconds = EphemeralPrefs.getTtlSeconds(this, pid)
+            val expiresAt = if (ttlSeconds > 0L) System.currentTimeMillis() + ttlSeconds * 1000L else null
+            val msg = ChatMessage(
+                text = poll.toJsonString(),
+                isSentByMe = true,
+                expiresAt = expiresAt,
+                messageType = ChatMessage.TYPE_POLL
+            )
+            if (MainActivity.isConnectedStatic()) {
+                val sent = MainActivity.sendPollTo(recipient, poll, msg.messageId, ttlSeconds)
+                if (!sent) {
+                    Snackbar.make(chatRoot, "Failed to transmit poll — saved locally", Snackbar.LENGTH_SHORT).show()
+                }
+            }
+            lifecycleScope.launch {
+                chatRepository.insertMessage(msg, pid, peerName)
+            }
+            ChatBus.notifyMessageSaved(msg, pid)
+        }
+    }
+
+    private fun voteOnPoll(message: ChatMessage, optionIndex: Int) {
+        val pid = peerId ?: return
+        val isGroup = pid == Constants.GROUP_PEER_ID
+        val recipient = if (isGroup) Constants.RECIPIENT_BROADCAST else pid
+        lifecycleScope.launch {
+            if (chatRepository.voteOnPollLocal(message, optionIndex)) {
+                val targetMsgId = message.messageId ?: return@launch
+                MainActivity.sendPollVoteTo(recipient, targetMsgId, optionIndex, isGroup)
+            }
+        }
+    }
+
+    private fun openMediaGallery() {
+        val pid = peerId ?: return
+        MediaGalleryBottomSheet.show(
+            context = this,
+            scope = lifecycleScope,
+            chatRepository = chatRepository,
+            peerId = pid,
+            threadTitle = peerName,
+            onItemFeedback = { msg -> Snackbar.make(chatRoot, msg, Snackbar.LENGTH_SHORT).show() }
+        )
+    }
+
+    private fun refreshHeaderProfileUi() {
+        val pid = peerId
+        val isGroupChat = pid == Constants.GROUP_PEER_ID
+        if (!isGroupChat && !pid.isNullOrBlank()) {
+            PeerRegistry.nameFor(pid)?.takeIf { it.isNotBlank() }?.let { latestName ->
+                peerName = latestName
+                tvPeerName.text = latestName
+            }
+        }
+        AvatarManager.bindAvatar(
+            context = this,
+            imageView = ivChatAvatar,
+            initialView = tvAvatar,
+            peerId = pid,
+            displayName = peerName,
+            fallbackSymbol = if (isGroupChat) "#" else null
+        )
+        if (isGroupChat) {
+            viewChatPresenceDot.visibility = View.GONE
+        } else {
+            viewChatPresenceDot.visibility = View.VISIBLE
+            val peer = PeerRegistry.peerForId(pid)
+            val isOnline = MainActivity.isConnectedStatic() &&
+                (MainActivity.currentPeerMatches(pid) || peer != null)
+            AvatarManager.applyPresenceDot(viewChatPresenceDot, peer?.presenceStatus, isOnline = isOnline)
+        }
+    }
+
     private fun scrollToBottom() {
         rvMessages.smoothScrollToPosition((messageAdapter.itemCount - 1).coerceAtLeast(0))
     }
@@ -864,10 +1000,15 @@ class ChatActivity : AppCompatActivity() {
             )
         val ttlLabel = EphemeralPrefs.formatShortLabel(EphemeralPrefs.getTtlSeconds(this, pid))
         val ttlSuffix = if (ttlLabel != null) " · ⏱ $ttlLabel" else ""
+        val peer = PeerRegistry.peerForId(pid)
+        val presenceDetail = peer?.let { p ->
+            val label = DeviceIdentity.statusDisplayLabel(p.presenceStatus)
+            if (!p.bio.isNullOrBlank()) "$label · ${p.bio}" else "$label · encrypted"
+        } ?: "online · encrypted"
         tvPeerStatus.text = when {
             typingLabel != null -> typingLabel
             pid == Constants.GROUP_PEER_ID -> "${PeerRegistry.snapshotIncludingSelf().size} members$ttlSuffix"
-            liveWithThisPeer -> "online · encrypted$ttlSuffix"
+            liveWithThisPeer -> "$presenceDetail$ttlSuffix"
             else -> "offline — history only$ttlSuffix"
         }
         if (liveWithThisPeer && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {

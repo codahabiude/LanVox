@@ -22,7 +22,12 @@ Requires Android 7.0 (API 24) or newer. This is a debug build, not from the Play
 | 📌 **Pinned Messages & Banner** | Pin or unpin any message from the action sheet (`PIN:` wire sync); a frosted pinned banner (`layoutPinnedBanner`) stays docked at the top of the thread with tap-to-scroll and quick unpin |
 | ✏️ **Message Editing** | Edit your sent text messages inline (`EDIT:` wire sync) with an `(edited)` badge and synced timestamp across devices |
 | ⏳ **Disappearing Messages** | Configure per-thread self-destruct timers (`Off`, `30s`, `5m`, `1h`, `24h` via `EphemeralPrefs` + `TTL:` wire wrapper) with live bubble countdown badges (`⏱`) and automatic Room expiration purging |
-| 🩺 **Custom Nickname & Mesh RTT Ping** | Customize your visible device nickname (`DeviceIdentity`), inspect node ID / local IP / transport links, and measure live TCP round-trip latency (`PING:`/`PONG:` in ms via `MeshDiagnosticsBottomSheet`) |
+| 👤 **Custom Profile Name, Avatar & Bio** | Edit your display name, presence preset (`Available` / `Busy` / `Away`), custom status bio, and circular profile picture via Android's zero-permission Photo Picker (`ProfileBottomSheet` + `AvatarManager`), automatically synced live to peers over `PROFILE:` and `AVATAR:` wire packets |
+| 🟢 **Presence Indicators & Nudge / Buzz** | Live green/amber/red/gray presence dots and peer bios across peer cards, conversation rows, chat headers, and call screens, plus a 1:1 **Nudge / Buzz** (`BUZZ:`) alert with double-pulse haptics (`NudgeManager`), tone, and standby notifications |
+| 📊 **Interactive Live Polls** | Create 2–6 option polls inside any thread (`PollCreatorDialog`), render real-time proportional vote progress bars and percentages inside chat bubbles (`POLL:` / `POLL_VOTE:`), and tap options to vote, switch, or unvote across all peers |
+| ⚡ **Customizable Quick-Reply Templates** | Collapsible composer quick-reply bar (`QuickReplyStripHelper` + `QuickReplyPrefs`) toggled by the bolt button with editable presets, `+ Add` custom templates, long-press delete, and a one-tap `Create Poll` shortcut |
+| 🖼️ **Thread Media & Files Gallery** | Browse every photo, voice note, and shared document in the active conversation (`MediaGalleryBottomSheet`) with `All` / `Images` / `Voice` / `Docs` filter chips and tap-to-open/play |
+| 🩺 **Mesh Telemetry & RTT Ping** | Inspect your node ID, local IP, transport links, and measure live TCP round-trip latency (`PING:`/`PONG:` in ms via `MeshDiagnosticsBottomSheet`) |
 | 📞 **Call History Cards & Call Back** | Incoming, outgoing, and missed audio/video calls log automatically as centered frosted timeline cards (`CALL_LOG`) inside the thread with one-tap **Call back** |
 | ❤️ **Reactions, Double-Tap & Action Sheet** | Instagram-style **double-tap bubble** to heart (`❤️`), interactive clickable reaction chips (`REACT:`), and a frosted long-press **Message Action Sheet** (`❤️ 😂 😮 😢 🙏 👍`, Reply, Copy, Star, Pin, Edit, Forward, Delete) |
 | ↩️ **Swipe-to-Reply & Quote Jump** | WhatsApp/Messenger-style **swipe-right** on any bubble (`MessageSwipeHelper`) opens the composer reply bar (`REPLY:` JSON wire payload) and renders a quote card inside the bubble — tap the quote to smoothly scroll & pulse the original message; **swipe-left** deletes with **Undo** |
@@ -59,7 +64,12 @@ Requires Android 7.0 (API 24) or newer. This is a debug build, not from the Play
   1. **Sent (`✓`)**: Outgoing messages are saved to Room with a unique `messageId` and `MessageStatus.SENT`.
   2. **Delivered (`✓✓`)**: Once the recipient's device parses and persists the text/file in Room (either in foreground `MainActivity` or background `CallListenerService`), it replies with `ACK:<scope>|<messageId>`, upgrading the sender's bubble and conversation preview to **Delivered**.
   3. **Read (`✓✓` Mint Bold)**: `ChatBus.isChatScreenForeground` ensures backgrounded/locked devices do not send false read receipts. When the recipient actively views the thread (or resumes/reconnects to a thread with unread incoming messages), it emits `READ:<scope>|<id1,id2,...>`, updating the sender's bubble to **Read**.
-- **Chat UI & Social Messaging (`MessageAdapter`, `MessageActionBottomSheet`, `ChatsAdapter`, `ChatFeatureActions`)**: Both `MainActivity` inline chat and `ChatActivity` thread views support IG-style double-tap `❤️` reactions, long-press quick-reaction + action sheets (Reply, Copy, Star, Forward, Delete), bidirectional `MessageSwipeHelper` (swipe-right quote-reply with tap-to-jump highlight, swipe-left delete with Undo), throttled `TYPING:` live pills, `ChatSearchHelper` + `★ Starred` filtering, and live status ticks alongside timestamps. `ChatsAdapter` shows true unread count badges, bold unread previews, and live typing status.
+- **Chat UI & Social Messaging (`MessageAdapter`, `MessageActionBottomSheet`, `ChatsAdapter`, `ChatFeatureActions`)**: Both `MainActivity` inline chat and `ChatActivity` thread views support IG-style double-tap `❤️` reactions, long-press quick-reaction + action sheets (Reply, Copy, Star, Forward, Delete), bidirectional `MessageSwipeHelper` (swipe-right quote-reply with tap-to-jump highlight, swipe-left delete with Undo), throttled `TYPING:` live pills, `ChatSearchHelper` + `★ Starred` filtering, and live status ticks alongside timestamps. `ChatsAdapter` shows peer avatars, presence dots, true unread count badges, bold unread previews, poll summaries, and live typing status.
+- **Profiles, Presence, Polls, Quick Replies, Nudge & Gallery**:
+  - **Profiles & Avatars (`ProfileBottomSheet`, `AvatarManager`)**: Selecting an avatar uses `ActivityResultContracts.PickVisualMedia` (no storage permission needed), downscales to a compact 128×128 circular JPEG, persists under `files/avatars/`, and exchanges `PROFILE:` JSON + `AVATAR:` Base64 packets automatically on peer handshake or profile edit.
+  - **Presence & Nudge (`PeerRegistry`, `NudgeManager`)**: Tracks peer `Available` / `Busy` / `Away` presets and bios across UI screens; `BUZZ:` sends a gentle peer nudge triggering double-pulse vibration and sound/notification alerts.
+  - **Live Polls (`PollModels`, `PollCreatorDialog`)**: Polls serialize as `ChatMessage.TYPE_POLL` in Room; each `POLL_VOTE:` packet mutates the deterministic vote map so multi-phone counts stay synchronized.
+  - **Quick Replies & Media Gallery (`QuickReplyPrefs`, `QuickReplyStripHelper`, `MediaGalleryBottomSheet`)**: Bolt button toggles saved one-tap reply chips above the composer; Gallery filters attachments in the active conversation by Images, Voice, or Docs.
 
 ### File & Media Sharing with Progress Tracking (`FileTransferManager` + `FileTransferTracker`)
 - **Direct & Relay TCP Transfer (`8991`)**: Files up to 250 MB are staged from Android's zero-permission Storage Access Framework (`OpenDocument`). Senders serve files directly from their local `FileTransferManager` server (`host` field in `FILE:<json>`) or upload via `PUT <transferId> <size>` to a relay peer when client isolation applies.
@@ -133,6 +143,11 @@ gradle installDebug
 - Tap the search icon to filter by text, sender, file name, or timestamp, or tap `★ Starred` to view only bookmarked messages.
 - Tap the paperclip button (`btnAttach`) to pick any document, image, audio, or video file (up to 250 MB) and track real-time upload/download progress bars and per-peer chips inside the bubble.
 
+### Profiles, Polls, Quick Replies, Nudge & Media Gallery
+- Tap your avatar button in `MainActivity` (or **My Profile & Avatar** in the overflow/actions sheet) to edit your display name, pick a profile photo from your gallery, choose `Available` / `Busy` / `Away`, and set a status bio.
+- Tap the **⚡** bolt button beside the composer to expand customizable **Quick Replies**, tap **+** to save new presets, long-press any chip to delete it, or tap **Poll** inside the strip (or **Create Poll** in chat/actions) to launch a live vote.
+- In a 1:1 thread, tap **Nudge** in the top action row to send a double-pulse buzz alert to your peer, or tap **Gallery** to view all photos, voice notes, and shared files in that conversation.
+
 ### Audio & Video Calls
 - Tap **Audio Call** or **Video Call** in a peer thread (or pick the target peer from the dialog when multiple devices are connected in Group Chat).
 - Controls: Mute, Speaker, Switch Camera (video), End Call.
@@ -142,9 +157,10 @@ gradle installDebug
 ```
 app/src/main/java/com/example/wifip2pchat/
 ├── Constants.kt                    — Ports (8988–8991), audio/video config, file limits & envelope prefixes
-├── DeviceIdentity.kt               — Persistent node ID (`lvx_...`/MAC) & local IPv4 interface resolver
+├── DeviceIdentity.kt               — Persistent node ID (`lvx_...`/MAC), display name, presence preset, bio & IP resolver
+├── AvatarManager.kt                — Downscaled circular JPEG avatar storage, Base64 wire sync & reactive StateFlow updates
 ├── Envelope.kt                     — Wire envelope (`ENV|...|MID:<id>:<payload>`) builder & parser
-├── PeerRegistry.kt                 — Multi-peer membership & IP registry across Wi-Fi Direct and LAN mesh
+├── PeerRegistry.kt                 — Multi-peer membership, presence, bio & IP registry across Wi-Fi Direct and LAN mesh
 ├── LocalMeshDiscovery.kt           — Hostless LAN / Hotspot mDNS (`NSD`) service advertisement & discovery
 ├── WiFiDirectManager.kt            — Wi-Fi Direct lifecycle, permission guards & session restore
 ├── WiFiDirectBroadcastReceiver.kt  — P2P system event listener (Android 13+ compatible)
@@ -152,37 +168,44 @@ app/src/main/java/com/example/wifip2pchat/
 ├── ChatClient.kt                   — Dedicated Group Owner uplink socket client (with auto-reconnect)
 ├── FileTransferManager.kt          — Binary TCP file server/relay (8991), direct host fetch & FileProvider helper
 ├── FileTransferTracker.kt          — Live ~10 Hz StateFlow progress & multi-peer status chip state
-├── CallListenerService.kt          — Standby foreground service: closed-app calls, messages, files & ACKs
+├── CallListenerService.kt          — Standby foreground service: closed-app calls, messages, profiles, polls, nudges & ACKs
 ├── BootReceiver.kt                 — Restarts the standby listener after device reboot/update
 ├── LastSession.kt                  — Remembers last session role, host IP & peer info
-├── ChatMessage.kt                  — Domain ChatMessage model (`ReactionChip`, `DecodedReply`, `MessageStatus`, quotes & stars)
+├── ChatMessage.kt                  — Domain ChatMessage model (`ReactionChip`, `DecodedReply`, `PollData`, `MessageStatus`)
+├── PollModels.kt                   — Interactive poll JSON serialization, deterministic vote updates & summaries
 ├── ChatMessageEntity.kt            — Room @Entity table definition ("messages")
 ├── ChatMessageDao.kt               — Room @Dao queries (Flow & suspend), reactions, stars & unread count queries
 ├── LanvoxDatabase.kt               — Room @Database v5 singleton ("lanvox_room_chat.db") with v1→v5 migrations
-├── ChatRepository.kt               — Repository layer, receipt transitions, pin/edit/expiry/call-log mutations & Conversation model
+├── ChatRepository.kt               — Repository layer, receipt transitions, pin/edit/expiry/poll/call-log mutations & Conversation model
 ├── ChatBus.kt                      — Foreground thread, message & auto-expiring typing indicator StateFlow bus
 ├── VoiceNoteManager.kt             — Push-to-Talk `.m4a` AAC recorder & single-track MediaPlayer playback StateFlow
 ├── EphemeralPrefs.kt               — Per-thread disappearing-messages TTL preferences & duration picker
+├── QuickReplyPrefs.kt              — Persistent customizable quick-reply template presets
+├── QuickReplyStripHelper.kt        — Shared collapsible quick-reply chip strip & preset add/delete controller
+├── NudgeManager.kt                 — Double-pulse haptic buzz & tone alerts with standby notifications
 ├── MeshDiagnosticsBus.kt           — Live TCP `PING:`/`PONG:` round-trip latency (RTT) StateFlow tracker
 ├── CallSessionBus.kt               — Shared call signaling state, monotonic active call timer, mute sync & AudioFocus manager
 ├── WebRtcAudioCallManager.kt       — WebRTC PeerConnection, JavaAudioDeviceModule (AEC/NS/AGC) & ICE queue
 ├── AudioCallService.kt             — Microphone foreground service hosting WebRTC P2P audio & notification actions
 ├── VideoCallService.kt             — Video streaming foreground service (Camera2 + conflated TCP frame writer)
-├── AudioCallActivity.kt            — Audio call UI with floating live timer overlay HUD, call logging & edge-to-edge safe insets
+├── AudioCallActivity.kt            — Audio call UI with peer avatar, floating live timer HUD, call logging & edge-to-edge safe insets
 ├── VideoCallActivity.kt            — Video call UI with floating live timer overlay pill, PiP, call logging & edge-to-edge safe insets
-├── IncomingCallActivity.kt         — Incoming call lock-screen UI with decline call logging
-├── MainActivity.kt                 — Main HUD: PeerPickerBottomSheet, inline social mesh chat, voice notes, pins, edits, TTL & 1:1 call routing
-├── MainActionsBottomSheet.kt       — Material BottomSheetDialog for secondary actions, disappearing timer, diagnostics & destructive actions
+├── IncomingCallActivity.kt         — Incoming call lock-screen UI with peer avatar & decline call logging
+├── MainActivity.kt                 — Main HUD: self-profile header, PeerPickerBottomSheet, inline social mesh chat, polls, quick replies & 1:1 call routing
+├── MainActionsBottomSheet.kt       — Material BottomSheetDialog for profile preview, polls, media gallery, disappearing timer, diagnostics & clear history
+├── ProfileBottomSheet.kt           — Profile editor bottom sheet (Photo Picker avatar, display name, presence preset & status bio)
+├── PollCreatorDialog.kt            — Frosted dialog for composing 2–6 option live polls
+├── MediaGalleryBottomSheet.kt      — Thread media/voice/docs gallery bottom sheet with category filter chips
 ├── MeshDiagnosticsBottomSheet.kt   — Nickname editor, node/IP telemetry & live per-peer RTT latency sheet
 ├── MessageActionBottomSheet.kt     — Floating frosted bottom sheet for quick emoji reactions & message actions (Reply, Copy, Star, Pin, Edit, Forward, Delete)
 ├── PeerPickerBottomSheet.kt        — Material BottomSheetDialog for peer discovery, RadarView & empty-state CTA
 ├── ChatFeatureActions.kt           — Shared helpers for clipboard copy, starred filter styling, quote scroll & forwarding
-├── ChatsActivity.kt                — Conversations list (observed via Room Flow with live typing & unread badges)
-├── ChatsAdapter.kt                 — RecyclerView adapter for conversations, unread badges & typing indicators
-├── ChatActivity.kt                 — Per-contact / Group thread with voice notes, pins, edits, disappearing timer, reactions, swipe-to-reply, search & file sharing
-├── PeerAdapter.kt                  — RecyclerView adapter for discovered peers
-├── MessageAdapter.kt               — RecyclerView adapter for bubbles, voice note players, call-log cards, quotes, reaction chips, stars/pins, receipts & file progress
-├── ChatSearchHelper.kt             — Live message filtering by text, sender, filename, MIME, or timestamp
+├── ChatsActivity.kt                — Conversations list (observed via Room Flow with peer avatars, presence, typing & unread badges)
+├── ChatsAdapter.kt                 — RecyclerView adapter for conversations, avatars, presence dots, unread badges & typing indicators
+├── ChatActivity.kt                 — Per-contact / Group thread with presence subtitle, nudge, polls, quick replies, media gallery, voice notes & file sharing
+├── PeerAdapter.kt                  — RecyclerView adapter for discovered peers with avatars, presence dots & bios
+├── MessageAdapter.kt               — RecyclerView adapter for bubbles, interactive polls, voice players, call-log cards, quotes, reactions & file progress
+├── ChatSearchHelper.kt             — Live message filtering by text, poll content, sender, filename, MIME, or timestamp
 ├── MessageSwipeHelper.kt           — Bidirectional swipe-right (reply) & swipe-left (delete + Undo) ItemTouchHelper
 ├── GlassEffects.kt                 — RenderEffect backdrop blur & luminous glow shadows
 ├── OnboardingActivity.kt           — First-launch tutorial

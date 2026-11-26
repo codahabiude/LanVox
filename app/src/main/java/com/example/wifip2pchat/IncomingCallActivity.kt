@@ -13,11 +13,15 @@ import android.view.animation.AlphaAnimation
 import android.view.animation.Animation
 import android.view.animation.OvershootInterpolator
 import android.view.animation.ScaleAnimation
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +56,7 @@ class IncomingCallActivity : AppCompatActivity() {
     }
 
     private lateinit var tvAvatarInitial: TextView
+    private lateinit var ivIncomingPhoto: ImageView
     private lateinit var tvCallerName: TextView
     private lateinit var tvCallType: TextView
     private lateinit var btnAccept: MaterialButton
@@ -110,6 +115,7 @@ class IncomingCallActivity : AppCompatActivity() {
 
     private fun initViews() {
         tvAvatarInitial = findViewById(R.id.tvAvatarInitial)
+        ivIncomingPhoto = findViewById(R.id.ivIncomingPhoto)
         tvCallerName = findViewById(R.id.tvCallerName)
         tvCallType = findViewById(R.id.tvCallType)
         btnAccept = findViewById(R.id.btnAccept)
@@ -117,7 +123,14 @@ class IncomingCallActivity : AppCompatActivity() {
         pulseRing = findViewById(R.id.pulseRing)
 
         tvCallerName.text = callerName
-        tvAvatarInitial.text = callerName.trim().take(1).uppercase(Locale.getDefault()).ifBlank { "L" }
+        AvatarManager.bindAvatar(this, ivIncomingPhoto, tvAvatarInitial, peerId, callerName)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                AvatarManager.avatarVersion.collect {
+                    AvatarManager.bindAvatar(this@IncomingCallActivity, ivIncomingPhoto, tvAvatarInitial, peerId, callerName)
+                }
+            }
+        }
         tvCallType.text = when (callType) {
             Constants.CALL_TYPE_VIDEO -> "Video Call"
             else -> "Audio Call"

@@ -50,6 +50,9 @@ class ChatServerService : Service() {
         /** Fired on the main thread whenever the count of live mesh peer links changes. */
         var onMeshPeersChanged: (() -> Unit)? = null
 
+        /** Fired on the main thread when a peer completes initial HELLO handshake. */
+        var onPeerHandshakeReady: ((String) -> Unit)? = null
+
         private var serviceInstance: ChatServerService? = null
 
         fun hasConnectedPeers(): Boolean = serviceInstance?.peers?.isNotEmpty() == true
@@ -431,6 +434,11 @@ class ChatServerService : Service() {
         )
         broadcastPeerList()
         notifyMeshPeersChanged()
+        if (!isNicknameUpdate) {
+            Handler(Looper.getMainLooper()).post {
+                onPeerHandshakeReady?.invoke(peerId)
+            }
+        }
         Log.d(TAG, "Registered mesh peer: $peerId (${conn.peerName}, ip=${conn.hostIp}) — active links=${peers.size}")
     }
 

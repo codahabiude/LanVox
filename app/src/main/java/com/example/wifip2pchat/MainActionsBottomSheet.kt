@@ -26,6 +26,9 @@ object MainActionsBottomSheet {
         onToggleRadar: (() -> Unit)? = null,
         onConfigureEphemeral: (() -> Unit)? = null,
         onOpenMeshDiagnostics: (() -> Unit)? = null,
+        onOpenProfile: (() -> Unit)? = null,
+        onCreatePoll: (() -> Unit)? = null,
+        onOpenMediaGallery: (() -> Unit)? = null,
         onDisconnect: (() -> Unit)? = null,
         onClearAllHistory: () -> Unit
     ) {
@@ -52,6 +55,55 @@ object MainActionsBottomSheet {
 
         view.findViewById<ImageView>(R.id.btnActionsClose).setOnClickListener {
             dialog.dismiss()
+        }
+
+        val rowProfile = view.findViewById<View>(R.id.rowActionProfile)
+        if (onOpenProfile != null) {
+            rowProfile.visibility = View.VISIBLE
+            val ivProfileAvatar = view.findViewById<ImageView>(R.id.ivActionProfileAvatar)
+            val tvProfileInitial = view.findViewById<TextView>(R.id.tvActionProfileInitial)
+            val tvProfileTitle = view.findViewById<TextView>(R.id.tvActionProfileTitle)
+            val tvProfileSub = view.findViewById<TextView>(R.id.tvActionProfileSub)
+            val displayName = DeviceIdentity.defaultDeviceName(context)
+            val statusLabel = DeviceIdentity.statusDisplayLabel(DeviceIdentity.getStatusPreset(context))
+            val bio = DeviceIdentity.getCustomBio(context)
+            tvProfileTitle.text = displayName
+            tvProfileSub.text = if (!bio.isNullOrBlank()) "$statusLabel · $bio" else statusLabel
+            AvatarManager.bindAvatar(
+                context = context,
+                imageView = ivProfileAvatar,
+                initialView = tvProfileInitial,
+                peerId = PeerRegistry.selfId,
+                displayName = displayName
+            )
+            rowProfile.setOnClickListener {
+                dialog.dismiss()
+                onOpenProfile()
+            }
+        } else {
+            rowProfile.visibility = View.GONE
+        }
+
+        val rowPoll = view.findViewById<View>(R.id.rowActionCreatePoll)
+        if (onCreatePoll != null) {
+            rowPoll.visibility = View.VISIBLE
+            rowPoll.setOnClickListener {
+                dialog.dismiss()
+                onCreatePoll()
+            }
+        } else {
+            rowPoll.visibility = View.GONE
+        }
+
+        val rowGallery = view.findViewById<View>(R.id.rowActionMediaGallery)
+        if (onOpenMediaGallery != null) {
+            rowGallery.visibility = View.VISIBLE
+            rowGallery.setOnClickListener {
+                dialog.dismiss()
+                onOpenMediaGallery()
+            }
+        } else {
+            rowGallery.visibility = View.GONE
         }
 
         val rowExport = view.findViewById<View>(R.id.rowActionExport)

@@ -5,6 +5,8 @@ import android.os.Bundle
 import android.view.View
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
@@ -30,6 +32,18 @@ class ChatsActivity : AppCompatActivity() {
     private val chatRepository by lazy { ChatRepository.get(this) }
 
     private var registryListenerToken: (() -> Unit)? = null
+    private var activeProfileSheet: ProfileBottomSheet? = null
+
+    private val profilePhotoPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        if (AvatarManager.saveSelfAvatarFromUri(this, uri)) {
+            activeProfileSheet?.refreshAvatarPreview()
+            MainActivity.broadcastSelfProfileAndAvatarStatic()
+            Snackbar.make(rootLayout, R.string.profile_photo_updated_msg, Snackbar.LENGTH_SHORT).show()
+        }
+    }
 
     private val chatsAdapter = ChatsAdapter(
         onClick = { conversation -> openChat(conversation) },
@@ -58,6 +72,7 @@ class ChatsActivity : AppCompatActivity() {
                     storedMessageCount = total,
                     isConnected = MainActivity.isConnectedStatic(),
                     onExportChats = null,
+                    onOpenProfile = { openProfileSheet() },
                     onClearAllHistory = { confirmClearAll(total) }
                 )
             }
@@ -88,6 +103,11 @@ class ChatsActivity : AppCompatActivity() {
                 launch {
                     ChatBus.typingPeers.collect { typingMap ->
                         chatsAdapter.updateTyping(typingMap)
+                    }
+                }
+                launch {
+                    AvatarManager.avatarVersion.collect {
+                        chatsAdapter.notifyDataSetChanged()
                     }
                 }
             }
@@ -168,6 +188,28 @@ class ChatsActivity : AppCompatActivity() {
                 }
             }
             .show()
+    }
+
+    private fun openProfileSheet() {
+        val sheet = ProfileBottomSheet(
+            context = this,
+            onRequestPickPhoto = {
+                profilePhotoPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+            },
+            onPhotoRemoved = {
+                MainActivity.broadcastSelfProfileAndAvatarStatic(includeAvatar = true)
+                Snackbar.make(rootLayout, R.string.profile_photo_removed_msg, Snackbar.LENGTH_SHORT).show()
+            },
+            onProfileSaved = { displayName, _, _ ->
+                PeerRegistry.selfName = displayName
+                MainActivity.broadcastSelfProfileAndAvatarStatic()
+                Snackbar.make(rootLayout, R.string.profile_updated_msg, Snackbar.LENGTH_SHORT).show()
+            }
+        )
+        activeProfileSheet = sheet
+        sheet.show()
     }
 
     private fun confirmClearAll(totalCount: Int) {

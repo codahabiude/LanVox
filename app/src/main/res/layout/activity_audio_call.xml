@@ -40,6 +40,15 @@
                 android:background="@drawable/circle_green_avatar"
                 android:text="L" />
 
+            <ImageView
+                android:id="@+id/ivAudioCallPhoto"
+                android:layout_width="96dp"
+                android:layout_height="96dp"
+                android:layout_gravity="center"
+                android:contentDescription="@string/cd_profile_avatar"
+                android:scaleType="centerCrop"
+                android:visibility="gone" />
+
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

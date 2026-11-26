@@ -46,17 +46,37 @@ class PeerAdapter(
     class PeerViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         private val tvName: TextView? = itemView.findViewById(R.id.tvDeviceName)
         private val tvStatus: TextView? = itemView.findViewById(R.id.tvDeviceStatus)
+        private val tvAvatarInitial: TextView? = itemView.findViewById(R.id.tvAvatarInitial)
+        private val ivPeerAvatar: ImageView? = itemView.findViewById(R.id.ivPeerAvatar)
+        private val viewPresenceDot: View? = itemView.findViewById(R.id.viewPeerPresenceDot)
         val btnCall: MaterialButton? = itemView.findViewById(R.id.btnPeerCall)
         val btnVideo: MaterialButton? = itemView.findViewById(R.id.btnPeerVideo)
 
         fun bind(device: WifiP2pDevice) {
-            tvName?.text = device.deviceName.ifBlank { device.deviceAddress }
-            // Friendlier status line — no "Hotspot" wording.
+            val matchedPeer = PeerRegistry.snapshot().firstOrNull {
+                it.id == device.deviceAddress || it.name.equals(device.deviceName, ignoreCase = true)
+            }
+            val displayName = matchedPeer?.name?.takeIf { it.isNotBlank() }
+                ?: device.deviceName.ifBlank { device.deviceAddress }
+            tvName?.text = displayName
+
             val statusStr = deviceStatusToString(device.status)
-            tvStatus?.text = "$statusStr · Strong signal"
-            // First letter of the device name on the avatar
-            val initial = device.deviceName.trim().take(1).ifBlank { "L" }.uppercase()
-            (itemView.findViewById<TextView>(R.id.tvAvatarInitial))?.text = initial
+            val presenceSuffix = matchedPeer?.let { peer ->
+                val pLabel = DeviceIdentity.statusDisplayLabel(peer.presenceStatus)
+                if (!peer.bio.isNullOrBlank()) "$pLabel · ${peer.bio}" else pLabel
+            } ?: "Strong signal"
+            tvStatus?.text = "$statusStr · $presenceSuffix"
+
+            AvatarManager.bindAvatar(
+                context = itemView.context,
+                imageView = ivPeerAvatar,
+                initialView = tvAvatarInitial,
+                peerId = matchedPeer?.id ?: device.deviceAddress,
+                displayName = displayName
+            )
+            val isOnline = device.status != WifiP2pDevice.UNAVAILABLE &&
+                device.status != WifiP2pDevice.FAILED
+            AvatarManager.applyPresenceDot(viewPresenceDot, matchedPeer?.presenceStatus, isOnline)
         }
 
         private fun deviceStatusToString(status: Int): String = when (status) {

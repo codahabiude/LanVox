@@ -19,10 +19,12 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -184,6 +186,43 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             instance.sendReadReceipt(threadPeerId)
         }
 
+        fun sendPollTo(
+            recipientId: String,
+            poll: PollData,
+            msgId: String? = null,
+            ttlSeconds: Long = 0L
+        ): Boolean {
+            val instance = staticInstance ?: return false
+            if (!instance.isNetworkConnected()) return false
+            val wire = ChatMessage.encodeTtlPayload(ttlSeconds, poll.toWirePayload())
+            return instance.transmitPayload(recipientId, wire, msgId)
+        }
+
+        fun sendPollVoteTo(
+            recipientId: String,
+            targetMessageId: String,
+            optionIndex: Int,
+            isGroup: Boolean
+        ) {
+            val instance = staticInstance ?: return
+            if (!instance.isNetworkConnected() || targetMessageId.isBlank()) return
+            val scopeSuffix = if (isGroup) Constants.GROUP_PEER_ID else ""
+            val payload = "${Constants.MSG_TYPE_POLL_VOTE}$scopeSuffix|$targetMessageId|$optionIndex"
+            instance.sendControlMessage(payload, recipientId)
+        }
+
+        fun sendNudgeTo(recipientId: String, isGroup: Boolean): Boolean {
+            val instance = staticInstance ?: return false
+            if (!instance.isNetworkConnected()) return false
+            val scopeSuffix = if (isGroup) Constants.GROUP_PEER_ID else ""
+            instance.sendControlMessage(Constants.MSG_TYPE_BUZZ + scopeSuffix, recipientId)
+            return true
+        }
+
+        fun broadcastSelfProfileAndAvatarStatic(includeAvatar: Boolean = true) {
+            staticInstance?.broadcastSelfProfileAndAvatar(includeAvatar)
+        }
+
         fun startAudioCallStatic(
             targetPeerId: String? = null,
             targetPeerName: String? = null
@@ -288,6 +327,10 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private lateinit var btnChats: ImageView
     private lateinit var tvChatsUnreadBadge: TextView
     private lateinit var btnMoreOptions: ImageView
+    private lateinit var flSelfProfile: View
+    private lateinit var tvSelfAvatarInitial: TextView
+    private lateinit var ivSelfAvatar: ImageView
+    private lateinit var viewSelfPresenceDot: View
     private lateinit var activeChatHeader: View
     private lateinit var tvActiveChatTitle: TextView
     private lateinit var tvActiveChatSubtitle: TextView
@@ -315,11 +358,16 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private lateinit var progressVoiceAmp: LinearProgressIndicator
     private lateinit var btnVoiceCancel: View
     private lateinit var btnVoiceSend: View
+    private lateinit var hsvQuickReplies: HorizontalScrollView
+    private lateinit var llQuickReplyChips: LinearLayout
+    private lateinit var btnQuickReplies: ImageView
     private lateinit var composerDock: View
     private lateinit var etMessage: EditText
     private lateinit var btnAttach: ImageView
     private lateinit var btnVoiceNote: ImageView
     private lateinit var btnSend: MaterialButton
+
+    private var activeProfileSheet: ProfileBottomSheet? = null
 
     // --- Radar ---
     private var radarView: RadarView? = null
@@ -350,8 +398,25 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             } else {
                 startAudioCall()
             }
-        }
+        },
+        onPollVoteClick = { msg, optionIndex -> voteOnPoll(msg, optionIndex) }
     )
+
+    private val profilePhotoPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        if (AvatarManager.saveSelfAvatarFromUri(this, uri)) {
+            activeProfileSheet?.refreshAvatarPreview()
+            refreshSelfProfileUi()
+            if (isNetworkConnected()) {
+                sendControlMessage(AvatarManager.buildSelfAvatarWirePayload(this), Constants.RECIPIENT_BROADCAST)
+            }
+            showSnackbar(getString(R.string.profile_photo_updated_msg))
+        } else {
+            showSnackbar("Could not process selected photo")
+        }
+    }
 
     private val voiceAudioPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -591,6 +656,13 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                     }
                 }
                 launch {
+                    AvatarManager.avatarVersion.collect {
+                        refreshSelfProfileUi()
+                        peerAdapter.notifyDataSetChanged()
+                        refreshPeerPickerBottomSheet()
+                    }
+                }
+                launch {
                     while (isActive) {
                         chatRepository.purgeExpiredMessages()
                         delay(4_000L)
@@ -603,6 +675,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         PeerRegistry.selfId = DeviceIdentity.getId(this)
         PeerRegistry.selfName = DeviceIdentity.defaultDeviceName(this)
         PeerRegistry.selfIpAddress = DeviceIdentity.resolveLocalIp()
+        refreshSelfProfileUi()
         startChatServer()
         FileTransferManager.ensureServerRunning(applicationContext)
         startLocalMeshDiscovery()
@@ -616,6 +689,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             } else {
                 "No devices nearby yet.\nTap Discover to scan."
             }
+            peerAdapter.notifyDataSetChanged()
             refreshNetworkConnectionUi()
         }
 
@@ -629,6 +703,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         super.onResume()
         staticInstance = this
         registerReceiver()
+        refreshSelfProfileUi()
         updateCallButtons()
         updateActiveChatHeader()
         loadMainChatHistory()
@@ -686,6 +761,10 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         btnChats = findViewById(R.id.btnChats)
         tvChatsUnreadBadge = findViewById(R.id.tvChatsUnreadBadge)
         btnMoreOptions = findViewById(R.id.btnMoreOptions)
+        flSelfProfile = findViewById(R.id.flSelfProfile)
+        tvSelfAvatarInitial = findViewById(R.id.tvSelfAvatarInitial)
+        ivSelfAvatar = findViewById(R.id.ivSelfAvatar)
+        viewSelfPresenceDot = findViewById(R.id.viewSelfPresenceDot)
         activeChatHeader = findViewById(R.id.activeChatHeader)
         tvActiveChatTitle = findViewById(R.id.tvActiveChatTitle)
         tvActiveChatSubtitle = findViewById(R.id.tvActiveChatSubtitle)
@@ -713,6 +792,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         progressVoiceAmp = findViewById(R.id.progressVoiceAmp)
         btnVoiceCancel = findViewById(R.id.btnVoiceCancel)
         btnVoiceSend = findViewById(R.id.btnVoiceSend)
+        hsvQuickReplies = findViewById(R.id.hsvQuickReplies)
+        llQuickReplyChips = findViewById(R.id.llQuickReplyChips)
+        btnQuickReplies = findViewById(R.id.btnQuickReplies)
         composerDock = findViewById(R.id.composerDock)
         etMessage = findViewById(R.id.etMessage)
         btnAttach = findViewById(R.id.btnAttach)
@@ -827,7 +909,17 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
         btnChats.setOnClickListener { openChannelsScreen() }
         activeChatHeader.setOnClickListener { openChannelsScreen() }
+        flSelfProfile.setOnClickListener { openProfileSheet() }
         btnMoreOptions.setOnClickListener { showMoreActionsSheet() }
+        QuickReplyStripHelper.bind(
+            context = this,
+            toggleButton = btnQuickReplies,
+            scrollContainer = hsvQuickReplies,
+            chipRow = llQuickReplyChips,
+            targetEditText = etMessage,
+            onCreatePoll = { openPollCreator() },
+            onFeedback = { msg -> showSnackbar(msg) }
+        )
         btnDiscover.setOnClickListener { toggleDiscovery() }
         btnInlineEmptyScan.setOnClickListener { toggleDiscovery() }
         btnToggleDevices.setOnClickListener { showPeerPickerBottomSheet() }
@@ -1133,8 +1225,110 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             onToggleRadar = { setScannerExpanded(!isScannerExpanded) },
             onConfigureEphemeral = { openEphemeralTimerPicker() },
             onOpenMeshDiagnostics = { openMeshDiagnosticsSheet() },
+            onOpenProfile = { openProfileSheet() },
+            onCreatePoll = { openPollCreator() },
+            onOpenMediaGallery = { openMediaGallerySheet() },
             onDisconnect = { disconnect() },
             onClearAllHistory = { confirmClearHistory() }
+        )
+    }
+
+    private fun openProfileSheet() {
+        val sheet = ProfileBottomSheet(
+            context = this,
+            onRequestPickPhoto = {
+                profilePhotoPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+            },
+            onPhotoRemoved = {
+                refreshSelfProfileUi()
+                broadcastSelfProfileAndAvatar(includeAvatar = true)
+                showSnackbar(getString(R.string.profile_photo_removed_msg))
+            },
+            onProfileSaved = { displayName, _, _ ->
+                reannounceSelfIdentity(displayName)
+                refreshSelfProfileUi()
+                showSnackbar(getString(R.string.profile_updated_msg))
+            }
+        )
+        activeProfileSheet = sheet
+        sheet.show()
+    }
+
+    private fun refreshSelfProfileUi() {
+        val displayName = DeviceIdentity.defaultDeviceName(this)
+        val status = DeviceIdentity.getStatusPreset(this)
+        if (::tvDeviceInfo.isInitialized) {
+            tvDeviceInfo.text = displayName
+        }
+        if (::ivSelfAvatar.isInitialized && ::tvSelfAvatarInitial.isInitialized) {
+            AvatarManager.bindAvatar(
+                context = this,
+                imageView = ivSelfAvatar,
+                initialView = tvSelfAvatarInitial,
+                peerId = PeerRegistry.selfId,
+                displayName = displayName
+            )
+            AvatarManager.applyPresenceDot(viewSelfPresenceDot, status, isOnline = true)
+        }
+    }
+
+    private fun broadcastSelfProfileAndAvatar(includeAvatar: Boolean = true) {
+        if (!isNetworkConnected()) return
+        sendControlMessage(DeviceIdentity.buildProfilePayload(this), Constants.RECIPIENT_BROADCAST)
+        if (includeAvatar) {
+            sendControlMessage(AvatarManager.buildSelfAvatarWirePayload(this), Constants.RECIPIENT_BROADCAST)
+        }
+    }
+
+    private fun openPollCreator() {
+        val threadPeerId = activeThreadPeerId()
+        val threadPeerName = activeThreadPeerName()
+        val isGroup = threadPeerId == Constants.GROUP_PEER_ID
+        val recipient = if (isGroup) Constants.RECIPIENT_BROADCAST else threadPeerId
+        PollCreatorDialog.show(this) { poll ->
+            val ttlSeconds = EphemeralPrefs.getTtlSeconds(this, threadPeerId)
+            val expiresAt = if (ttlSeconds > 0L) System.currentTimeMillis() + ttlSeconds * 1000L else null
+            val msg = ChatMessage(
+                text = poll.toJsonString(),
+                isSentByMe = true,
+                expiresAt = expiresAt,
+                messageType = ChatMessage.TYPE_POLL
+            )
+            if (isNetworkConnected()) {
+                val wire = ChatMessage.encodeTtlPayload(ttlSeconds, poll.toWirePayload())
+                if (!transmitPayload(recipient, wire, msg.messageId)) {
+                    showSnackbar("Failed to transmit poll — saved locally")
+                }
+            }
+            lifecycleScope.launch {
+                chatRepository.insertMessage(msg, threadPeerId, threadPeerName)
+            }
+            ChatBus.notifyMessageSaved(msg, threadPeerId)
+        }
+    }
+
+    private fun voteOnPoll(message: ChatMessage, optionIndex: Int) {
+        val threadPeerId = activeThreadPeerId()
+        val isGroup = threadPeerId == Constants.GROUP_PEER_ID
+        val recipient = if (isGroup) Constants.RECIPIENT_BROADCAST else threadPeerId
+        lifecycleScope.launch {
+            if (chatRepository.voteOnPollLocal(message, optionIndex)) {
+                val targetMsgId = message.messageId ?: return@launch
+                sendPollVoteTo(recipient, targetMsgId, optionIndex, isGroup)
+            }
+        }
+    }
+
+    private fun openMediaGallerySheet() {
+        MediaGalleryBottomSheet.show(
+            context = this,
+            scope = lifecycleScope,
+            chatRepository = chatRepository,
+            peerId = activeThreadPeerId(),
+            threadTitle = activeThreadPeerName(),
+            onItemFeedback = { msg -> showSnackbar(msg) }
         )
     }
 
@@ -1176,6 +1370,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         tvDeviceInfo.text = newName
         localMeshDiscovery?.updateSelfName(PeerRegistry.selfId, newName)
         ChatServerService.reannounceSelf()
+        broadcastSelfProfileAndAvatar(includeAvatar = false)
     }
 
     private fun setScannerExpanded(expanded: Boolean) {
@@ -1337,6 +1532,14 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
         ChatServerService.onMeshPeersChanged = {
             refreshNetworkConnectionUi()
+        }
+        ChatServerService.onPeerHandshakeReady = { peerId ->
+            if (ChatServerService.running) {
+                sendControlMessage(DeviceIdentity.buildProfilePayload(this), peerId)
+                if (AvatarManager.getSelfAvatarBase64(this) != null) {
+                    sendControlMessage(AvatarManager.buildSelfAvatarWirePayload(this), peerId)
+                }
+            }
         }
     }
 
@@ -1575,6 +1778,65 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                     )
                 }
             }
+            payload.startsWith(Constants.MSG_TYPE_AVATAR) -> {
+                AvatarManager.applyRemoteAvatarPayload(this, env.senderId, payload)
+            }
+            payload.startsWith(Constants.MSG_TYPE_PROFILE) -> {
+                val prof = DeviceIdentity.parseProfilePayload(payload)
+                if (prof != null) {
+                    PeerRegistry.updateProfile(env.senderId, prof.name, prof.status, prof.bio)
+                    val updatedName = prof.name
+                    if (!updatedName.isNullOrBlank()) {
+                        if (currentPeerId == env.senderId) {
+                            currentPeerName = updatedName
+                        }
+                        lifecycleScope.launch {
+                            chatRepository.updatePeerName(env.senderId, updatedName)
+                        }
+                    }
+                    runOnUiThread {
+                        updateActiveChatHeader()
+                        peerAdapter.notifyDataSetChanged()
+                        refreshPeerPickerBottomSheet()
+                    }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_POLL) -> {
+                val poll = PollData.fromWirePayload(payload)
+                if (poll != null) {
+                    onIncomingPoll(
+                        poll = poll,
+                        senderId = env.senderId,
+                        senderName = env.senderName,
+                        recipientId = env.recipientId,
+                        msgId = env.msgId,
+                        expiresAt = expiresAt
+                    )
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_POLL_VOTE) -> {
+                val rawVote = payload.removePrefix(Constants.MSG_TYPE_POLL_VOTE)
+                val parts = rawVote.split('|', limit = 3)
+                if (parts.size >= 3) {
+                    val scopeSuffix = parts[0]
+                    val targetMsgId = parts[1].trim()
+                    val optionIdx = parts[2].trim().toIntOrNull()
+                    val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
+                        Constants.GROUP_PEER_ID
+                    } else {
+                        env.senderId
+                    }
+                    if (optionIdx != null) {
+                        lifecycleScope.launch {
+                            chatRepository.applyRemotePollVote(targetThread, targetMsgId, optionIdx, env.senderId)
+                        }
+                    }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_BUZZ) -> {
+                NudgeManager.triggerAlert(this)
+                showSnackbar(getString(R.string.nudge_received_fmt, env.senderName))
+            }
             else -> {
                 Log.d(TAG, "Unhandled envelope payload: $payload")
             }
@@ -1598,6 +1860,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private fun stopChatServer() {
         ChatServerService.onMessageReceived = null
         ChatServerService.onMeshPeersChanged = null
+        ChatServerService.onPeerHandshakeReady = null
         stopService(Intent(this, ChatServerService::class.java))
     }
 
@@ -1665,6 +1928,57 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 senderName
             }
             showSnackbar("New message from $from")
+        }
+    }
+
+    private fun onIncomingPoll(
+        poll: PollData,
+        senderId: String,
+        senderName: String,
+        recipientId: String,
+        msgId: String? = null,
+        expiresAt: Long? = null
+    ) {
+        val threadPeerId = if (recipientId == Constants.RECIPIENT_BROADCAST) {
+            Constants.GROUP_PEER_ID
+        } else {
+            senderId
+        }
+        val threadPeerName = if (recipientId == Constants.RECIPIENT_BROADCAST) {
+            Constants.GROUP_PEER_NAME
+        } else {
+            senderName
+        }
+        val displaySender = if (recipientId == Constants.RECIPIENT_BROADCAST) senderName else null
+        val isActivelyViewing = (ChatBus.isChatScreenForeground && ChatBus.activeChatPeerId == threadPeerId) ||
+            (threadPeerId == activeThreadPeerId() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+        val canAck = envIsDirectOrKnown(senderId)
+        val message = ChatMessage(
+            text = poll.toJsonString(),
+            isSentByMe = false,
+            status = if (isActivelyViewing && canAck) MessageStatus.READ else MessageStatus.NONE,
+            senderName = displaySender,
+            messageId = msgId,
+            expiresAt = expiresAt,
+            messageType = ChatMessage.TYPE_POLL
+        )
+
+        lifecycleScope.launch {
+            chatRepository.insertMessage(message, threadPeerId, threadPeerName)
+            if (canAck) {
+                val scopeSuffix = if (recipientId == Constants.RECIPIENT_BROADCAST) Constants.GROUP_PEER_ID else ""
+                val idSuffix = msgId?.takeIf { it.isNotBlank() }?.let { "|$it" } ?: ""
+                sendControlMessage(Constants.MSG_TYPE_ACK + scopeSuffix + idSuffix, senderId)
+                if (isActivelyViewing) {
+                    sendControlMessage(Constants.MSG_TYPE_READ + scopeSuffix + idSuffix, senderId)
+                }
+            }
+        }
+
+        ChatBus.notifyMessageSaved(message, threadPeerId)
+
+        if (!isActivelyViewing && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            showSnackbar("New poll from $senderName: ${poll.question}")
         }
     }
 

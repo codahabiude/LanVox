@@ -90,6 +90,11 @@ data class ChatMessage(
     val isCallLog: Boolean
         get() = messageType == TYPE_CALL_LOG
 
+    val isPoll: Boolean
+        get() = messageType == TYPE_POLL
+
+    fun parsedPoll(): PollData? = if (isPoll) PollData.fromJsonString(text) else null
+
     val hasReplyQuote: Boolean
         get() = !replyToText.isNullOrBlank()
 
@@ -106,6 +111,7 @@ data class ChatMessage(
 
     fun quoteSnippet(): String {
         val raw = when {
+            isPoll -> parsedPoll()?.summaryText() ?: "📊 Poll"
             isVoiceNote -> "🎤 Voice note"
             isFileMessage -> "📎 ${attachmentName ?: "Attachment"}"
             else -> text
@@ -168,6 +174,7 @@ data class ChatMessage(
         const val SELF_REACTOR_KEY = "__self__"
         const val TYPE_STANDARD = "STANDARD"
         const val TYPE_CALL_LOG = "CALL_LOG"
+        const val TYPE_POLL = "POLL"
         val QUICK_REACTIONS = listOf("❤️", "😂", "😮", "😢", "🙏", "👍")
 
         fun encodeTtlPayload(ttlSeconds: Long, innerPayload: String): String {

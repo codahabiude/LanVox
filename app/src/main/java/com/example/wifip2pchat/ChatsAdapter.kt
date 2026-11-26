@@ -52,6 +52,8 @@ class ChatsAdapter(
 
     inner class ConversationViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         private val tvAvatar: TextView = itemView.findViewById(R.id.tvAvatar)
+        private val ivConvAvatar: ImageView = itemView.findViewById(R.id.ivConvAvatar)
+        private val viewPresenceDot: View = itemView.findViewById(R.id.viewConvPresenceDot)
         private val tvName: TextView = itemView.findViewById(R.id.tvConvName)
         private val ivTick: ImageView = itemView.findViewById(R.id.ivConvTick)
         private val tvPreview: TextView = itemView.findViewById(R.id.tvConvPreview)
@@ -60,10 +62,27 @@ class ChatsAdapter(
 
         fun bind(conversation: Conversation) {
             val ctx = itemView.context
-            val name = conversation.peerName?.takeIf { it.isNotBlank() }
+            val peer = PeerRegistry.peerForId(conversation.peerId)
+            val name = peer?.name?.takeIf { it.isNotBlank() }
+                ?: conversation.peerName?.takeIf { it.isNotBlank() }
                 ?: conversation.peerId
             tvName.text = name
-            tvAvatar.text = name.trim().take(1).uppercase().ifBlank { "?" }
+
+            AvatarManager.bindAvatar(
+                context = ctx,
+                imageView = ivConvAvatar,
+                initialView = tvAvatar,
+                peerId = conversation.peerId,
+                displayName = name,
+                fallbackSymbol = if (conversation.peerId == Constants.GROUP_PEER_ID) "#" else null
+            )
+
+            if (conversation.peerId == Constants.GROUP_PEER_ID) {
+                viewPresenceDot.visibility = View.GONE
+            } else {
+                viewPresenceDot.visibility = View.VISIBLE
+                AvatarManager.applyPresenceDot(viewPresenceDot, peer?.presenceStatus, isOnline = peer != null)
+            }
 
             val typingLabel = ChatBus.typingLabelForThread(conversation.peerId, typingMap)
             if (typingLabel != null) {
@@ -72,8 +91,16 @@ class ChatsAdapter(
                 tvPreview.setTextColor(ContextCompat.getColor(ctx, R.color.status_online))
                 tvPreview.setTypeface(null, Typeface.ITALIC)
             } else {
+                val rawPreview = if (conversation.messageCount == 0 && !peer?.bio.isNullOrBlank()) {
+                    "${DeviceIdentity.statusDisplayLabel(peer!!.presenceStatus)} · ${peer.bio}"
+                } else if (conversation.lastText.trimStart().startsWith("{")) {
+                    PollData.fromJsonString(conversation.lastText)?.summaryText()
+                        ?: conversation.lastText.replace("\n", " ")
+                } else {
+                    conversation.lastText.replace("\n", " ")
+                }
                 val prefix = if (conversation.lastIsSentByMe) "You: " else ""
-                tvPreview.text = prefix + conversation.lastText.replace("\n", " ")
+                tvPreview.text = prefix + rawPreview
                 val hasUnread = conversation.unreadCount > 0
                 tvPreview.setTextColor(
                     ContextCompat.getColor(

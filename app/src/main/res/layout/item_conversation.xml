@@ -24,7 +24,16 @@
             android:fontFamily="@font/space_grotesk"
             android:background="@drawable/circle_green_avatar" />
 
+        <ImageView
+            android:id="@+id/ivConvAvatar"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:contentDescription="@string/cd_profile_avatar"
+            android:scaleType="centerCrop"
+            android:visibility="gone" />
+
         <View
+            android:id="@+id/viewConvPresenceDot"
             android:layout_width="12dp"
             android:layout_height="12dp"
             android:layout_gravity="bottom|end"

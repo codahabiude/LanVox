@@ -162,6 +162,44 @@ class ChatRepository(private val dao: ChatMessageDao) {
         dao.updateEditedTextByMessageId(threadPeerId, targetMessageId, newText.trim(), editedAt)
     }
 
+    suspend fun voteOnPollLocal(message: ChatMessage, optionIndex: Int): Boolean {
+        val rowId = message.id.removePrefix("room_").toLongOrNull() ?: return false
+        val entity = dao.getById(rowId) ?: return false
+        val updated = PollData.applyVote(
+            rawJson = entity.text,
+            optionIndex = optionIndex,
+            voterId = PeerRegistry.selfId,
+            alsoClearId = ChatMessage.SELF_REACTOR_KEY
+        ) ?: return false
+        return dao.updatePollJsonById(entity.id, updated) > 0
+    }
+
+    suspend fun applyRemotePollVote(
+        threadPeerId: String,
+        targetMessageId: String,
+        optionIndex: Int,
+        voterId: String
+    ) {
+        if (threadPeerId.isBlank() || targetMessageId.isBlank() || voterId.isBlank()) return
+        val entity = dao.getByMessageId(threadPeerId, targetMessageId) ?: return
+        val updated = PollData.applyVote(
+            rawJson = entity.text,
+            optionIndex = optionIndex,
+            voterId = voterId
+        ) ?: return
+        dao.updatePollJsonById(entity.id, updated)
+    }
+
+    suspend fun updatePeerName(peerId: String, newName: String) {
+        if (peerId.isBlank() || newName.isBlank()) return
+        dao.updatePeerNameForPeer(peerId, newName.trim())
+    }
+
+    suspend fun getAttachmentsForPeer(peerId: String?): List<ChatMessage> {
+        if (peerId.isNullOrBlank()) return emptyList()
+        return dao.getAttachmentsForPeer(peerId).map { it.toDomain() }
+    }
+
     suspend fun purgeExpiredMessages(nowMs: Long = System.currentTimeMillis()): Int =
         dao.purgeExpiredMessages(nowMs)
 

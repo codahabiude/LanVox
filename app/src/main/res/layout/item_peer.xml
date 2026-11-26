@@ -26,7 +26,16 @@
             android:background="@drawable/circle_green_avatar"
             android:text="L" />
 
+        <ImageView
+            android:id="@+id/ivPeerAvatar"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:contentDescription="@string/cd_profile_avatar"
+            android:scaleType="centerCrop"
+            android:visibility="gone" />
+
         <View
+            android:id="@+id/viewPeerPresenceDot"
             android:layout_width="12dp"
             android:layout_height="12dp"
             android:layout_gravity="bottom|end"

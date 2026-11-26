@@ -609,6 +609,78 @@ class CallListenerService : Service() {
                     }
                 }
             }
+            payload.startsWith(Constants.MSG_TYPE_AVATAR) -> {
+                if (senderId != "unknown") {
+                    AvatarManager.applyRemoteAvatarPayload(this, senderId, payload)
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_PROFILE) -> {
+                val prof = DeviceIdentity.parseProfilePayload(payload)
+                if (prof != null && senderId != "unknown") {
+                    PeerRegistry.updateProfile(senderId, prof.name, prof.status, prof.bio)
+                    val newName = prof.name
+                    if (!newName.isNullOrBlank()) {
+                        scope.launch {
+                            runCatching { ChatRepository.get(applicationContext).updatePeerName(senderId, newName) }
+                        }
+                    }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_POLL) -> {
+                val poll = PollData.fromWirePayload(payload)
+                if (poll != null) {
+                    onIncomingPoll(poll, senderId, senderName, recipientId, env?.msgId, expiresAt)
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_POLL_VOTE) -> {
+                val parts = payload.removePrefix(Constants.MSG_TYPE_POLL_VOTE).split('|', limit = 3)
+                if (parts.size >= 3) {
+                    val scopeSuffix = parts[0]
+                    val targetMsgId = parts[1].trim()
+                    val optIdx = parts[2].trim().toIntOrNull()
+                    val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
+                        Constants.GROUP_PEER_ID
+                    } else {
+                        senderId
+                    }
+                    if (optIdx != null) {
+                        scope.launch {
+                            runCatching {
+                                ChatRepository.get(applicationContext)
+                                    .applyRemotePollVote(targetThread, targetMsgId, optIdx, senderId)
+                            }
+                        }
+                    }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_BUZZ) -> {
+                NudgeManager.triggerAlert(this)
+                val threadId = if (recipientId == Constants.RECIPIENT_BROADCAST && senderId != "unknown") {
+                    Constants.GROUP_PEER_ID
+                } else {
+                    senderId
+                }
+                val threadName = if (threadId == Constants.GROUP_PEER_ID) Constants.GROUP_PEER_NAME else senderName
+                val openThread = PendingIntent.getActivity(
+                    this, 1006,
+                    Intent(this, ChatActivity::class.java)
+                        .putExtra(ChatActivity.EXTRA_PEER_ID, threadId)
+                        .putExtra(ChatActivity.EXTRA_PEER_NAME, threadName)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val notification = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setContentTitle(senderName)
+                    .setContentText(getString(R.string.nudge_received_fmt, senderName))
+                    .setContentIntent(openThread)
+                    .setAutoCancel(true)
+                    .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                    .build()
+                try {
+                    notificationManager?.notify(NOTIF_MSG_ID_BASE + (threadId.hashCode() and 0x3FF), notification)
+                } catch (_: Exception) {}
+            }
             else -> {
                 if (env == null) {
                     onIncomingText(payload, senderId, senderName, recipientId)
@@ -806,6 +878,67 @@ class CallListenerService : Service() {
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(senderName)
             .setContentText(text)
+            .setContentIntent(openThread)
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .build()
+        try {
+            notificationManager?.notify(NOTIF_MSG_ID_BASE + (threadId.hashCode() and 0x3FF), notification)
+        } catch (_: Exception) {}
+    }
+
+    private fun onIncomingPoll(
+        poll: PollData,
+        senderId: String,
+        senderName: String,
+        recipientId: String,
+        msgId: String? = null,
+        expiresAt: Long? = null
+    ) {
+        val threadId = if (recipientId == Constants.RECIPIENT_BROADCAST && senderId != "unknown") {
+            Constants.GROUP_PEER_ID
+        } else {
+            senderId
+        }
+        val threadName = if (threadId == Constants.GROUP_PEER_ID) Constants.GROUP_PEER_NAME else senderName
+        val displaySender = if (threadId == Constants.GROUP_PEER_ID) senderName else null
+        val scopeSuffix = if (threadId == Constants.GROUP_PEER_ID) Constants.GROUP_PEER_ID else ""
+        val idSuffix = msgId?.takeIf { it.isNotBlank() }?.let { "|$it" } ?: ""
+
+        scope.launch {
+            try {
+                ChatRepository.get(applicationContext).insertMessage(
+                    ChatMessage(
+                        text = poll.toJsonString(),
+                        isSentByMe = false,
+                        senderName = displaySender,
+                        messageId = msgId,
+                        expiresAt = expiresAt,
+                        messageType = ChatMessage.TYPE_POLL
+                    ),
+                    threadId,
+                    threadName
+                )
+                if (senderId != "unknown") {
+                    sendControl(Constants.MSG_TYPE_ACK + scopeSuffix + idSuffix, senderId)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not persist standby poll: ${e.message}")
+            }
+        }
+
+        val openThread = PendingIntent.getActivity(
+            this, 1007,
+            Intent(this, ChatActivity::class.java)
+                .putExtra(ChatActivity.EXTRA_PEER_ID, threadId)
+                .putExtra(ChatActivity.EXTRA_PEER_NAME, threadName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(senderName)
+            .setContentText(poll.summaryText())
             .setContentIntent(openThread)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)

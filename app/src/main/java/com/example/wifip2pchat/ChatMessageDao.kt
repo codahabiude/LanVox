@@ -139,6 +139,15 @@ interface ChatMessageDao {
     @Query("UPDATE messages SET text = :newText, edited_at = :editedAt WHERE peer_id = :peerId AND message_id = :messageId")
     suspend fun updateEditedTextByMessageId(peerId: String, messageId: String, newText: String, editedAt: Long): Int
 
+    @Query("UPDATE messages SET text = :pollJson WHERE _id = :id")
+    suspend fun updatePollJsonById(id: Long, pollJson: String): Int
+
+    @Query("UPDATE messages SET peer_name = :peerName WHERE peer_id = :peerId")
+    suspend fun updatePeerNameForPeer(peerId: String, peerName: String): Int
+
+    @Query("SELECT * FROM messages WHERE peer_id = :peerId AND attachment_name IS NOT NULL AND attachment_name != '' ORDER BY timestamp DESC, _id DESC")
+    suspend fun getAttachmentsForPeer(peerId: String): List<ChatMessageEntity>
+
     @Query("DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at <= :nowMs")
     suspend fun purgeExpiredMessages(nowMs: Long): Int
 

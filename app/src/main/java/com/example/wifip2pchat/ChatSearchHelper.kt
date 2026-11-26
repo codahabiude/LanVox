@@ -68,7 +68,17 @@ object ChatSearchHelper {
             }
 
             val fullHaystack = buildString {
-                append(msg.text)
+                if (msg.isPoll) {
+                    val poll = msg.parsedPoll()
+                    if (poll != null) {
+                        append("poll ").append(poll.question).append(' ')
+                        append(poll.options.joinToString(" "))
+                    } else {
+                        append(msg.text)
+                    }
+                } else {
+                    append(msg.text)
+                }
                 if (!msg.attachmentName.isNullOrBlank()) {
                     append(' ').append(msg.attachmentName)
                 }

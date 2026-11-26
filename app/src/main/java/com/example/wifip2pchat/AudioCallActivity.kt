@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.WindowManager
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -17,6 +18,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +43,7 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
     }
 
     private lateinit var ivAvatar: TextView
+    private lateinit var ivAudioCallPhoto: ImageView
     private lateinit var tvCallerName: TextView
     private lateinit var tvCallStatus: TextView
     private lateinit var tvCallDuration: TextView
@@ -133,6 +138,7 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
 
     private fun initViews() {
         ivAvatar = findViewById(R.id.ivAvatar)
+        ivAudioCallPhoto = findViewById(R.id.ivAudioCallPhoto)
         tvCallerName = findViewById(R.id.tvCallerName)
         tvCallStatus = findViewById(R.id.tvCallStatus)
         tvCallDuration = findViewById(R.id.tvCallDuration)
@@ -146,7 +152,14 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         btnSpeaker = findViewById(R.id.btnSpeaker)
 
         tvCallerName.text = peerName
-        ivAvatar.text = peerName.trim().take(1).uppercase(Locale.getDefault()).ifBlank { "L" }
+        AvatarManager.bindAvatar(this, ivAudioCallPhoto, ivAvatar, peerId, peerName)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                AvatarManager.avatarVersion.collect {
+                    AvatarManager.bindAvatar(this@AudioCallActivity, ivAudioCallPhoto, ivAvatar, peerId, peerName)
+                }
+            }
+        }
         updateDurationUi()
         updateSpeakerUi()
         updateMuteUi()

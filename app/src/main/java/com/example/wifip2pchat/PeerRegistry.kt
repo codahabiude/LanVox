@@ -21,7 +21,9 @@ object PeerRegistry {
         val name: String,
         val isGroupOwner: Boolean,
         val ipAddress: String? = null,
-        val transport: String = "p2p"
+        val transport: String = "p2p",
+        val presenceStatus: String = DeviceIdentity.STATUS_AVAILABLE,
+        val bio: String? = null
     )
 
     private val peers = LinkedHashMap<String, Peer>()
@@ -62,6 +64,12 @@ object PeerRegistry {
         else peers[id]?.name
     }
 
+    /** Look up a peer entry by id. */
+    fun peerForId(id: String?): Peer? {
+        if (id.isNullOrBlank()) return null
+        return synchronized(peers) { peers[id] }
+    }
+
     /** Look up a peer's direct IP address by id. */
     fun ipFor(id: String?): String? {
         if (id.isNullOrBlank()) return null
@@ -78,7 +86,7 @@ object PeerRegistry {
         }
     }
 
-    /** Merge/replace peers received from a PEERS: payload (preserving any known direct IPs). */
+    /** Merge/replace peers received from a PEERS: payload (preserving any known direct IPs & profiles). */
     fun mergeFromPeersPayload(list: List<Peer>) {
         synchronized(peers) {
             list.forEach { p ->
@@ -86,7 +94,14 @@ object PeerRegistry {
                     val existing = peers[p.id]
                     val mergedIp = p.ipAddress?.takeIf { it.isNotBlank() } ?: existing?.ipAddress
                     val mergedTransport = existing?.transport ?: p.transport
-                    peers[p.id] = p.copy(ipAddress = mergedIp, transport = mergedTransport)
+                    val mergedStatus = existing?.presenceStatus ?: p.presenceStatus
+                    val mergedBio = existing?.bio ?: p.bio
+                    peers[p.id] = p.copy(
+                        ipAddress = mergedIp,
+                        transport = mergedTransport,
+                        presenceStatus = mergedStatus,
+                        bio = mergedBio
+                    )
                 }
             }
         }
@@ -97,16 +112,27 @@ object PeerRegistry {
     /** Replace the entire peer list (used when syncing full membership). */
     fun replaceAll(list: List<Peer>) {
         synchronized(peers) {
+            val prev = peers.toMap()
             peers.clear()
             list.forEach { p ->
-                if (p.id != selfId) peers[p.id] = p
+                if (p.id != selfId) {
+                    val existing = prev[p.id]
+                    peers[p.id] = if (existing != null) {
+                        p.copy(
+                            presenceStatus = existing.presenceStatus,
+                            bio = existing.bio
+                        )
+                    } else {
+                        p
+                    }
+                }
             }
         }
         Log.d(TAG, "Peer list replaced: ${list.size} peers")
         notifyChanged()
     }
 
-    /** Add or update a single peer while preserving non-null IP info. */
+    /** Add or update a single peer while preserving non-null IP and profile info. */
     fun upsert(peer: Peer) {
         if (peer.id == selfId) return
         synchronized(peers) {
@@ -114,11 +140,36 @@ object PeerRegistry {
             val merged = peer.copy(
                 name = peer.name.ifBlank { existing?.name ?: peer.id },
                 ipAddress = peer.ipAddress?.takeIf { it.isNotBlank() } ?: existing?.ipAddress,
-                isGroupOwner = peer.isGroupOwner || (existing?.isGroupOwner == true)
+                isGroupOwner = peer.isGroupOwner || (existing?.isGroupOwner == true),
+                presenceStatus = existing?.presenceStatus ?: peer.presenceStatus,
+                bio = existing?.bio ?: peer.bio
             )
             peers[peer.id] = merged
         }
         Log.d(TAG, "Peer upserted: ${peer.id} (${peer.name}, ip=${peer.ipAddress})")
+        notifyChanged()
+    }
+
+    fun updateProfile(peerId: String, name: String?, presenceStatus: String, bio: String?) {
+        if (peerId.isBlank() || peerId == selfId) return
+        synchronized(peers) {
+            val existing = peers[peerId]
+            if (existing != null) {
+                peers[peerId] = existing.copy(
+                    name = name?.takeIf { it.isNotBlank() } ?: existing.name,
+                    presenceStatus = presenceStatus,
+                    bio = bio
+                )
+            } else {
+                peers[peerId] = Peer(
+                    id = peerId,
+                    name = name?.takeIf { it.isNotBlank() } ?: peerId,
+                    isGroupOwner = false,
+                    presenceStatus = presenceStatus,
+                    bio = bio
+                )
+            }
+        }
         notifyChanged()
     }
 

@@ -53,6 +53,15 @@
                 android:fontFamily="@font/space_grotesk"
                 android:background="@drawable/circle_green_avatar"
                 android:text="L" />
+
+            <ImageView
+                android:id="@+id/ivIncomingPhoto"
+                android:layout_width="116dp"
+                android:layout_height="116dp"
+                android:layout_gravity="center"
+                android:contentDescription="@string/cd_profile_avatar"
+                android:scaleType="centerCrop"
+                android:visibility="gone" />
         </FrameLayout>
 
         <TextView

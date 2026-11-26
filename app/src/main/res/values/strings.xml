@@ -141,4 +141,59 @@
     <string name="diag_ping_mesh">Ping Peers</string>
     <string name="diag_no_peers">No active mesh peers connected yet. Start a scan or join the same Wi-Fi/hotspot to measure live RTT.</string>
     <string name="call_log_callback">Call back</string>
+
+    <!-- Profile, Avatars, Polls, Quick Replies, Nudge & Shared Media Gallery -->
+    <string name="action_my_profile">My Profile &amp; Photo</string>
+    <string name="action_my_profile_sub">Edit display name, profile photo &amp; status bio</string>
+    <string name="action_media_gallery">Shared Media &amp; Files</string>
+    <string name="action_media_gallery_sub">Browse photos, voice notes &amp; files in this chat</string>
+    <string name="action_create_poll">Create Poll</string>
+    <string name="action_create_poll_sub">Ask a question with live multi-peer voting</string>
+    <string name="profile_sheet_title">My Profile</string>
+    <string name="profile_sheet_subtitle">Synced automatically with connected LanVox peers</string>
+    <string name="cd_profile_avatar">Profile picture</string>
+    <string name="profile_choose_photo">Choose Photo</string>
+    <string name="profile_remove_photo">Remove Photo</string>
+    <string name="profile_label_name">DISPLAY NAME</string>
+    <string name="profile_label_status">PRESENCE STATUS</string>
+    <string name="profile_label_bio">STATUS BIO</string>
+    <string name="profile_bio_hint">What are you up to? (optional)</string>
+    <string name="profile_save_sync">Save &amp; Sync Profile</string>
+    <string name="status_preset_available">Available</string>
+    <string name="status_preset_busy">Busy</string>
+    <string name="status_preset_away">Away</string>
+    <string name="profile_updated_msg">Profile updated &amp; synced</string>
+    <string name="profile_photo_updated_msg">Profile photo updated</string>
+    <string name="profile_photo_removed_msg">Profile photo removed</string>
+
+    <string name="gallery_title">Shared Media &amp; Files</string>
+    <string name="gallery_filter_all">All</string>
+    <string name="gallery_filter_images">Images</string>
+    <string name="gallery_filter_voice">Voice</string>
+    <string name="gallery_filter_docs">Docs</string>
+    <string name="gallery_action_open">Open</string>
+    <string name="gallery_action_play">Play</string>
+    <string name="gallery_empty">No shared media, voice notes, or files in this thread yet.</string>
+    <string name="cd_media_gallery">Shared media and files</string>
+
+    <string name="poll_dialog_title">Create Live Poll</string>
+    <string name="poll_label_question">QUESTION</string>
+    <string name="poll_label_options">OPTIONS (2–4)</string>
+    <string name="poll_hint_question">Ask something (e.g. Where should we meet?)</string>
+    <string name="poll_hint_opt1">Option 1</string>
+    <string name="poll_hint_opt2">Option 2</string>
+    <string name="poll_hint_opt3">Option 3 (optional)</string>
+    <string name="poll_hint_opt4">Option 4 (optional)</string>
+    <string name="poll_send_btn">Send Poll</string>
+    <string name="poll_validation_error">Enter a question and at least 2 options</string>
+    <string name="cd_create_poll">Create poll</string>
+
+    <string name="cd_quick_replies">Toggle quick-reply templates</string>
+    <string name="quick_reply_add">+ Add</string>
+    <string name="quick_reply_add_title">Add Quick-Reply Template</string>
+    <string name="quick_reply_add_hint">e.g. Be there in 5 minutes</string>
+
+    <string name="cd_nudge_peer">Nudge peer</string>
+    <string name="nudge_sent_fmt">Nudged %1$s</string>
+    <string name="nudge_received_fmt">⚡ %1$s nudged you!</string>
 </resources>
