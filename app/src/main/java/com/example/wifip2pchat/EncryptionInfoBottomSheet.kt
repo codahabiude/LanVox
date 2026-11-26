@@ -87,7 +87,9 @@ object EncryptionInfoBottomSheet {
                         val row = TextView(context).apply {
                             val verified = CryptoManager.isPeerVerified(context, pid)
                             val changed = CryptoManager.hasPeerKeyChanged(context, pid)
+                            val blocked = CryptoManager.isPeerKeyBlocked(context, pid)
                             val badge = when {
+                                blocked -> "⚠ Key changed (blocked)"
                                 changed -> "⚠ Key changed"
                                 verified -> "✓ Verified"
                                 else -> "Inspect key"
@@ -97,7 +99,7 @@ object EncryptionInfoBottomSheet {
                                 ContextCompat.getColor(
                                     context,
                                     when {
-                                        changed -> R.color.status_discovering
+                                        blocked || changed -> R.color.status_discovering
                                         verified -> R.color.status_online
                                         else -> R.color.brand_secondary
                                     }
@@ -145,6 +147,7 @@ object EncryptionInfoBottomSheet {
 
             val isVerified = CryptoManager.isPeerVerified(context, targetId)
             val keyChanged = CryptoManager.hasPeerKeyChanged(context, targetId)
+            val isBlocked = CryptoManager.isPeerKeyBlocked(context, targetId)
 
             tvStatusPill.visibility = View.VISIBLE
             when {
@@ -172,13 +175,22 @@ object EncryptionInfoBottomSheet {
             llVerifyActions.visibility = View.VISIBLE
 
             btnVerifyToggle.setText(
-                if (isVerified) R.string.enc_btn_unverify else R.string.enc_btn_mark_verified
+                when {
+                    isBlocked -> R.string.enc_btn_accept_key
+                    isVerified -> R.string.enc_btn_unverify
+                    else -> R.string.enc_btn_mark_verified
+                }
             )
             btnVerifyToggle.setOnClickListener {
-                val next = !CryptoManager.isPeerVerified(context, targetId)
-                CryptoManager.setPeerVerified(context, targetId, next)
-                if (!next) {
-                    CryptoManager.acknowledgeKeyChange(context, targetId)
+                if (isBlocked) {
+                    CryptoManager.acceptPendingKey(context, targetId)
+                    Toast.makeText(context, "New key accepted. Please verify Safety Number.", Toast.LENGTH_SHORT).show()
+                } else {
+                    val next = !CryptoManager.isPeerVerified(context, targetId)
+                    CryptoManager.setPeerVerified(context, targetId, next)
+                    if (!next) {
+                        CryptoManager.acknowledgeKeyChange(context, targetId)
+                    }
                 }
                 renderPeerState()
             }

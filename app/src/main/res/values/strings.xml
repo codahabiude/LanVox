@@ -219,6 +219,7 @@
     <string name="enc_status_key_changed">Key Changed</string>
     <string name="enc_key_changed_warning">Warning: %1$s presented a new identity key (device reinstall or key rotation). Re-verify their Safety Number before marking trusted.</string>
     <string name="enc_btn_mark_verified">Mark Verified</string>
+    <string name="enc_btn_accept_key">Accept New Key</string>
     <string name="enc_btn_unverify">Remove Verification</string>
     <string name="enc_btn_copy">Copy</string>
     <string name="enc_copied_msg">Safety number copied</string>
