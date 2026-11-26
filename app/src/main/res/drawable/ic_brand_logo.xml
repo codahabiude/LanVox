@@ -2,10 +2,14 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="48dp" android:height="48dp"
     android:viewportWidth="48" android:viewportHeight="48">
-    <path android:pathData="M6,28 A18,18 0 0 1 28,6" android:strokeColor="@color/brand_secondary" android:strokeWidth="3.2" android:strokeLineCap="round"/>
-    <path android:pathData="M11,28 A13,13 0 0 1 28,11" android:strokeColor="@color/brand_secondary" android:strokeWidth="3.2" android:strokeLineCap="round"/>
-    <path android:pathData="M16,28 A8,8 0 0 1 28,16" android:strokeColor="@color/brand_secondary" android:strokeWidth="3.2" android:strokeLineCap="round"/>
-    <path android:pathData="M22,16 L22,40" android:strokeColor="@color/brand_secondary" android:strokeWidth="3.6" android:strokeLineCap="round"/>
-    <path android:pathData="M22,40 L36,40" android:strokeColor="@color/brand_secondary" android:strokeWidth="3.6" android:strokeLineCap="round"/>
-    <path android:pathData="M28,28 m-1.6,0 a1.6,1.6 0 1 0 3.2,0 a1.6,1.6 0 1 0 -3.2,0" android:fillColor="@color/brand_secondary"/>
+    <group
+        android:translateX="2.9"
+        android:translateY="1.2">
+        <path android:pathData="M6,28 A18,18 0 0 1 28,6" android:strokeColor="@color/brand_secondary" android:strokeWidth="3.2" android:strokeLineCap="round"/>
+        <path android:pathData="M11,28 A13,13 0 0 1 28,11" android:strokeColor="@color/brand_secondary" android:strokeWidth="3.2" android:strokeLineCap="round"/>
+        <path android:pathData="M16,28 A8,8 0 0 1 28,16" android:strokeColor="@color/brand_secondary" android:strokeWidth="3.2" android:strokeLineCap="round"/>
+        <path android:pathData="M22,16 L22,40" android:strokeColor="@color/brand_secondary" android:strokeWidth="3.6" android:strokeLineCap="round"/>
+        <path android:pathData="M22,40 L36,40" android:strokeColor="@color/brand_secondary" android:strokeWidth="3.6" android:strokeLineCap="round"/>
+        <path android:pathData="M28,28 m-1.6,0 a1.6,1.6 0 1 0 3.2,0 a1.6,1.6 0 1 0 -3.2,0" android:fillColor="@color/brand_secondary"/>
+    </group>
 </vector>
