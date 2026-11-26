@@ -1,6 +1,7 @@
 package com.example.wifip2pchat
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.drawable.GradientDrawable
