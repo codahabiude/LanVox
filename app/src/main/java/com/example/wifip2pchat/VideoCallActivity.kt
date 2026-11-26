@@ -255,6 +255,7 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         val videoIntent = Intent(this, VideoCallService::class.java).apply {
             putExtra(VideoCallService.EXTRA_IS_GROUP_OWNER, isGroupOwner)
             putExtra(VideoCallService.EXTRA_HOST_ADDRESS, hostAddress)
+            putExtra(VideoCallService.EXTRA_PEER_ID, peerId)
         }
         ContextCompat.startForegroundService(this, videoIntent)
 

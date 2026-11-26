@@ -69,10 +69,10 @@ object DeviceIdentity {
     const val STATUS_AWAY = "AWAY"
 
     fun getCustomName(context: Context): String? {
-        val raw = context.applicationContext
+        val stored = context.applicationContext
             .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_CUSTOM_NAME, null)
-            ?.trim()
+        val raw = CryptoManager.decryptLocalString(context, stored)?.trim()
         return raw?.takeIf { it.isNotBlank() }
     }
 
@@ -84,7 +84,7 @@ object DeviceIdentity {
         if (clean.isNullOrBlank()) {
             editor.remove(KEY_CUSTOM_NAME)
         } else {
-            editor.putString(KEY_CUSTOM_NAME, clean)
+            editor.putString(KEY_CUSTOM_NAME, CryptoManager.encryptLocalString(context, clean))
         }
         editor.apply()
     }
@@ -113,9 +113,10 @@ object DeviceIdentity {
     }
 
     fun getCustomBio(context: Context): String? {
-        val raw = context.applicationContext
+        val stored = context.applicationContext
             .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_CUSTOM_BIO, null)
+        val raw = CryptoManager.decryptLocalString(context, stored)
             ?.replace('\r', ' ')
             ?.replace('\n', ' ')
             ?.trim()
@@ -130,7 +131,7 @@ object DeviceIdentity {
         if (clean.isNullOrBlank()) {
             editor.remove(KEY_CUSTOM_BIO)
         } else {
-            editor.putString(KEY_CUSTOM_BIO, clean)
+            editor.putString(KEY_CUSTOM_BIO, CryptoManager.encryptLocalString(context, clean))
         }
         editor.apply()
     }

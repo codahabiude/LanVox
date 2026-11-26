@@ -70,7 +70,7 @@ object MediaGalleryBottomSheet {
         val adapter = GalleryAdapter(
             onClick = { msg ->
                 if (msg.isVoiceNote && !msg.attachmentPath.isNullOrBlank()) {
-                    VoiceNoteManager.togglePlayback(msg.attachmentPath)
+                    VoiceNoteManager.togglePlayback(context, msg.attachmentPath, msg.transferId)
                 } else {
                     val err = FileTransferManager.openAttachment(context, msg)
                     if (err != null) {
@@ -183,9 +183,15 @@ object MediaGalleryBottomSheet {
                 val path = msg.attachmentPath
                 val isImg = mime.startsWith("image/") && !path.isNullOrBlank() && File(path).exists()
                 if (isImg && path != null) {
+                    val file = File(path)
                     val bmp = runCatching {
                         val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
-                        BitmapFactory.decodeFile(path, opts)
+                        if (CryptoManager.isEncryptedAttachmentFile(file)) {
+                            val bytes = CryptoManager.decryptAttachmentToBytes(ctx, msg.transferId, file)
+                            if (bytes != null) BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) else null
+                        } else {
+                            BitmapFactory.decodeFile(path, opts)
+                        }
                     }.getOrNull()
                     if (bmp != null) {
                         ivThumb.setPadding(0, 0, 0, 0)

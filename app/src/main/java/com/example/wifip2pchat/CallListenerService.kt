@@ -90,6 +90,8 @@ class CallListenerService : Service() {
         private var pendingCallType: String? = null
         @Volatile
         private var pendingCallerIp: String? = null
+        @Volatile
+        private var pendingCallerId: String? = null
 
         /**
          * Called by MainActivity the moment the connection hub opens so the
@@ -111,23 +113,52 @@ class CallListenerService : Service() {
         fun hasPendingCall(): Boolean = pendingCallType != null
 
         /**
-         * Send a control line (CALL_ACCEPT / CALL_REJECT / …) back to the
+         * Send an E2EE control line (CALL_ACCEPT / CALL_REJECT / ACK / …) back to the
          * peer over the standby channel. Used by IncomingCallActivity when
          * the main app is not alive.
          */
         fun sendControl(text: String, recipientId: String? = null): Boolean {
             val inst = serviceInstance ?: return false
-            val target = recipientId ?: LastSession.peerMac(inst) ?: Constants.RECIPIENT_BROADCAST
-            val line = if (PeerRegistry.selfId != "UNKNOWN" && !text.startsWith(Constants.ENVELOPE_PREFIX + Constants.ENVELOPE_DELIM)) {
-                Envelope.build(
-                    senderId = PeerRegistry.selfId,
-                    senderName = PeerRegistry.selfName,
-                    recipientId = target,
-                    payload = text
-                )
-            } else {
-                text
+            CryptoManager.ensureInitialized(inst.applicationContext)
+            if (PeerRegistry.selfId == "UNKNOWN") {
+                PeerRegistry.selfId = DeviceIdentity.getId(inst.applicationContext)
             }
+            if (PeerRegistry.selfName == "This device" || PeerRegistry.selfName.isBlank()) {
+                PeerRegistry.selfName = DeviceIdentity.defaultDeviceName(inst.applicationContext)
+            }
+            val target = recipientId ?: LastSession.peerMac(inst) ?: Constants.RECIPIENT_BROADCAST
+            if (text.startsWith(Constants.ENVELOPE_PREFIX + Constants.ENVELOPE_DELIM)) {
+                return inst.writeLine(text)
+            }
+            val wirePayload = if (text.startsWith(Constants.MSG_TYPE_KEYX) ||
+                CryptoManager.isHelloPayload(text) ||
+                text.startsWith(Constants.MSG_TYPE_E2E_DIRECT) ||
+                text.startsWith(Constants.MSG_TYPE_E2E_MULTI)
+            ) {
+                text
+            } else if (target == Constants.RECIPIENT_BROADCAST) {
+                val known = (PeerRegistry.snapshot().map { it.id } + CryptoManager.getAllKnownPeerIds(inst.applicationContext))
+                    .distinct()
+                    .filter { it != PeerRegistry.selfId && CryptoManager.hasPeerKey(inst.applicationContext, it) }
+                if (known.isEmpty()) {
+                    Log.w(TAG, "Standby sendControl broadcast skipped: no known peer keys")
+                    return false
+                }
+                CryptoManager.encryptForBroadcast(inst.applicationContext, PeerRegistry.selfId, known, text)
+                    ?: return false
+            } else {
+                CryptoManager.encryptForPeer(inst.applicationContext, target, PeerRegistry.selfId, target, text)
+                    ?: run {
+                        Log.w(TAG, "Standby sendControl($target) skipped: missing peer key")
+                        return false
+                    }
+            }
+            val line = Envelope.build(
+                senderId = PeerRegistry.selfId,
+                senderName = PeerRegistry.selfName,
+                recipientId = target,
+                payload = wirePayload
+            )
             return inst.writeLine(line)
         }
 
@@ -158,6 +189,7 @@ class CallListenerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        CryptoManager.ensureInitialized(applicationContext)
         serviceInstance = this
         notificationManager = getSystemService(NotificationManager::class.java)
         createNotificationChannels()
@@ -176,7 +208,11 @@ class CallListenerService : Service() {
             }
             ACTION_DECLINE_CALL -> {
                 Log.d(TAG, "Call declined from the notification")
-                writeLine(Constants.MSG_TYPE_CALL_REJECT + (pendingCallType ?: Constants.CALL_TYPE_AUDIO))
+                val targetId = pendingCallerId
+                val type = pendingCallType ?: Constants.CALL_TYPE_AUDIO
+                scope.launch {
+                    sendControl(Constants.MSG_TYPE_CALL_REJECT + type, targetId)
+                }
                 endIncomingCallLocally()
             }
         }
@@ -346,6 +382,26 @@ class CallListenerService : Service() {
         } catch (e: Exception) {
             null
         }
+        sendStandbyHello(sock)
+    }
+
+    private fun sendStandbyHello(sock: Socket) {
+        CryptoManager.ensureInitialized(applicationContext)
+        if (PeerRegistry.selfId == "UNKNOWN") {
+            PeerRegistry.selfId = DeviceIdentity.getId(applicationContext)
+        }
+        if (PeerRegistry.selfName == "This device" || PeerRegistry.selfName.isBlank()) {
+            PeerRegistry.selfName = DeviceIdentity.defaultDeviceName(applicationContext)
+        }
+        val localIp = sock.localAddress?.hostAddress ?: DeviceIdentity.resolveLocalIp()
+        val pubB64 = CryptoManager.getSelfPublicKeyB64(applicationContext)
+        val line = Envelope.build(
+            senderId = PeerRegistry.selfId,
+            senderName = PeerRegistry.selfName,
+            recipientId = LastSession.peerMac(applicationContext) ?: "GO",
+            payload = CryptoManager.buildHelloPayload(localIp, pubB64)
+        )
+        writeLine(line)
     }
 
     private suspend fun readFrom(sock: Socket) {
@@ -395,31 +451,77 @@ class CallListenerService : Service() {
         // Give the live app the first chance to consume the line
         if (MainActivity.handleStandbyLine(line)) return
 
-        val env = Envelope.parse(line)
-        val rawPayload = env?.payload ?: line
-        val (ttlSeconds, payload) = ChatMessage.decodeTtlPayload(rawPayload)
-        val expiresAt = ttlSeconds?.let { System.currentTimeMillis() + it * 1000L }
-        val senderId = env?.senderId?.takeIf { it.isNotBlank() && it != "legacy" }
+        val env = Envelope.parse(line) ?: run {
+            Log.w(TAG, "Standby dropped unencrypted bare line")
+            return
+        }
+        val senderId = env.senderId.takeIf { it.isNotBlank() && it != "legacy" }
             ?: LastSession.peerMac(this)?.takeIf { it.isNotBlank() }
             ?: "unknown"
-        val senderName = env?.senderName?.takeIf { it.isNotBlank() && it != "Unknown" }
+        val senderName = env.senderName.takeIf { it.isNotBlank() && it != "Unknown" }
             ?: LastSession.peerName(this)?.takeIf { it.isNotBlank() }
             ?: "LanVox contact"
-        val recipientId = env?.recipientId ?: Constants.RECIPIENT_BROADCAST
+        val recipientId = env.recipientId
+
+        if (CryptoManager.isHelloPayload(env.payload)) {
+            val (ip, pubB64) = CryptoManager.parseHelloPayload(env.payload)
+            if (!pubB64.isNullOrBlank() && senderId != "unknown") {
+                CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64)
+            }
+            PeerRegistry.upsert(
+                PeerRegistry.Peer(
+                    id = senderId,
+                    name = senderName,
+                    isGroupOwner = false,
+                    ipAddress = ip,
+                    publicKeyB64 = pubB64
+                )
+            )
+            return
+        }
+
+        if (env.payload.startsWith(Constants.MSG_TYPE_KEYX)) {
+            val pubB64 = env.payload.removePrefix(Constants.MSG_TYPE_KEYX).trim()
+            if (pubB64.isNotBlank() && senderId != "unknown") {
+                CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64)
+                PeerRegistry.updatePublicKey(senderId, pubB64)
+            }
+            return
+        }
+
+        if (env.payload == Constants.PAYLOAD_BYE) return
+
+        if (env.payload.startsWith(Constants.PAYLOAD_PEERS)) {
+            val list = PeerRegistry.parsePeersPayload(env.payload, env.senderId, env.senderName)
+            list.forEach { p ->
+                if (!p.publicKeyB64.isNullOrBlank()) {
+                    CryptoManager.registerPeerPublicKey(applicationContext, p.id, p.publicKeyB64)
+                }
+            }
+            PeerRegistry.replaceAll(list)
+            return
+        }
+
+        val selfId = if (PeerRegistry.selfId == "UNKNOWN") {
+            DeviceIdentity.getId(applicationContext).also { PeerRegistry.selfId = it }
+        } else {
+            PeerRegistry.selfId
+        }
+        val decryptedPayload = when {
+            env.payload.startsWith(Constants.MSG_TYPE_E2E_DIRECT) ->
+                CryptoManager.decryptFromPeer(applicationContext, senderId, env.senderId, env.recipientId, env.payload)
+            env.payload.startsWith(Constants.MSG_TYPE_E2E_MULTI) ->
+                CryptoManager.decryptBroadcast(applicationContext, senderId, selfId, env.payload)
+            else -> null
+        } ?: run {
+            Log.w(TAG, "Standby dropped unreadable/unencrypted payload from $senderId")
+            return
+        }
+
+        val (ttlSeconds, payload) = ChatMessage.decodeTtlPayload(decryptedPayload)
+        val expiresAt = ttlSeconds?.let { System.currentTimeMillis() + it * 1000L }
 
         when {
-            payload == Constants.PAYLOAD_HELLO || payload == Constants.PAYLOAD_BYE -> {
-                if (payload == Constants.PAYLOAD_HELLO && env != null) {
-                    PeerRegistry.upsert(PeerRegistry.Peer(senderId, senderName, isGroupOwner = false))
-                }
-            }
-            payload.startsWith(Constants.PAYLOAD_PEERS) -> {
-                if (env != null) {
-                    PeerRegistry.replaceAll(
-                        PeerRegistry.parsePeersPayload(payload, env.senderId, env.senderName)
-                    )
-                }
-            }
             payload.startsWith(Constants.MSG_TYPE_CALL_REQUEST) -> {
                 val rawReq = payload.removePrefix(Constants.MSG_TYPE_CALL_REQUEST)
                 val callType = rawReq.substringBefore('|')
@@ -682,11 +784,7 @@ class CallListenerService : Service() {
                 } catch (_: Exception) {}
             }
             else -> {
-                if (env == null) {
-                    onIncomingText(payload, senderId, senderName, recipientId)
-                } else {
-                    Log.d(TAG, "Unhandled standby payload: $payload")
-                }
+                Log.d(TAG, "Unhandled standby payload: $payload")
             }
         }
     }
@@ -705,6 +803,7 @@ class CallListenerService : Service() {
         }
         pendingCallType = callType
         pendingCallerIp = callerIp
+        pendingCallerId = peerId
         val connectHost = callerIp
             ?: PeerRegistry.ipFor(peerId)
             ?: LastSession.groupOwnerAddress(this@CallListenerService)
@@ -766,7 +865,7 @@ class CallListenerService : Service() {
             if (pendingCallType != null) {
                 Log.d(TAG, "Call missed — nobody answered")
                 val actualType = pendingCallType ?: callType
-                writeLine(Constants.MSG_TYPE_CALL_REJECT + actualType)
+                sendControl(Constants.MSG_TYPE_CALL_REJECT + actualType, peerId)
                 val logTitle = if (actualType == Constants.CALL_TYPE_VIDEO) "Missed video call" else "Missed audio call"
                 runCatching {
                     ChatRepository.get(applicationContext).insertCallLog(
@@ -806,6 +905,7 @@ class CallListenerService : Service() {
     /** Stop every ringing artifact (called on accept/decline/timeout/cancel). */
     private fun endIncomingCallLocally() {
         pendingCallType = null
+        pendingCallerId = null
         ringTimeoutJob?.cancel()
         ringTimeoutJob = null
         CallRingtoneManager.stopRinging()

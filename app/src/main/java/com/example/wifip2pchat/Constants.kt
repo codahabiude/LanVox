@@ -80,6 +80,10 @@ object Constants {
     const val MSG_TYPE_CALL_ACCEPT = "CALL_ACCEPT:"
     const val MSG_TYPE_CALL_REJECT = "CALL_REJECT:"
     const val MSG_TYPE_CALL_END = "CALL_END:"
+    const val MSG_TYPE_KEYX = "KEYX:"
+    const val MSG_TYPE_E2E_DIRECT = "E2E1:"
+    const val MSG_TYPE_E2E_MULTI = "E2EM:"
+    const val MSG_TYPE_E2E_SIG = "E2ES:"
 
     // ====================================================================
     // Multi-peer envelope protocol (v5.0+)

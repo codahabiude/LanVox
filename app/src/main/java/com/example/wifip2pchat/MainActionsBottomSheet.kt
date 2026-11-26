@@ -29,6 +29,7 @@ object MainActionsBottomSheet {
         onOpenProfile: (() -> Unit)? = null,
         onCreatePoll: (() -> Unit)? = null,
         onOpenMediaGallery: (() -> Unit)? = null,
+        onOpenEncryption: (() -> Unit)? = null,
         onDisconnect: (() -> Unit)? = null,
         onClearAllHistory: () -> Unit
     ) {
@@ -104,6 +105,19 @@ object MainActionsBottomSheet {
             }
         } else {
             rowGallery.visibility = View.GONE
+        }
+
+        val rowEncryption = view.findViewById<View>(R.id.rowActionEncryption)
+        if (onOpenEncryption != null) {
+            rowEncryption.visibility = View.VISIBLE
+            view.findViewById<TextView>(R.id.tvActionEncryptionSub).text =
+                "Fingerprint ${CryptoManager.getSelfFingerprintShort(context)}"
+            rowEncryption.setOnClickListener {
+                dialog.dismiss()
+                onOpenEncryption()
+            }
+        } else {
+            rowEncryption.visibility = View.GONE
         }
 
         val rowExport = view.findViewById<View>(R.id.rowActionExport)

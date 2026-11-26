@@ -58,7 +58,7 @@ object AvatarManager {
         } ?: return false
 
         val outFile = fileForKey(appCtx, SELF_KEY)
-        outFile.writeBytes(bytes)
+        outFile.writeBytes(CryptoManager.encryptLocalBytes(appCtx, bytes))
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { bmp ->
             cache.put(SELF_KEY, bmp)
         }
@@ -74,9 +74,11 @@ object AvatarManager {
     }
 
     fun getSelfAvatarBase64(context: Context): String? {
-        val file = fileForKey(context.applicationContext, SELF_KEY)
+        val appCtx = context.applicationContext
+        val file = fileForKey(appCtx, SELF_KEY)
         if (!file.exists()) return null
-        val bytes = runCatching { file.readBytes() }.getOrNull() ?: return null
+        val stored = runCatching { file.readBytes() }.getOrNull() ?: return null
+        val bytes = CryptoManager.decryptLocalBytes(appCtx, stored) ?: return null
         if (bytes.isEmpty() || bytes.size > MAX_AVATAR_BYTES) return null
         return Base64.encodeToString(bytes, Base64.NO_WRAP)
     }
@@ -99,7 +101,7 @@ object AvatarManager {
         val bytes = runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull() ?: return false
         if (bytes.isEmpty() || bytes.size > MAX_AVATAR_BYTES) return false
         val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return false
-        fileForKey(appCtx, peerId).writeBytes(bytes)
+        fileForKey(appCtx, peerId).writeBytes(CryptoManager.encryptLocalBytes(appCtx, bytes))
         cache.put(peerId, bmp)
         bumpVersion()
         return true
@@ -109,9 +111,12 @@ object AvatarManager {
         if (peerId.isNullOrBlank() || peerId == Constants.GROUP_PEER_ID) return null
         val key = if (peerId == PeerRegistry.selfId) SELF_KEY else peerId
         cache.get(key)?.let { return it }
-        val file = fileForKey(context.applicationContext, key)
+        val appCtx = context.applicationContext
+        val file = fileForKey(appCtx, key)
         if (!file.exists()) return null
-        val bmp = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull() ?: return null
+        val stored = runCatching { file.readBytes() }.getOrNull() ?: return null
+        val plain = CryptoManager.decryptLocalBytes(appCtx, stored) ?: return null
+        val bmp = runCatching { BitmapFactory.decodeByteArray(plain, 0, plain.size) }.getOrNull() ?: return null
         cache.put(key, bmp)
         return bmp
     }

@@ -17,7 +17,8 @@ data class Envelope(
     val senderName: String,
     val recipientId: String,   // "*" for broadcast
     val payload: String,       // e.g. "TEXT:hello" or "HELLO" or "PEERS:..."
-    val msgId: String? = null  // present on mesh packets to prevent duplicate delivery
+    val msgId: String? = null, // present on mesh packets to prevent duplicate delivery
+    val isEncrypted: Boolean = false
 ) {
     /** True if this envelope is addressed to [peerId] OR is a broadcast. */
     fun isFor(peerId: String): Boolean =

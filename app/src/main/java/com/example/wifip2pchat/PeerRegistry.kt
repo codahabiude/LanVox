@@ -23,7 +23,8 @@ object PeerRegistry {
         val ipAddress: String? = null,
         val transport: String = "p2p",
         val presenceStatus: String = DeviceIdentity.STATUS_AVAILABLE,
-        val bio: String? = null
+        val bio: String? = null,
+        val publicKeyB64: String? = null
     )
 
     private val peers = LinkedHashMap<String, Peer>()
@@ -96,11 +97,13 @@ object PeerRegistry {
                     val mergedTransport = existing?.transport ?: p.transport
                     val mergedStatus = existing?.presenceStatus ?: p.presenceStatus
                     val mergedBio = existing?.bio ?: p.bio
+                    val mergedPub = p.publicKeyB64?.takeIf { it.isNotBlank() } ?: existing?.publicKeyB64
                     peers[p.id] = p.copy(
                         ipAddress = mergedIp,
                         transport = mergedTransport,
                         presenceStatus = mergedStatus,
-                        bio = mergedBio
+                        bio = mergedBio,
+                        publicKeyB64 = mergedPub
                     )
                 }
             }
@@ -120,7 +123,8 @@ object PeerRegistry {
                     peers[p.id] = if (existing != null) {
                         p.copy(
                             presenceStatus = existing.presenceStatus,
-                            bio = existing.bio
+                            bio = existing.bio,
+                            publicKeyB64 = p.publicKeyB64?.takeIf { it.isNotBlank() } ?: existing.publicKeyB64
                         )
                     } else {
                         p
@@ -142,7 +146,8 @@ object PeerRegistry {
                 ipAddress = peer.ipAddress?.takeIf { it.isNotBlank() } ?: existing?.ipAddress,
                 isGroupOwner = peer.isGroupOwner || (existing?.isGroupOwner == true),
                 presenceStatus = existing?.presenceStatus ?: peer.presenceStatus,
-                bio = existing?.bio ?: peer.bio
+                bio = existing?.bio ?: peer.bio,
+                publicKeyB64 = peer.publicKeyB64?.takeIf { it.isNotBlank() } ?: existing?.publicKeyB64
             )
             peers[peer.id] = merged
         }
@@ -179,6 +184,16 @@ object PeerRegistry {
             val existing = peers[peerId]
             if (existing != null) {
                 peers[peerId] = existing.copy(ipAddress = ipAddress)
+            }
+        }
+    }
+
+    fun updatePublicKey(peerId: String, publicKeyB64: String?) {
+        if (peerId == selfId || publicKeyB64.isNullOrBlank()) return
+        synchronized(peers) {
+            val existing = peers[peerId]
+            if (existing != null) {
+                peers[peerId] = existing.copy(publicKeyB64 = publicKeyB64)
             }
         }
     }
@@ -231,7 +246,17 @@ object PeerRegistry {
             val parts = entry.split(':', limit = 2)
             if (parts.size == 2 && parts[0].isNotBlank()) {
                 val decodedId = Uri.decode(parts[0])
-                val nameAndIp = parts[1]
+                val rawRest = parts[1]
+                val hashIdx = rawRest.lastIndexOf('#')
+                val nameAndIp: String
+                val decodedPub: String?
+                if (hashIdx >= 0) {
+                    nameAndIp = rawRest.substring(0, hashIdx)
+                    decodedPub = Uri.decode(rawRest.substring(hashIdx + 1)).takeIf { it.isNotBlank() }
+                } else {
+                    nameAndIp = rawRest
+                    decodedPub = null
+                }
                 val atIdx = nameAndIp.lastIndexOf('@')
                 val decodedName: String
                 val decodedIp: String?
@@ -247,7 +272,8 @@ object PeerRegistry {
                         id = decodedId,
                         name = decodedName,
                         isGroupOwner = false,
-                        ipAddress = decodedIp
+                        ipAddress = decodedIp,
+                        publicKeyB64 = decodedPub
                     )
                 }
             }
@@ -255,12 +281,13 @@ object PeerRegistry {
         return out
     }
 
-    /** Build a PEERS: payload including known direct IP addresses. */
+    /** Build a PEERS: payload including known direct IP addresses and E2EE public keys. */
     fun buildPeersPayload(): String {
         val list = synchronized(peers) {
             peers.values.map { p ->
                 val ipPart = p.ipAddress?.takeIf { it.isNotBlank() }?.let { "@${Uri.encode(it)}" } ?: ""
-                "${Uri.encode(p.id)}:${Uri.encode(p.name)}$ipPart"
+                val pubPart = p.publicKeyB64?.takeIf { it.isNotBlank() }?.let { "#${Uri.encode(it)}" } ?: ""
+                "${Uri.encode(p.id)}:${Uri.encode(p.name)}$ipPart$pubPart"
             }
         }
         return Constants.PAYLOAD_PEERS + list.joinToString(",")

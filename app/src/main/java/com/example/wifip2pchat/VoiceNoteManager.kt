@@ -2,6 +2,7 @@ package com.example.wifip2pchat
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.MediaDataSource
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.media.MediaRecorder
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Push-to-Talk AAC voice note recorder + single-active-track [MediaPlayer] playback manager.
@@ -37,6 +39,7 @@ object VoiceNoteManager {
     private val handler = Handler(Looper.getMainLooper())
     private var mediaPlayer: MediaPlayer? = null
     private var activePath: String? = null
+    private val durationCache = ConcurrentHashMap<String, Int>()
 
     private val progressRunnable = object : Runnable {
         override fun run() {
@@ -57,8 +60,9 @@ object VoiceNoteManager {
         }
     }
 
-    fun togglePlayback(path: String) {
-        if (path.isBlank() || !File(path).exists()) return
+    fun togglePlayback(context: Context, path: String, transferId: String? = null) {
+        val file = File(path)
+        if (path.isBlank() || !file.exists()) return
         val current = _playbackState.value
         val mp = mediaPlayer
         if (activePath == path && mp != null) {
@@ -91,9 +95,16 @@ object VoiceNoteManager {
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .build()
             )
-            created.setDataSource(path)
+            if (CryptoManager.isEncryptedAttachmentFile(file)) {
+                val plainBytes = CryptoManager.decryptAttachmentToBytes(context, transferId, file)
+                    ?: error("Failed to decrypt voice note")
+                created.setDataSource(byteArrayDataSource(plainBytes))
+            } else {
+                created.setDataSource(path)
+            }
             created.prepare()
             val totalDur = created.duration.coerceAtLeast(1)
+            durationCache[path] = totalDur
             created.setOnCompletionListener {
                 handler.removeCallbacks(progressRunnable)
                 _playbackState.value = PlaybackState(
@@ -146,17 +157,40 @@ object VoiceNoteManager {
         _playbackState.value = PlaybackState()
     }
 
-    fun readDurationMs(path: String?): Int {
-        if (path.isNullOrBlank() || !File(path).exists()) return 0
+    fun readDurationMs(context: Context, path: String?, transferId: String? = null): Int {
+        if (path.isNullOrBlank()) return 0
+        durationCache[path]?.let { return it }
+        val file = File(path)
+        if (!file.exists()) return 0
         val mmr = MediaMetadataRetriever()
         return try {
-            mmr.setDataSource(path)
-            mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toIntOrNull() ?: 0
+            if (CryptoManager.isEncryptedAttachmentFile(file)) {
+                val plainBytes = CryptoManager.decryptAttachmentToBytes(context, transferId, file)
+                    ?: return 0
+                mmr.setDataSource(byteArrayDataSource(plainBytes))
+            } else {
+                mmr.setDataSource(path)
+            }
+            val dur = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toIntOrNull() ?: 0
+            if (dur > 0) durationCache[path] = dur
+            dur
         } catch (_: Exception) {
             0
         } finally {
             runCatching { mmr.release() }
         }
+    }
+
+    private fun byteArrayDataSource(bytes: ByteArray): MediaDataSource = object : MediaDataSource() {
+        override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+            if (position < 0 || position >= bytes.size) return -1
+            val available = minOf(size.toLong(), bytes.size.toLong() - position).toInt()
+            System.arraycopy(bytes, position.toInt(), buffer, offset, available)
+            return available
+        }
+
+        override fun getSize(): Long = bytes.size.toLong()
+        override fun close() {}
     }
 
     fun formatDurationMs(ms: Int): String {

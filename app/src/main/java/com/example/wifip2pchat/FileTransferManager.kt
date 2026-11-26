@@ -54,7 +54,9 @@ object FileTransferManager {
         val fileName: String,
         val mimeType: String,
         val fileSize: Long,
-        val senderHost: String? = null
+        val senderHost: String? = null,
+        val cipherSize: Long = fileSize,
+        val encryptedKeyB64: String? = null
     ) {
         fun toPayload(): String {
             val json = JSONObject().apply {
@@ -62,6 +64,10 @@ object FileTransferManager {
                 put("name", fileName)
                 put("mime", mimeType)
                 put("size", fileSize)
+                put("csize", cipherSize)
+                if (!encryptedKeyB64.isNullOrBlank()) {
+                    put("fkey", encryptedKeyB64)
+                }
                 if (!senderHost.isNullOrBlank()) {
                     put("host", senderHost)
                 }
@@ -79,9 +85,11 @@ object FileTransferManager {
                     val name = obj.optString("name").trim()
                     val mime = obj.optString("mime").trim().ifBlank { "application/octet-stream" }
                     val size = obj.optLong("size", 0L)
+                    val csize = obj.optLong("csize", size)
+                    val fkey = obj.optString("fkey").trim().takeIf { it.isNotBlank() }
                     val host = obj.optString("host").trim().takeIf { it.isNotBlank() }
                     if (id.isEmpty() || name.isEmpty() || size <= 0L) return null
-                    FileOffer(id, sanitizeFileName(name), mime, size, host)
+                    FileOffer(id, sanitizeFileName(name), mime, size, host, csize, fkey)
                 }.getOrNull()
             }
         }
@@ -187,7 +195,7 @@ object FileTransferManager {
                 when (parts.firstOrNull()) {
                     "GET" -> {
                         val transferId = parts.getOrNull(1).orEmpty()
-                        val file = stagedFiles[transferId]
+                        val file = stagedFiles[transferId] ?: findPersistedAttachment(appContext, transferId)
                         if (file != null && file.exists() && file.isFile) {
                             val len = file.length()
                             writeHeaderLine(output, "OK $len")
@@ -300,31 +308,24 @@ object FileTransferManager {
                 ?: guessMimeType(safeName)
             val transferId = UUID.randomUUID().toString()
             val dir = attachmentsDir(context)
-            val destFile = File(dir, "${transferId}_$safeName")
+            val destFile = File(dir, "${transferId}_${safeName}.lvxenc")
+            val fileKeyB64 = CryptoManager.generateRandomFileKeyB64()
 
-            var totalBytes = 0L
-            resolver.openInputStream(uri)?.use { input ->
-                FileOutputStream(destFile).use { output ->
-                    val buf = ByteArray(BUFFER_SIZE)
-                    while (true) {
-                        val read = input.read(buf)
-                        if (read <= 0) break
-                        totalBytes += read
-                        if (totalBytes > Constants.MAX_FILE_TRANSFER_BYTES) {
-                            destFile.delete()
-                            error("File exceeds 250 MB limit")
-                        }
-                        output.write(buf, 0, read)
-                    }
-                    output.flush()
-                }
+            val (totalPlain, cipherBytes) = resolver.openInputStream(uri)?.use { input ->
+                CryptoManager.encryptStreamToFile(
+                    input = input,
+                    destCipherFile = destFile,
+                    fileKeyB64 = fileKeyB64,
+                    maxPlainBytes = Constants.MAX_FILE_TRANSFER_BYTES
+                )
             } ?: error("Could not read selected file")
 
-            if (totalBytes <= 0L) {
+            if (totalPlain <= 0L) {
                 destFile.delete()
                 error("Selected file is empty")
             }
 
+            CryptoManager.saveAttachmentKey(context, transferId, fileKeyB64)
             val senderHost = ChatServerService.localIpForPeer(null) ?: DeviceIdentity.resolveLocalIp()
             stagedFiles[transferId] = destFile
             StagedFile(
@@ -332,8 +333,10 @@ object FileTransferManager {
                     transferId = transferId,
                     fileName = safeName,
                     mimeType = mimeType,
-                    fileSize = totalBytes,
-                    senderHost = senderHost
+                    fileSize = totalPlain,
+                    senderHost = senderHost,
+                    cipherSize = cipherBytes,
+                    encryptedKeyB64 = fileKeyB64
                 ),
                 localFile = destFile
             )
@@ -341,8 +344,8 @@ object FileTransferManager {
     }
 
     /**
-     * Stages a locally generated file (such as an AAC voice note) into app-private
-     * attachments storage and returns a ready [StagedFile] for P2P transfer.
+     * Stages a locally generated file (such as an AAC voice note) encrypted at rest
+     * into app-private attachments storage and returns a ready [StagedFile] for P2P transfer.
      */
     suspend fun stageLocalFile(
         context: Context,
@@ -357,18 +360,22 @@ object FileTransferManager {
             val safeName = sanitizeFileName(displayName)
             val transferId = UUID.randomUUID().toString()
             val dir = attachmentsDir(context)
-            val destFile = File(dir, "${transferId}_$safeName")
-            FileInputStream(sourceFile).use { input ->
-                FileOutputStream(destFile).use { output ->
-                    copyFixedOrAll(input, output, sourceFile.length())
-                    output.flush()
-                }
+            val destFile = File(dir, "${transferId}_${safeName}.lvxenc")
+            val fileKeyB64 = CryptoManager.generateRandomFileKeyB64()
+
+            val (totalPlain, cipherBytes) = FileInputStream(sourceFile).use { input ->
+                CryptoManager.encryptStreamToFile(
+                    input = input,
+                    destCipherFile = destFile,
+                    fileKeyB64 = fileKeyB64,
+                    maxPlainBytes = Constants.MAX_FILE_TRANSFER_BYTES
+                )
             }
-            val totalBytes = destFile.length()
-            if (totalBytes <= 0L) {
+            if (totalPlain <= 0L) {
                 destFile.delete()
                 error("Recorded file is empty")
             }
+            CryptoManager.saveAttachmentKey(context, transferId, fileKeyB64)
             val senderHost = ChatServerService.localIpForPeer(null) ?: DeviceIdentity.resolveLocalIp()
             stagedFiles[transferId] = destFile
             StagedFile(
@@ -376,8 +383,10 @@ object FileTransferManager {
                     transferId = transferId,
                     fileName = safeName,
                     mimeType = mimeType,
-                    fileSize = totalBytes,
-                    senderHost = senderHost
+                    fileSize = totalPlain,
+                    senderHost = senderHost,
+                    cipherSize = cipherBytes,
+                    encryptedKeyB64 = fileKeyB64
                 ),
                 localFile = destFile
             )
@@ -403,14 +412,23 @@ object FileTransferManager {
         senderId: String? = null,
         senderName: String? = null
     ): File? = withContext(Dispatchers.IO) {
+        val fileKey = offer.encryptedKeyB64
+        if (fileKey.isNullOrBlank()) {
+            Log.w(TAG, "Rejected unencrypted file offer ${offer.transferId}")
+            FileTransferTracker.markIncomingFailed(offer.transferId, senderId, senderName)
+            return@withContext null
+        }
+        CryptoManager.saveAttachmentKey(context, offer.transferId, fileKey)
+
         val dir = attachmentsDir(context)
-        val destFile = File(dir, "${sanitizeFileName(offer.transferId)}_${sanitizeFileName(offer.fileName)}")
-        if (destFile.exists() && destFile.length() == offer.fileSize) {
+        val destFile = File(dir, "${sanitizeFileName(offer.transferId)}_${sanitizeFileName(offer.fileName)}.lvxenc")
+        val expectedCipherLen = if (offer.cipherSize > 0L) offer.cipherSize else offer.fileSize
+        if (destFile.exists() && destFile.length() == expectedCipherLen) {
             FileTransferTracker.markIncomingCompleted(offer.transferId, offer.fileSize, senderId, senderName)
             return@withContext destFile
         }
 
-        FileTransferTracker.updateIncomingDownload(offer.transferId, 0L, offer.fileSize, senderId, senderName)
+        FileTransferTracker.updateIncomingDownload(offer.transferId, 0L, expectedCipherLen, senderId, senderName)
 
         val localStaged = stagedFiles[offer.transferId]
         if (localStaged != null && localStaged.exists() && localStaged.length() > 0L) {
@@ -519,15 +537,20 @@ object FileTransferManager {
                         Log.w(TAG, "$command on $connectHost attempt ${attempt + 1} header=$header")
                         return@use
                     }
-                    val expectedLen = header.removePrefix("OK ").trim().toLongOrNull() ?: offer.fileSize
-                    if (expectedLen <= 0L || expectedLen > Constants.MAX_FILE_TRANSFER_BYTES) {
+                    val expectedCipherLen = if (offer.cipherSize > 0L) offer.cipherSize else offer.fileSize
+                    val expectedLen = header.removePrefix("OK ").trim().toLongOrNull() ?: expectedCipherLen
+                    if (expectedLen <= 0L || expectedLen > Constants.MAX_FILE_TRANSFER_BYTES + 1024L * 1024L) {
                         return null
                     }
+                    val fileKey = offer.encryptedKeyB64 ?: return null
                     FileTransferTracker.updateIncomingDownload(offer.transferId, 0L, expectedLen, senderId, senderName)
-                    val bytesRead = FileOutputStream(tmp).use { fos ->
-                        copyExactBytes(input, fos, expectedLen) { bytesDone ->
-                            FileTransferTracker.updateIncomingDownload(offer.transferId, bytesDone, expectedLen, senderId, senderName)
-                        }
+                    val bytesRead = CryptoManager.copyAndVerifyEncryptedStream(
+                        input = input,
+                        destCipherFile = tmp,
+                        expectedCipherLen = expectedLen,
+                        fileKeyB64 = fileKey
+                    ) { bytesDone ->
+                        FileTransferTracker.updateIncomingDownload(offer.transferId, bytesDone, expectedLen, senderId, senderName)
                     }
                     if (bytesRead == expectedLen) {
                         if (destFile.exists()) destFile.delete()
@@ -547,16 +570,32 @@ object FileTransferManager {
     }
 
     /**
-     * Opens a saved attachment via [FileProvider] with read-URI grant, falling back to a share sheet
-     * if no installed viewer handles the MIME type.
+     * Decrypts an encrypted attachment on demand into an ephemeral `cacheDir/secure_open` file
+     * and opens it via [FileProvider] with read-URI grant.
      */
     fun openAttachment(context: Context, message: ChatMessage): String? {
         val path = message.attachmentPath ?: return "File is still transferring or unavailable"
         val file = File(path)
         if (!file.exists()) return "File no longer exists on this device"
 
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        val mime = message.attachmentMime?.takeIf { it.isNotBlank() } ?: guessMimeType(file.name)
+        val cleanName = sanitizeFileName(message.attachmentName ?: file.name.removeSuffix(".lvxenc"))
+        val fileToOpen: File = if (CryptoManager.isEncryptedAttachmentFile(file)) {
+            val openDir = File(context.cacheDir, "secure_open").apply { mkdirs() }
+            val prefix = sanitizeFileName(message.transferId ?: file.nameWithoutExtension)
+            val decryptedOut = File(openDir, "${prefix}_$cleanName")
+            if (!decryptedOut.exists() || decryptedOut.length() == 0L) {
+                val ok = CryptoManager.decryptAttachmentToFile(context, message.transferId, file, decryptedOut)
+                if (!ok) {
+                    return "Unable to decrypt ${message.attachmentName ?: "file"} (missing key or integrity error)"
+                }
+            }
+            decryptedOut
+        } else {
+            file
+        }
+
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", fileToOpen)
+        val mime = message.attachmentMime?.takeIf { it.isNotBlank() } ?: guessMimeType(cleanName)
         val viewIntent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, mime)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -601,6 +640,14 @@ object FileTransferManager {
 
     private fun attachmentsDir(context: Context): File =
         File(context.filesDir, "attachments").apply { mkdirs() }
+
+    private fun findPersistedAttachment(context: Context, transferId: String): File? {
+        if (transferId.isBlank()) return null
+        val prefix = "${sanitizeFileName(transferId)}_"
+        return attachmentsDir(context).listFiles()?.firstOrNull {
+            it.isFile && it.name.startsWith(prefix) && it.name.endsWith(".lvxenc")
+        }
+    }
 
     private fun sanitizeFileName(raw: String): String {
         val base = File(raw).name.ifBlank { "file" }

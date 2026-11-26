@@ -16,6 +16,7 @@ Requires Android 7.0 (API 24) or newer. This is a debug build, not from the Play
 
 | Feature | Description |
 |---------|-------------|
+| 🔒 **100% End-to-End & At-Rest Encryption** | Hardware-backed `AndroidKeyStore` AES-256-GCM vault (`CryptoManager`), ECDH P-256 + HKDF-SHA256 pairwise & broadcast chat (`E2E1:`/`E2EM:`), streaming 64 KB `LVXE1` attachment encryption, ephemeral ECDH + DTLS-SRTP audio calls (`E2ES:`), AES-GCM video frames (`LVV1`), encrypted SQLite/avatars/prefs (`ENC1:`/`LVXB1`), `allowBackup="false"`, and 60-digit Safety Number verification (`EncryptionInfoBottomSheet`) |
 | 💬 **1:1 & Multi-Phone Mesh Chat** | Symmetric `ChatServerService` (`8988`) runs on every phone with direct peer links + Group Chat (`__group__`) broadcast routing, `MID:` packet deduplication, and an IG Direct / Messenger-style chat icon (`ic_chats`) with a live total unread badge — no single central host bottleneck |
 | 🌐 **Hostless Wi-Fi / Hotspot NSD** | `LocalMeshDiscovery` (`_lanvox._tcp.`) automatically discovers and connects nearby LanVox devices sharing the same Wi-Fi network or mobile hotspot alongside Wi-Fi Direct |
 | 🎤 **Push-to-Talk Voice Notes** | Record AAC `.m4a` voice clips (`VoiceNoteManager`) directly from the composer mic button with live `REC MM:SS` timer and amplitude meter, stream over TCP `8991`, and play inline with an interactive `SeekBar` inside bubbles |
@@ -91,9 +92,16 @@ Requires Android 7.0 (API 24) or newer. This is a debug build, not from the Play
 - **Active Call Timer Overlay (`CallSessionBus` + `AudioCallActivity` / `VideoCallActivity`)**: Both call screens render a floating glassmorphic HUD timer pill (`bg_timer_overlay_pill`) with a pulsing status indicator (`RINGING`, `CONNECTING`, `LIVE`, `RECONNECTING`, `ENDED`) and tabular `JetBrains Mono` elapsed timer (`MM:SS` / `HH:MM:SS`). Duration is anchored to monotonic `SystemClock.elapsedRealtime()` inside `CallSessionBus` so the active call timer persists cleanly across brief reconnections and notification/back-stack returns, with edge-to-edge display cutout & system bar safe insets.
 - **Behavior With >2 Phones Connected**: Audio and video calls are **1-to-1 peer-to-peer sessions** (not multi-way group conferences). When multiple peers are connected in Group Chat or the mesh, tapping **Audio Call** or **Video Call** prompts you to select which connected peer to ring; the caller hosts the direct call sockets (`CALL_REQ:<type>|<localIp>`) and connects directly to that peer without needing a central Group Owner relay.
 
+### 100% End-to-End & At-Rest Encryption (`CryptoManager` + `EncryptionInfoBottomSheet`)
+- **Hardware KeyStore Root & Identity**: Every device generates a hardware-backed `AndroidKeyStore` AES-256-GCM master key wrapping a local storage vault key and a persistent ECDH P-256 (`secp256r1`) identity keypair. `android:allowBackup="false"` prevents unencrypted ADB/cloud extraction.
+- **Mesh Chat & Control (`8988`)**: Peers exchange P-256 public keys via `HELLO|KEY:`, `KEYX:`, and `PEERS:` membership tables and derive domain-separated AES-256-GCM session keys using HKDF-SHA256. 1:1 envelopes travel as `E2E1:<iv>:<ct>` and group broadcasts encrypt once with a fresh 256-bit message key wrapped per recipient (`E2EM:<msgIv>:<msgCt>:<wrappedKeys>`) with AAD binding.
+- **Files & Voice Notes (`8991`)**: Every attachment and voice note is encrypted on disk and on the wire in 64 KB AES-256-GCM chunks (`LVXE1`), verified per-chunk during transfer (`copyAndVerifyEncryptedStream`), played in-memory via `MediaDataSource`, and decrypted temporarily to `cacheDir/secure_open/` (purged on close) only when explicitly opened via `FileProvider`.
+- **Audio & Video Calls (`8989`, `8990`)**: Audio call signaling executes an ephemeral ECDH P-256 handshake (`E2ES:<seq>:<iv>:<ct>` with replay guard) over WebRTC Opus/DTLS-SRTP media; video calls execute an ephemeral ECDH `LVV1` handshake on port `8990` and encrypt every frame with AES-256-GCM and monotonic sequence AAD.
+- **At-Rest Vault & Safety Numbers**: `ChatRepository` encrypts Room DB text, names, replies, reactions, and attachment metadata with `ENC1:` (auto-migrating legacy plaintext rows in the background), `AvatarManager` stores avatars in `LVXB1`, and `DeviceIdentity`/`QuickReplyPrefs` encrypt local PII preferences. Tap **Encryption & Safety Keys** or a chat header to verify 60-digit Safety Numbers with TOFU key-change detection.
+
 ### Standby Listener When App Is Closed (`CallListenerService`)
 - Keeps listening on `8988` (and configures `FileTransferManager` on `8991`), restarted after reboot by `BootReceiver`.
-- Receives incoming calls over the lock screen (`IncomingCallActivity`), persists incoming texts, `REPLY:` quote messages, and files to Room, applies remote `REACT:` updates, replies with `ACK:` delivery confirmations, processes incoming `ACK:` / `READ:` updates, and hands sockets back smoothly when `MainActivity` opens.
+- Receives incoming calls over the lock screen (`IncomingCallActivity`), verifies and decrypts `E2E1:`/`E2EM:` envelopes, persists incoming texts, `REPLY:` quote messages, and encrypted files to Room, applies remote `REACT:` updates, replies with encrypted `ACK:` delivery confirmations, processes incoming `ACK:` / `READ:` updates, and hands sockets back smoothly when `MainActivity` opens.
 
 ## App Flow
 
@@ -156,8 +164,9 @@ gradle installDebug
 
 ```
 app/src/main/java/com/example/wifip2pchat/
-├── Constants.kt                    — Ports (8988–8991), audio/video config, file limits & envelope prefixes
-├── DeviceIdentity.kt               — Persistent node ID (`lvx_...`/MAC), display name, presence preset, bio & IP resolver
+├── Constants.kt                    — Ports (8988–8991), audio/video config, file limits & E2EE envelope prefixes
+├── CryptoManager.kt                — Hardware KeyStore vault, ECDH P-256 + HKDF-SHA256, AES-256-GCM wire/file/DB crypto & Safety Numbers
+├── DeviceIdentity.kt               — Persistent node ID (`lvx_...`/MAC), encrypted custom name/bio, presence preset & IP resolver
 ├── AvatarManager.kt                — Downscaled circular JPEG avatar storage, Base64 wire sync & reactive StateFlow updates
 ├── Envelope.kt                     — Wire envelope (`ENV|...|MID:<id>:<payload>`) builder & parser
 ├── PeerRegistry.kt                 — Multi-peer membership, presence, bio & IP registry across Wi-Fi Direct and LAN mesh
@@ -192,7 +201,8 @@ app/src/main/java/com/example/wifip2pchat/
 ├── VideoCallActivity.kt            — Video call UI with floating live timer overlay pill, PiP, call logging & edge-to-edge safe insets
 ├── IncomingCallActivity.kt         — Incoming call lock-screen UI with peer avatar & decline call logging
 ├── MainActivity.kt                 — Main HUD: self-profile header, PeerPickerBottomSheet, inline social mesh chat, polls, quick replies & 1:1 call routing
-├── MainActionsBottomSheet.kt       — Material BottomSheetDialog for profile preview, polls, media gallery, disappearing timer, diagnostics & clear history
+├── MainActionsBottomSheet.kt       — Material BottomSheetDialog for profile preview, encryption keys, polls, media gallery, disappearing timer, diagnostics & clear history
+├── EncryptionInfoBottomSheet.kt    — 6-layer encryption inspector, own key fingerprint & 60-digit Safety Number verifier
 ├── ProfileBottomSheet.kt           — Profile editor bottom sheet (Photo Picker avatar, display name, presence preset & status bio)
 ├── PollCreatorDialog.kt            — Frosted dialog for composing 2–6 option live polls
 ├── MediaGalleryBottomSheet.kt      — Thread media/voice/docs gallery bottom sheet with category filter chips
@@ -255,8 +265,9 @@ app/src/main/java/com/example/wifip2pchat/
 - **Language**: Kotlin (AGP 9.1.1 built-in Kotlin, Gradle 9.3.1)
 - **Min SDK**: 24 (Android 7.0)
 - **Target SDK**: 34 (Android 14)
-- **Persistence**: AndroidX Room (`2.7.1`, schema v5 with `MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_3_4` & `MIGRATION_4_5`) with KSP (`2.3.5`), Repository pattern, and Kotlin `Flow` / `StateFlow`
-- **Networking**: Symmetric TCP mesh (`8988`), Wi-Fi Direct + Android NSD (`_lanvox._tcp.`), TCP binary file server/relay (`8991`), WebRTC audio (`8989`), and Camera2 JPEG video (`8990`)
+- **Persistence**: AndroidX Room (`2.7.1`, schema v5 with `MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_3_4` & `MIGRATION_4_5`) with KSP (`2.3.5`), AES-256-GCM at-rest column/file/pref encryption (`ENC1:` / `LVXE1` / `LVXB1`), `android:allowBackup="false"`, Repository pattern, and Kotlin `Flow` / `StateFlow`
+- **Cryptography**: `AndroidKeyStore` AES-256-GCM master key, ECDH P-256 (`secp256r1`), RFC 5869 HKDF-SHA256, AES-256-GCM (`E2E1:` / `E2EM:` / `E2ES:` / `LVV1` / `LVXE1`), WebRTC DTLS-SRTP, and 60-digit TOFU Safety Numbers
+- **Networking**: Symmetric encrypted TCP mesh (`8988`), Wi-Fi Direct + Android NSD (`_lanvox._tcp.`), encrypted streaming TCP binary file server/relay (`8991`), ephemeral-ECDH-signaled WebRTC audio (`8989`), and encrypted Camera2 JPEG video (`8990`)
 - **UI / UX**: Glassmorphism & Cryo-Cyan Orbital HUD aesthetic (`#050811` void, `#00F0FF` cryo-cyan, `#00F5A0` read-receipt mint), fitted adaptive launcher icon (`drawable/ic_launcher_foreground` safe-zone inset over `#00162B` + density `ic_launcher` / `ic_launcher_round` fallbacks) and centered `ic_brand_logo`, IG Direct / Messenger chat badge, `RadarView` conical sweep & sonar pulse, custom no-peers illustration, bundled `Space Grotesk`, `Plus Jakarta Sans`, & `JetBrains Mono` typography (`res/font/`), `MaterialProgressIndicator`, `BottomSheetDialog`, `RecyclerView` (`DiffUtil` + `ItemTouchHelper`), and ViewBinding
 
 ## License

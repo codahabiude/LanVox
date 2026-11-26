@@ -21,7 +21,8 @@ object QuickReplyPrefs {
 
     fun getTemplates(context: Context): List<String> {
         val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val raw = prefs.getString(KEY_TEMPLATES, null) ?: return DEFAULT_TEMPLATES
+        val stored = prefs.getString(KEY_TEMPLATES, null) ?: return DEFAULT_TEMPLATES
+        val raw = CryptoManager.decryptLocalString(context, stored) ?: return DEFAULT_TEMPLATES
         val parsed = runCatching {
             val arr = JSONArray(raw)
             buildList {
@@ -54,10 +55,11 @@ object QuickReplyPrefs {
 
     private fun save(context: Context, list: List<String>) {
         val arr = JSONArray(list)
+        val encrypted = CryptoManager.encryptLocalString(context, arr.toString())
         context.applicationContext
             .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
-            .putString(KEY_TEMPLATES, arr.toString())
+            .putString(KEY_TEMPLATES, encrypted)
             .apply()
     }
 }

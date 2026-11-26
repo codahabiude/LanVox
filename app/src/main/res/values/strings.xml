@@ -196,4 +196,33 @@
     <string name="cd_nudge_peer">Nudge peer</string>
     <string name="nudge_sent_fmt">Nudged %1$s</string>
     <string name="nudge_received_fmt">⚡ %1$s nudged you!</string>
+
+    <!-- 100% Encryption & Safety Numbers -->
+    <string name="encrypted_call_badge">E2EE · AES-256-GCM</string>
+    <string name="action_encryption_info">Encryption &amp; Safety Keys</string>
+    <string name="action_encryption_info_sub">Verify 60-digit safety numbers &amp; vault status</string>
+    <string name="enc_sheet_title">100% Encryption Active</string>
+    <string name="enc_sheet_subtitle">ECDH P-256 · HKDF-SHA256 · AES-256-GCM</string>
+    <string name="enc_layer_vault">Hardware Vault: AndroidKeyStore AES-256-GCM master key</string>
+    <string name="enc_layer_chat">Messages &amp; Mesh: ECDH P-256 + AES-256-GCM (E2E1 / E2EM)</string>
+    <string name="enc_layer_files">Files &amp; Voice: Streaming 64 KB AES-256-GCM (LVXE1)</string>
+    <string name="enc_layer_calls">Audio &amp; Video: Ephemeral ECDH + DTLS-SRTP &amp; AES-GCM frames</string>
+    <string name="enc_layer_storage">Local Vault: Encrypted Room DB, avatars &amp; prefs (backups off)</string>
+    <string name="enc_self_fingerprint_fmt">Your key fingerprint: %1$s</string>
+    <string name="enc_safety_header">SAFETY NUMBER VERIFICATION</string>
+    <string name="enc_safety_instructions">Compare these 60 digits with %1$s on their device to confirm zero interception.</string>
+    <string name="enc_no_peer_key">Connect with %1$s over LanVox to exchange ECDH P-256 identity keys and generate a 60-digit Safety Number.</string>
+    <string name="enc_group_hint">Group broadcasts encrypt once with a 256-bit key wrapped individually per member. Tap a device below to inspect its Safety Number:</string>
+    <string name="enc_group_no_peers">Connect with a nearby device to exchange keys and inspect 60-digit Safety Numbers.</string>
+    <string name="enc_status_verified">Verified</string>
+    <string name="enc_status_unverified">Unverified</string>
+    <string name="enc_status_key_changed">Key Changed</string>
+    <string name="enc_key_changed_warning">Warning: %1$s presented a new identity key (device reinstall or key rotation). Re-verify their Safety Number before marking trusted.</string>
+    <string name="enc_btn_mark_verified">Mark Verified</string>
+    <string name="enc_btn_unverify">Remove Verification</string>
+    <string name="enc_btn_copy">Copy</string>
+    <string name="enc_copied_msg">Safety number copied</string>
+    <string name="export_warning_title">Export Unencrypted Plaintext?</string>
+    <string name="export_warning_message">Chats stored in LanVox are AES-256-GCM encrypted, but exporting to Downloads creates a readable plaintext .txt file outside the encrypted vault. Continue?</string>
+    <string name="export_warning_confirm">Export Plaintext</string>
 </resources>

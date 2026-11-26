@@ -49,9 +49,10 @@
             android:layout_marginBottom="10dp">
 
             <TextView
+                android:id="@+id/tvCallEncryptedBadge"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/encrypted_short"
+                android:text="@string/encrypted_call_badge"
                 android:textSize="10sp"
                 android:textColor="@color/brand_secondary"
                 android:fontFamily="@font/jetbrains_mono"

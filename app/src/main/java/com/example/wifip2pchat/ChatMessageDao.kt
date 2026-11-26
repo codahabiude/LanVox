@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -184,11 +185,20 @@ interface ChatMessageDao {
     @Query("UPDATE messages SET attachment_state = :attachmentState WHERE transfer_id = :transferId")
     suspend fun updateAttachmentStateOnlyByTransferId(transferId: String, attachmentState: String): Int
 
+    @Query("SELECT * FROM messages")
+    suspend fun getAllMessages(): List<ChatMessageEntity>
+
+    @Update
+    suspend fun updateMessage(entity: ChatMessageEntity)
+
     @Query("DELETE FROM messages WHERE _id = :id")
     suspend fun deleteById(id: Long): Int
 
     @Query("DELETE FROM messages WHERE timestamp = :timestamp AND text = :text AND is_sent = :isSent")
     suspend fun deleteBySignature(timestamp: Long, text: String, isSent: Int): Int
+
+    @Query("DELETE FROM messages WHERE timestamp = :timestamp AND is_sent = :isSent")
+    suspend fun deleteByTimestampAndSender(timestamp: Long, isSent: Int): Int
 
     @Query("DELETE FROM messages WHERE peer_id = :peerId")
     suspend fun deleteConversation(peerId: String)

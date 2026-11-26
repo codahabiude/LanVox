@@ -142,13 +142,16 @@ class ChatServerService : Service() {
         }
     }
 
+    private val keyxCooldown = ConcurrentHashMap<String, Long>()
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
+        CryptoManager.ensureInitialized(applicationContext)
         running = true
         serviceInstance = this
-        Log.d(TAG, "Symmetric mesh node service created")
+        Log.d(TAG, "Symmetric mesh node service created (E2EE active)")
         startServer()
     }
 
@@ -319,11 +322,8 @@ class ChatServerService : Service() {
         if (!localIp.isNullOrBlank()) {
             PeerRegistry.selfIpAddress = localIp
         }
-        val helloPayload = if (!localIp.isNullOrBlank()) {
-            "${Constants.PAYLOAD_HELLO}:$localIp"
-        } else {
-            Constants.PAYLOAD_HELLO
-        }
+        val selfPubB64 = CryptoManager.getSelfPublicKeyB64(applicationContext)
+        val helloPayload = CryptoManager.buildHelloPayload(localIp, selfPubB64)
         val line = Envelope.build(
             senderId = PeerRegistry.selfId,
             senderName = PeerRegistry.selfName,
@@ -342,14 +342,7 @@ class ChatServerService : Service() {
     private fun handleIncomingLine(conn: PeerConn, raw: String) {
         val env = Envelope.parse(raw)
         if (env == null) {
-            Log.d(TAG, "Legacy bare line from ${conn.hostIp}: $raw")
-            val legacyEnv = Envelope(
-                senderId = conn.peerId ?: "legacy",
-                senderName = conn.peerName,
-                recipientId = Constants.RECIPIENT_BROADCAST,
-                payload = raw
-            )
-            routeEnvelope(legacyEnv, origin = conn)
+            Log.w(TAG, "Dropped unencrypted legacy bare line from ${conn.hostIp}")
             return
         }
 
@@ -358,10 +351,24 @@ class ChatServerService : Service() {
             return
         }
 
-        if (env.payload == Constants.PAYLOAD_HELLO || env.payload.startsWith("${Constants.PAYLOAD_HELLO}:")) {
-            val advertisedIp = env.payload.substringAfter(':', "").takeIf { it.isNotBlank() }
-                ?: conn.hostIp
-            registerPeer(conn, env.senderId, env.senderName, advertisedIp)
+        if (CryptoManager.isHelloPayload(env.payload)) {
+            val (advertisedIp, pubKeyB64) = CryptoManager.parseHelloPayload(env.payload)
+            if (!pubKeyB64.isNullOrBlank()) {
+                CryptoManager.registerPeerPublicKey(applicationContext, env.senderId, pubKeyB64)
+            }
+            registerPeer(conn, env.senderId, env.senderName, advertisedIp ?: conn.hostIp, pubKeyB64)
+            return
+        }
+
+        if (env.payload.startsWith(Constants.MSG_TYPE_KEYX)) {
+            val pubKeyB64 = env.payload.removePrefix(Constants.MSG_TYPE_KEYX).trim()
+            if (pubKeyB64.isNotBlank()) {
+                val res = CryptoManager.registerPeerPublicKey(applicationContext, env.senderId, pubKeyB64)
+                PeerRegistry.updatePublicKey(env.senderId, pubKeyB64)
+                if (res == CryptoManager.KeyRegistrationResult.ADDED || res == CryptoManager.KeyRegistrationResult.CHANGED) {
+                    broadcastPeerList()
+                }
+            }
             return
         }
 
@@ -378,6 +385,11 @@ class ChatServerService : Service() {
                 senderIp = conn.hostIp,
                 senderIsGo = conn.isGroupOwnerUplink || PeerRegistry.isSelfGroupOwner.not()
             )
+            list.forEach { p ->
+                if (!p.publicKeyB64.isNullOrBlank()) {
+                    CryptoManager.registerPeerPublicKey(applicationContext, p.id, p.publicKeyB64)
+                }
+            }
             PeerRegistry.mergeFromPeersPayload(list)
             maybeFormDirectPeerMesh(list)
             return
@@ -395,7 +407,8 @@ class ChatServerService : Service() {
         conn: PeerConn,
         peerId: String,
         peerName: String,
-        peerIp: String?
+        peerIp: String?,
+        pubKeyB64: String? = null
     ) {
         pendingIncoming.remove(conn.socket.hashCode())
         conn.peerId = peerId
@@ -418,18 +431,20 @@ class ChatServerService : Service() {
 
         val isNicknameUpdate = existing === conn
         peers[peerId] = conn
-        // Answer initial HELLO once so both sides know each other's ID, name, and direct IP
+        // Answer initial HELLO once so both sides know each other's ID, name, IP, and public key
         if (!isNicknameUpdate) {
             sendHello(conn)
         }
 
+        val resolvedPub = pubKeyB64 ?: CryptoManager.getPeerPublicKeyB64(applicationContext, peerId)
         PeerRegistry.upsert(
             PeerRegistry.Peer(
                 id = peerId,
                 name = conn.peerName,
                 isGroupOwner = conn.isGroupOwnerUplink,
                 ipAddress = conn.hostIp,
-                transport = conn.transport
+                transport = conn.transport,
+                publicKeyB64 = resolvedPub
             )
         )
         broadcastPeerList()
@@ -439,7 +454,7 @@ class ChatServerService : Service() {
                 onPeerHandshakeReady?.invoke(peerId)
             }
         }
-        Log.d(TAG, "Registered mesh peer: $peerId (${conn.peerName}, ip=${conn.hostIp}) — active links=${peers.size}")
+        Log.d(TAG, "Registered E2EE mesh peer: $peerId (${conn.peerName}, ip=${conn.hostIp}) — active links=${peers.size}")
     }
 
     private fun maybeFormDirectPeerMesh(discoveredPeers: List<PeerRegistry.Peer>) {
@@ -514,9 +529,55 @@ class ChatServerService : Service() {
     }
 
     private fun deliverToSelf(env: Envelope) {
-        Handler(Looper.getMainLooper()).post {
-            onMessageReceived?.invoke(env)
+        val decryptedPayload: String
+        when {
+            env.payload.startsWith(Constants.MSG_TYPE_E2E_DIRECT) -> {
+                val plain = CryptoManager.decryptFromPeer(
+                    context = applicationContext,
+                    peerId = env.senderId,
+                    senderId = env.senderId,
+                    recipientId = env.recipientId,
+                    cipherPayload = env.payload
+                )
+                if (plain == null) {
+                    Log.w(TAG, "Failed to decrypt E2E1 from ${env.senderId} — triggering KEYX")
+                    requestKeyExchange(env.senderId)
+                    return
+                }
+                decryptedPayload = plain
+            }
+            env.payload.startsWith(Constants.MSG_TYPE_E2E_MULTI) -> {
+                val plain = CryptoManager.decryptBroadcast(
+                    context = applicationContext,
+                    senderId = env.senderId,
+                    selfId = PeerRegistry.selfId,
+                    cipherPayload = env.payload
+                )
+                if (plain == null) {
+                    Log.w(TAG, "Failed to decrypt E2EM from ${env.senderId} — triggering KEYX")
+                    requestKeyExchange(env.senderId)
+                    return
+                }
+                decryptedPayload = plain
+            }
+            else -> {
+                Log.w(TAG, "Dropped unencrypted payload from ${env.senderId}")
+                return
+            }
         }
+        val cleanEnv = env.copy(payload = decryptedPayload, isEncrypted = true)
+        Handler(Looper.getMainLooper()).post {
+            onMessageReceived?.invoke(cleanEnv)
+        }
+    }
+
+    private fun requestKeyExchange(peerId: String) {
+        val now = System.currentTimeMillis()
+        val last = keyxCooldown[peerId] ?: 0L
+        if (now - last < 3_000L) return
+        keyxCooldown[peerId] = now
+        val pubB64 = CryptoManager.getSelfPublicKeyB64(applicationContext)
+        sendToInternal(peerId, Constants.MSG_TYPE_KEYX + pubB64)
     }
 
     private fun notifyMeshPeersChanged() {
@@ -540,14 +601,40 @@ class ChatServerService : Service() {
 
     // ======================== Outgoing ========================
 
+    private fun isWireControlPlaintext(payload: String): Boolean =
+        payload.startsWith(Constants.MSG_TYPE_KEYX) ||
+            CryptoManager.isHelloPayload(payload) ||
+            payload == Constants.PAYLOAD_BYE ||
+            payload.startsWith(Constants.PAYLOAD_PEERS) ||
+            payload.startsWith(Constants.MSG_TYPE_E2E_DIRECT) ||
+            payload.startsWith(Constants.MSG_TYPE_E2E_MULTI)
+
     private fun sendToInternal(recipientId: String, payload: String, explicitMsgId: String? = null): Boolean {
+        val wirePayload = if (isWireControlPlaintext(payload)) {
+            payload
+        } else {
+            val encrypted = CryptoManager.encryptForPeer(
+                context = applicationContext,
+                peerId = recipientId,
+                senderId = PeerRegistry.selfId,
+                recipientId = recipientId,
+                plaintext = payload
+            )
+            if (encrypted == null) {
+                Log.w(TAG, "Cannot encrypt for $recipientId (missing peer key) — initiating KEYX")
+                requestKeyExchange(recipientId)
+                return false
+            }
+            encrypted
+        }
+
         val msgId = explicitMsgId?.takeIf { it.isNotBlank() } ?: Envelope.newMessageId()
         markMessageSeen(msgId)
         val line = Envelope.build(
             senderId = PeerRegistry.selfId,
             senderName = PeerRegistry.selfName,
             recipientId = recipientId,
-            payload = payload,
+            payload = wirePayload,
             msgId = msgId
         ) + "\n"
 
@@ -567,18 +654,36 @@ class ChatServerService : Service() {
     }
 
     private fun sendBroadcastInternal(payload: String, explicitMsgId: String? = null): Boolean {
+        val targets = peers.values.filter { it.peerId != null && !it.socket.isClosed }
+        if (targets.isEmpty()) return false
+
+        val wirePayload = if (isWireControlPlaintext(payload)) {
+            payload
+        } else {
+            val keyTargets = (peers.keys + PeerRegistry.snapshot().map { it.id })
+                .distinct()
+                .filter { it != PeerRegistry.selfId && CryptoManager.hasPeerKey(applicationContext, it) }
+            if (keyTargets.isEmpty()) {
+                Log.w(TAG, "Cannot broadcast — no peer public keys registered yet")
+                return false
+            }
+            CryptoManager.encryptForBroadcast(
+                context = applicationContext,
+                senderId = PeerRegistry.selfId,
+                targetPeerIds = keyTargets,
+                plaintext = payload
+            ) ?: return false
+        }
+
         val msgId = explicitMsgId?.takeIf { it.isNotBlank() } ?: Envelope.newMessageId()
         markMessageSeen(msgId)
         val line = Envelope.build(
             senderId = PeerRegistry.selfId,
             senderName = PeerRegistry.selfName,
             recipientId = Constants.RECIPIENT_BROADCAST,
-            payload = payload,
+            payload = wirePayload,
             msgId = msgId
         ) + "\n"
-
-        val targets = peers.values.filter { it.peerId != null && !it.socket.isClosed }
-        if (targets.isEmpty()) return false
 
         scope.launch {
             targets.forEach { c ->

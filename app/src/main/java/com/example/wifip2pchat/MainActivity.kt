@@ -577,6 +577,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CryptoManager.ensureInitialized(this)
         setContentView(R.layout.activity_main)
         staticInstance = this
 
@@ -732,6 +733,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         localMeshDiscovery = null
         super.onDestroy()
         FileTransferManager.stopSession()
+        CryptoManager.purgeDecryptedTempCache(this)
         wifiManager.stopDiscovery()
         stopChatServer()
     }
@@ -1228,8 +1230,17 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             onOpenProfile = { openProfileSheet() },
             onCreatePoll = { openPollCreator() },
             onOpenMediaGallery = { openMediaGallerySheet() },
+            onOpenEncryption = { openEncryptionSheet() },
             onDisconnect = { disconnect() },
             onClearAllHistory = { confirmClearHistory() }
+        )
+    }
+
+    private fun openEncryptionSheet() {
+        EncryptionInfoBottomSheet.show(
+            context = this,
+            peerId = activeThreadPeerId(),
+            peerName = activeThreadPeerName()
         )
     }
 
@@ -1844,17 +1855,76 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     }
 
     /**
-     * Legacy raw-line dispatcher — only used by the standby listener
-     * (CallListenerService) which may receive lines from a pre-envelope peer.
+     * Parses, authenticates, and decrypts a raw wire line handed off from the standby
+     * [CallListenerService], dropping any unencrypted or tampered payloads.
      */
     private fun dispatchIncomingLine(msg: String) {
-        val env = Envelope(
-            senderId = currentPeerId ?: "legacy",
-            senderName = currentPeerName ?: "Unknown",
-            recipientId = Constants.RECIPIENT_BROADCAST,
-            payload = msg
+        val env = Envelope.parse(msg) ?: run {
+            Log.w(TAG, "Dropped unencrypted bare line from standby handoff")
+            return
+        }
+        val senderId = env.senderId
+        if (CryptoManager.isHelloPayload(env.payload)) {
+            val (ip, pubB64) = CryptoManager.parseHelloPayload(env.payload)
+            if (!pubB64.isNullOrBlank()) {
+                CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64)
+            }
+            PeerRegistry.upsert(
+                PeerRegistry.Peer(
+                    id = senderId,
+                    name = env.senderName,
+                    isGroupOwner = false,
+                    ipAddress = ip,
+                    publicKeyB64 = pubB64
+                )
+            )
+            return
+        }
+        if (env.payload.startsWith(Constants.MSG_TYPE_KEYX)) {
+            val pubB64 = env.payload.removePrefix(Constants.MSG_TYPE_KEYX).trim()
+            if (pubB64.isNotBlank()) {
+                CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64)
+                PeerRegistry.updatePublicKey(senderId, pubB64)
+            }
+            return
+        }
+        if (env.payload == Constants.PAYLOAD_BYE) return
+        if (env.payload.startsWith(Constants.PAYLOAD_PEERS)) {
+            val peers = PeerRegistry.parsePeersPayload(env.payload, env.senderId, env.senderName)
+            peers.forEach { p ->
+                if (!p.publicKeyB64.isNullOrBlank()) {
+                    CryptoManager.registerPeerPublicKey(applicationContext, p.id, p.publicKeyB64)
+                }
+            }
+            PeerRegistry.replaceAll(peers)
+            return
+        }
+
+        val decryptedPayload = when {
+            env.payload.startsWith(Constants.MSG_TYPE_E2E_DIRECT) ->
+                CryptoManager.decryptFromPeer(
+                    applicationContext,
+                    senderId,
+                    env.senderId,
+                    env.recipientId,
+                    env.payload
+                )
+            env.payload.startsWith(Constants.MSG_TYPE_E2E_MULTI) ->
+                CryptoManager.decryptBroadcast(
+                    applicationContext,
+                    senderId,
+                    PeerRegistry.selfId,
+                    env.payload
+                )
+            else -> null
+        } ?: run {
+            Log.w(TAG, "Dropped unreadable or unencrypted standby handoff from $senderId")
+            return
+        }
+
+        dispatchIncomingEnvelope(
+            env.copy(payload = decryptedPayload, isEncrypted = true)
         )
-        dispatchIncomingEnvelope(env)
     }
 
     private fun stopChatServer() {
@@ -2712,6 +2782,17 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
      *  - Android 5–9  → app Documents folder (no permission needed)
      */
     private fun exportChatToFile() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.export_warning_title)
+            .setMessage(R.string.export_warning_message)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton(R.string.export_warning_confirm) { _, _ ->
+                performExportChatToFile()
+            }
+            .show()
+    }
+
+    private fun performExportChatToFile() {
         lifecycleScope.launch {
             val conversations = chatRepository.getConversations()
             if (conversations.isEmpty()) {

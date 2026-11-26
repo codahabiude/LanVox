@@ -605,7 +605,7 @@ class MessageAdapter(
             val path = message.attachmentPath ?: return
             bindVoicePlaybackState(message)
             btnVoicePlayPause.setOnClickListener {
-                VoiceNoteManager.togglePlayback(path)
+                VoiceNoteManager.togglePlayback(itemView.context, path, message.transferId)
             }
             seekVoiceNote.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -637,7 +637,7 @@ class MessageAdapter(
                 tvVoiceStateBadge.text = if (isPlaying) "PLAYING" else "PAUSED"
             } else {
                 seekVoiceNote.progress = 0
-                val totalDur = VoiceNoteManager.readDurationMs(path)
+                val totalDur = VoiceNoteManager.readDurationMs(itemView.context, path, message.transferId)
                 tvVoiceDuration.text = if (totalDur > 0) VoiceNoteManager.formatDurationMs(totalDur) else message.formattedFileSize()
                 tvVoiceStateBadge.text = "VOICE"
             }
@@ -748,7 +748,7 @@ class MessageAdapter(
             val canShowPreview = isImage && !localPath.isNullOrBlank() &&
                 (message.attachmentState == AttachmentState.COMPLETED || message.isSentByMe)
             if (canShowPreview && localPath != null) {
-                loadThumbnailAsync(localPath)
+                loadThumbnailAsync(localPath, message.transferId)
             } else {
                 cardFilePreview.visibility = View.GONE
                 ivFilePreview.tag = null
@@ -986,7 +986,7 @@ class MessageAdapter(
             }
         }
 
-        private fun loadThumbnailAsync(path: String) {
+        private fun loadThumbnailAsync(path: String, transferId: String?) {
             ivFilePreview.tag = path
             val cached = thumbCache.get(path)
             if (cached != null) {
@@ -997,8 +997,9 @@ class MessageAdapter(
 
             cardFilePreview.visibility = View.GONE
             ivFilePreview.setImageDrawable(null)
+            val appCtx = itemView.context.applicationContext
             thumbExecutor.execute {
-                val bmp = decodeSampledBitmap(path, 520, 340) ?: return@execute
+                val bmp = decodeSampledBitmap(appCtx, path, transferId, 520, 340) ?: return@execute
                 thumbCache.put(path, bmp)
                 mainHandler.post {
                     if (ivFilePreview.tag == path) {
@@ -1009,23 +1010,47 @@ class MessageAdapter(
             }
         }
 
-        private fun decodeSampledBitmap(path: String, reqWidth: Int, reqHeight: Int): Bitmap? {
+        private fun decodeSampledBitmap(
+            context: Context,
+            path: String,
+            transferId: String?,
+            reqWidth: Int,
+            reqHeight: Int
+        ): Bitmap? {
             val file = File(path)
             if (!file.exists()) return null
             return runCatching {
-                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(path, opts)
-                var inSampleSize = 1
-                val (h, w) = opts.outHeight to opts.outWidth
-                if (h > reqHeight || w > reqWidth) {
-                    val halfH = h / 2
-                    val halfW = w / 2
-                    while ((halfH / inSampleSize) >= reqHeight && (halfW / inSampleSize) >= reqWidth) {
-                        inSampleSize *= 2
+                if (CryptoManager.isEncryptedAttachmentFile(file)) {
+                    val plainBytes = CryptoManager.decryptAttachmentToBytes(context, transferId, file)
+                        ?: return null
+                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(plainBytes, 0, plainBytes.size, opts)
+                    var inSampleSize = 1
+                    val (h, w) = opts.outHeight to opts.outWidth
+                    if (h > reqHeight || w > reqWidth) {
+                        val halfH = h / 2
+                        val halfW = w / 2
+                        while ((halfH / inSampleSize) >= reqHeight && (halfW / inSampleSize) >= reqWidth) {
+                            inSampleSize *= 2
+                        }
                     }
+                    BitmapFactory.Options().apply { this.inSampleSize = inSampleSize }
+                        .let { BitmapFactory.decodeByteArray(plainBytes, 0, plainBytes.size, it) }
+                } else {
+                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(path, opts)
+                    var inSampleSize = 1
+                    val (h, w) = opts.outHeight to opts.outWidth
+                    if (h > reqHeight || w > reqWidth) {
+                        val halfH = h / 2
+                        val halfW = w / 2
+                        while ((halfH / inSampleSize) >= reqHeight && (halfW / inSampleSize) >= reqWidth) {
+                            inSampleSize *= 2
+                        }
+                    }
+                    BitmapFactory.Options().apply { this.inSampleSize = inSampleSize }
+                        .let { BitmapFactory.decodeFile(path, it) }
                 }
-                BitmapFactory.Options().apply { this.inSampleSize = inSampleSize }
-                    .let { BitmapFactory.decodeFile(path, it) }
             }.getOrNull()
         }
     }

@@ -41,6 +41,8 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import javax.crypto.SecretKey
 
 /**
  * Foreground service that handles bidirectional JPEG-over-TCP video streaming over Wi-Fi Direct.
@@ -63,6 +65,7 @@ class VideoCallService : Service() {
 
         const val EXTRA_IS_GROUP_OWNER = "extra_is_group_owner"
         const val EXTRA_HOST_ADDRESS = "extra_host_address"
+        const val EXTRA_PEER_ID = "extra_peer_id"
 
         private val MIN_FRAME_INTERVAL_MS = 1000L / Constants.VIDEO_FPS.coerceAtLeast(1)
 
@@ -88,12 +91,12 @@ class VideoCallService : Service() {
             instance?.endCallInternal(notifyBus = false, reason = "Call ended")
         }
 
-        fun startAsGroupOwner() {
-            instance?.startSessionInternal(isGroupOwner = true, hostAddress = null)
+        fun startAsGroupOwner(peerId: String? = null) {
+            instance?.startSessionInternal(isGroupOwner = true, hostAddress = null, peerId = peerId)
         }
 
-        fun connectToGroupOwner(hostAddress: String) {
-            instance?.startSessionInternal(isGroupOwner = false, hostAddress = hostAddress)
+        fun connectToGroupOwner(hostAddress: String, peerId: String? = null) {
+            instance?.startSessionInternal(isGroupOwner = false, hostAddress = hostAddress, peerId = peerId)
         }
 
         fun switchCamera() {
@@ -112,6 +115,10 @@ class VideoCallService : Service() {
     @Volatile private var socket: Socket? = null
     @Volatile private var outputStream: OutputStream? = null
     @Volatile private var inputStream: InputStream? = null
+    @Volatile private var peerId: String? = null
+    @Volatile private var videoSessionKey: SecretKey? = null
+    private val sendFrameSeq = AtomicLong(0L)
+    private val recvFrameSeq = AtomicLong(0L)
     private val outgoingFrameChannel = Channel<ByteArray>(Channel.CONFLATED)
 
     // Camera
@@ -176,7 +183,8 @@ class VideoCallService : Service() {
         if (intent != null && intent.hasExtra(EXTRA_IS_GROUP_OWNER)) {
             val isGo = intent.getBooleanExtra(EXTRA_IS_GROUP_OWNER, false)
             val host = intent.getStringExtra(EXTRA_HOST_ADDRESS)
-            startSessionInternal(isGo, host)
+            val targetPeerId = intent.getStringExtra(EXTRA_PEER_ID)
+            startSessionInternal(isGo, host, targetPeerId)
         }
         return START_NOT_STICKY
     }
@@ -198,9 +206,10 @@ class VideoCallService : Service() {
 
     // ======================== Server/Client Setup ========================
 
-    private fun startSessionInternal(isGroupOwner: Boolean, hostAddress: String?) {
+    private fun startSessionInternal(isGroupOwner: Boolean, hostAddress: String?, peerId: String? = null) {
         if (!isRunning) return
         if (!sessionStarted.compareAndSet(false, true)) return
+        this.peerId = peerId
 
         if (isGroupOwner) {
             startAsGroupOwnerInternal()
@@ -227,7 +236,8 @@ class VideoCallService : Service() {
                 socket = conn
                 outputStream = conn.getOutputStream()
                 inputStream = conn.getInputStream()
-                Log.d(TAG, "Video client connected")
+                performVideoEcdhHandshake(conn, inputStream!!, outputStream!!)
+                Log.d(TAG, "Video client connected (E2EE stream ready)")
                 CallSessionBus.notifyConnected()
                 startVideoSender()
                 openCameraAndStream()
@@ -253,7 +263,8 @@ class VideoCallService : Service() {
                     socket = conn
                     outputStream = conn.getOutputStream()
                     inputStream = conn.getInputStream()
-                    Log.d(TAG, "Connected to GO video at $hostAddress:${Constants.VIDEO_PORT}")
+                    performVideoEcdhHandshake(conn, inputStream!!, outputStream!!)
+                    Log.d(TAG, "Connected to GO video at $hostAddress:${Constants.VIDEO_PORT} (E2EE stream ready)")
                     CallSessionBus.notifyConnected()
                     startVideoSender()
                     openCameraAndStream()
@@ -269,6 +280,41 @@ class VideoCallService : Service() {
                 CallSessionBus.notifyEnded("Peer did not answer")
             }
             endCallInternal(notifyBus = false, reason = "Connect timeout")
+        }
+    }
+
+    private fun performVideoEcdhHandshake(conn: Socket, input: InputStream, output: OutputStream) {
+        conn.soTimeout = 10_000
+        try {
+            val ephKp = CryptoManager.generateEcP256KeyPair()
+            val selfPub = ephKp.public.encoded
+            val dos = DataOutputStream(output)
+            dos.writeBytes("LVV1")
+            dos.writeShort(selfPub.size)
+            dos.write(selfPub)
+            dos.flush()
+
+            val dis = DataInputStream(input)
+            val magic = ByteArray(4)
+            dis.readFully(magic)
+            require(magic.contentEquals("LVV1".toByteArray(Charsets.US_ASCII))) { "Invalid video E2EE magic" }
+            val len = dis.readUnsignedShort()
+            require(len in 32..256) { "Invalid video ECDH key length: $len" }
+            val remotePubBytes = ByteArray(len)
+            dis.readFully(remotePubBytes)
+            val remoteEphPub = CryptoManager.decodeEcPublicKey(remotePubBytes)
+            val ephSecret = CryptoManager.computeEcdhSecret(ephKp.private, remoteEphPub)
+            videoSessionKey = CryptoManager.deriveVideoStreamSessionKey(
+                context = applicationContext,
+                peerId = peerId,
+                ephSecret = ephSecret,
+                ephPubA = selfPub,
+                ephPubB = remoteEphPub.encoded
+            )
+            sendFrameSeq.set(0L)
+            recvFrameSeq.set(0L)
+        } finally {
+            runCatching { conn.soTimeout = 0 }
         }
     }
 
@@ -503,12 +549,15 @@ class VideoCallService : Service() {
         sendJob?.cancel()
         sendJob = scope.launch {
             val out = outputStream ?: return@launch
+            val key = videoSessionKey ?: return@launch
             val dos = DataOutputStream(out)
             try {
                 for (frame in outgoingFrameChannel) {
                     if (!isRunning || terminating.get() || !isActive) break
-                    dos.writeInt(frame.size)
-                    dos.write(frame)
+                    val seq = sendFrameSeq.incrementAndGet()
+                    val encrypted = CryptoManager.encryptVideoFrame(key, seq, frame)
+                    dos.writeInt(encrypted.size)
+                    dos.write(encrypted)
                     dos.flush()
                 }
             } catch (e: Exception) {
@@ -525,16 +574,24 @@ class VideoCallService : Service() {
         playJob?.cancel()
         playJob = scope.launch {
             try {
+                val key = videoSessionKey ?: return@launch
                 val dis = DataInputStream(inputStream ?: return@launch)
+                val maxEncryptedSize = Constants.VIDEO_BUFFER_SIZE + 64
                 while (isActive && !terminating.get()) {
                     val frameSize = dis.readInt()
-                    if (frameSize <= 0 || frameSize > Constants.VIDEO_BUFFER_SIZE) {
-                        Log.w(TAG, "Invalid frame size: $frameSize (max=${Constants.VIDEO_BUFFER_SIZE})")
+                    if (frameSize <= 28 || frameSize > maxEncryptedSize) {
+                        Log.w(TAG, "Invalid encrypted frame size: $frameSize (max=$maxEncryptedSize)")
                         break
                     }
-                    val frameBytes = ByteArray(frameSize)
-                    dis.readFully(frameBytes)
-                    onRemoteVideoFrame?.invoke(frameBytes)
+                    val packet = ByteArray(frameSize)
+                    dis.readFully(packet)
+                    val seq = recvFrameSeq.incrementAndGet()
+                    val jpegBytes = CryptoManager.decryptVideoFrame(key, seq, packet)
+                    if (jpegBytes == null) {
+                        Log.w(TAG, "Failed to authenticate/decrypt video frame seq=$seq")
+                        break
+                    }
+                    onRemoteVideoFrame?.invoke(jpegBytes)
                 }
             } catch (_: EOFException) {
                 Log.d(TAG, "Video stream ended by peer")
@@ -575,6 +632,7 @@ class VideoCallService : Service() {
     }
 
     private fun closeSockets() {
+        videoSessionKey = null
         try { outputStream?.close() } catch (_: Exception) {}
         try { inputStream?.close() } catch (_: Exception) {}
         try { socket?.close() } catch (_: Exception) {}

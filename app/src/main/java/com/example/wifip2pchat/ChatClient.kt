@@ -81,17 +81,19 @@ class ChatClient(private val context: Context) {
         }
     }
 
-    /** Send the HELLO envelope so the GO adds us to the peer registry. */
+    /** Send the HELLO envelope with our ECDH P-256 identity key so the GO adds us. */
     private fun sendHello() {
+        CryptoManager.ensureInitialized(context)
+        val pubB64 = CryptoManager.getSelfPublicKeyB64(context)
         val line = Envelope.build(
             senderId = PeerRegistry.selfId,
             senderName = PeerRegistry.selfName,
             recipientId = "GO",
-            payload = Constants.PAYLOAD_HELLO
+            payload = CryptoManager.buildHelloPayload(null, pubB64)
         ) + "\n"
         try {
             if (writeSynchronized(line)) {
-                Log.d(TAG, "Sent HELLO as ${PeerRegistry.selfId} (${PeerRegistry.selfName})")
+                Log.d(TAG, "Sent E2EE HELLO as ${PeerRegistry.selfId} (${PeerRegistry.selfName})")
             }
         } catch (e: Exception) {
             Log.e(TAG, "HELLO send failed: ${e.message}")
@@ -109,18 +111,34 @@ class ChatClient(private val context: Context) {
 
     // ======================== Send ========================
 
-    /** Send a payload (e.g. "TEXT:hello") addressed to one specific peer. */
+    /** Send an E2EE payload addressed to one specific peer. */
     fun sendTo(recipientId: String, payload: String) {
         scope.launch {
+            val wirePayload = if (payload.startsWith(Constants.MSG_TYPE_KEYX) ||
+                payload.startsWith(Constants.MSG_TYPE_E2E_DIRECT)
+            ) {
+                payload
+            } else {
+                CryptoManager.encryptForPeer(
+                    context = context,
+                    peerId = recipientId,
+                    senderId = PeerRegistry.selfId,
+                    recipientId = recipientId,
+                    plaintext = payload
+                ) ?: run {
+                    Log.w(TAG, "sendTo($recipientId): missing peer public key")
+                    return@launch
+                }
+            }
             val line = Envelope.build(
                 senderId = PeerRegistry.selfId,
                 senderName = PeerRegistry.selfName,
                 recipientId = recipientId,
-                payload = payload
+                payload = wirePayload
             ) + "\n"
             try {
                 if (writeSynchronized(line)) {
-                    Log.d(TAG, "Sent to $recipientId: $payload")
+                    Log.d(TAG, "Sent E2EE to $recipientId")
                 } else {
                     Log.w(TAG, "sendTo: not connected")
                 }
@@ -130,18 +148,30 @@ class ChatClient(private val context: Context) {
         }
     }
 
-    /** Send a broadcast payload (e.g. group chat text) to every member. */
+    /** Send an E2EE broadcast payload to every group member. */
     fun sendBroadcast(payload: String) {
         scope.launch {
+            val keyTargets = PeerRegistry.snapshot()
+                .map { it.id }
+                .filter { it != PeerRegistry.selfId && CryptoManager.hasPeerKey(context, it) }
+            val wirePayload = CryptoManager.encryptForBroadcast(
+                context = context,
+                senderId = PeerRegistry.selfId,
+                targetPeerIds = keyTargets,
+                plaintext = payload
+            ) ?: run {
+                Log.w(TAG, "sendBroadcast: no peer public keys")
+                return@launch
+            }
             val line = Envelope.build(
                 senderId = PeerRegistry.selfId,
                 senderName = PeerRegistry.selfName,
                 recipientId = Constants.RECIPIENT_BROADCAST,
-                payload = payload
+                payload = wirePayload
             ) + "\n"
             try {
                 if (writeSynchronized(line)) {
-                    Log.d(TAG, "Broadcast: $payload")
+                    Log.d(TAG, "Broadcast E2EE sent")
                 } else {
                     Log.w(TAG, "sendBroadcast: not connected")
                 }
@@ -174,17 +204,31 @@ class ChatClient(private val context: Context) {
     }
 
     private fun handleIncomingLine(raw: String) {
-        val env = Envelope.parse(raw)
-        if (env == null) {
-            // Legacy bare line — wrap as broadcast from "Unknown" for the UI.
-            Log.d(TAG, "Legacy bare line: $raw")
-            val legacyEnv = Envelope(
-                senderId = "legacy",
-                senderName = "Unknown",
-                recipientId = Constants.RECIPIENT_BROADCAST,
-                payload = raw
+        val env = Envelope.parse(raw) ?: return
+
+        if (CryptoManager.isHelloPayload(env.payload)) {
+            val (ip, pubB64) = CryptoManager.parseHelloPayload(env.payload)
+            if (!pubB64.isNullOrBlank()) {
+                CryptoManager.registerPeerPublicKey(context, env.senderId, pubB64)
+            }
+            PeerRegistry.upsert(
+                PeerRegistry.Peer(
+                    id = env.senderId,
+                    name = env.senderName,
+                    isGroupOwner = false,
+                    ipAddress = ip,
+                    publicKeyB64 = pubB64
+                )
             )
-            deliver(legacyEnv)
+            return
+        }
+
+        if (env.payload.startsWith(Constants.MSG_TYPE_KEYX)) {
+            val pubB64 = env.payload.removePrefix(Constants.MSG_TYPE_KEYX).trim()
+            if (pubB64.isNotBlank()) {
+                CryptoManager.registerPeerPublicKey(context, env.senderId, pubB64)
+                PeerRegistry.updatePublicKey(env.senderId, pubB64)
+            }
             return
         }
 
@@ -194,6 +238,11 @@ class ChatClient(private val context: Context) {
                 senderId = env.senderId,
                 senderName = env.senderName
             )
+            list.forEach { p ->
+                if (!p.publicKeyB64.isNullOrBlank()) {
+                    CryptoManager.registerPeerPublicKey(context, p.id, p.publicKeyB64)
+                }
+            }
             PeerRegistry.mergeFromPeersPayload(list)
             return
         }
@@ -203,8 +252,16 @@ class ChatClient(private val context: Context) {
 
     private fun deliver(env: Envelope) {
         if (!env.isFor(PeerRegistry.selfId)) return
+        val decryptedPayload = when {
+            env.payload.startsWith(Constants.MSG_TYPE_E2E_DIRECT) ->
+                CryptoManager.decryptFromPeer(context, env.senderId, env.senderId, env.recipientId, env.payload)
+            env.payload.startsWith(Constants.MSG_TYPE_E2E_MULTI) ->
+                CryptoManager.decryptBroadcast(context, env.senderId, PeerRegistry.selfId, env.payload)
+            else -> null
+        } ?: return
+        val clean = env.copy(payload = decryptedPayload, isEncrypted = true)
         android.os.Handler(android.os.Looper.getMainLooper()).post {
-            onEnvelopeReceived?.invoke(env)
+            onEnvelopeReceived?.invoke(clean)
         }
     }
 

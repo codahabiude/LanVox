@@ -300,6 +300,9 @@ class ChatActivity : AppCompatActivity() {
         GlassEffects.applyGlowElevation(findViewById(R.id.composerDock), R.color.glow_bubble_sent, 12f)
 
         findViewById<ImageView>(R.id.btnChatBack).setOnClickListener { finish() }
+        findViewById<View>(R.id.layoutChatHeaderTitle).setOnClickListener {
+            EncryptionInfoBottomSheet.show(this, peerId, peerName)
+        }
         btnChatSearch.setOnClickListener {
             val opening = searchBarContainer.visibility != View.VISIBLE
             setSearchOpen(opening)
@@ -423,6 +426,7 @@ class ChatActivity : AppCompatActivity() {
         if (ChatBus.activeChatPeerId == peerId) ChatBus.activeChatPeerId = null
         ChatBus.onMessageSaved = null
         ChatBus.onConnectionStateChanged = null
+        CryptoManager.purgeDecryptedTempCache(this)
         super.onDestroy()
     }
 
@@ -1001,15 +1005,22 @@ class ChatActivity : AppCompatActivity() {
         val ttlLabel = EphemeralPrefs.formatShortLabel(EphemeralPrefs.getTtlSeconds(this, pid))
         val ttlSuffix = if (ttlLabel != null) " · ⏱ $ttlLabel" else ""
         val peer = PeerRegistry.peerForId(pid)
+        val isVerified = pid != null && pid != Constants.GROUP_PEER_ID && CryptoManager.isPeerVerified(this, pid)
+        val hasKey = pid != null && pid != Constants.GROUP_PEER_ID && CryptoManager.hasPeerKey(this, pid)
+        val encTag = when {
+            isVerified -> "✓ Verified E2EE"
+            hasKey -> "E2EE"
+            else -> "encrypted"
+        }
         val presenceDetail = peer?.let { p ->
             val label = DeviceIdentity.statusDisplayLabel(p.presenceStatus)
-            if (!p.bio.isNullOrBlank()) "$label · ${p.bio}" else "$label · encrypted"
-        } ?: "online · encrypted"
+            if (!p.bio.isNullOrBlank()) "$label · ${p.bio}" else "$label · $encTag"
+        } ?: "online · $encTag"
         tvPeerStatus.text = when {
             typingLabel != null -> typingLabel
-            pid == Constants.GROUP_PEER_ID -> "${PeerRegistry.snapshotIncludingSelf().size} members$ttlSuffix"
+            pid == Constants.GROUP_PEER_ID -> "${PeerRegistry.snapshotIncludingSelf().size} members · E2EE$ttlSuffix"
             liveWithThisPeer -> "$presenceDetail$ttlSuffix"
-            else -> "offline — history only$ttlSuffix"
+            else -> "offline · encrypted vault$ttlSuffix"
         }
         if (liveWithThisPeer && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
             MainActivity.sendReadReceiptStatic(pid)

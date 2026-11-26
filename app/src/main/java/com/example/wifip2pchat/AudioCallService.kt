@@ -35,6 +35,8 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import javax.crypto.SecretKey
 
 /**
  * Foreground service (`foregroundServiceType="microphone"`) that hosts the
@@ -116,6 +118,9 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var signalingSocket: Socket? = null
     @Volatile private var signalWriter: BufferedWriter? = null
+    @Volatile private var signalingSessionKey: SecretKey? = null
+    private val outSignalSeq = AtomicLong(0L)
+    private val lastInSignalSeq = AtomicLong(0L)
     private val pendingOutgoingSignals = mutableListOf<String>()
 
     private var webRtcManager: WebRtcAudioCallManager? = null
@@ -301,12 +306,54 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
         conn.keepAlive = true
         signalingSocket = conn
 
+        val writer = BufferedWriter(OutputStreamWriter(conn.getOutputStream(), Charsets.UTF_8))
+        val reader = BufferedReader(InputStreamReader(conn.getInputStream(), Charsets.UTF_8))
+
+        val sessionKey = try {
+            conn.soTimeout = 10_000
+            val ephKp = CryptoManager.generateEcP256KeyPair()
+            val selfPub = ephKp.public.encoded
+            writer.write(
+                JSONObject()
+                    .put("type", "ecdh")
+                    .put("pub", CryptoManager.b64UrlEncode(selfPub))
+                    .toString()
+            )
+            writer.newLine()
+            writer.flush()
+
+            val hsLine = reader.readLine()
+                ?: throw IllegalStateException("Peer closed socket during audio ECDH handshake")
+            val hsJson = JSONObject(hsLine)
+            require(hsJson.optString("type") == "ecdh") { "Unexpected audio signaling handshake" }
+            val remotePubBytes = CryptoManager.b64UrlDecode(hsJson.getString("pub"))
+            val remoteEphPub = CryptoManager.decodeEcPublicKey(remotePubBytes)
+            val ephSecret = CryptoManager.computeEcdhSecret(ephKp.private, remoteEphPub)
+            CryptoManager.deriveAudioSignalingSessionKey(
+                context = applicationContext,
+                peerId = peerId,
+                ephSecret = ephSecret,
+                ephPubA = selfPub,
+                ephPubB = remoteEphPub.encoded
+            )
+        } finally {
+            runCatching { conn.soTimeout = 0 }
+        }
+
+        outSignalSeq.set(0L)
+        lastInSignalSeq.set(0L)
+        signalingSessionKey = sessionKey
+
         synchronized(signalWriteLock) {
-            val writer = BufferedWriter(OutputStreamWriter(conn.getOutputStream(), Charsets.UTF_8))
             signalWriter = writer
             if (pendingOutgoingSignals.isNotEmpty()) {
                 pendingOutgoingSignals.forEach { msg ->
-                    writer.write(msg)
+                    val encLine = CryptoManager.encryptSignalingLine(
+                        sessionKey,
+                        outSignalSeq.incrementAndGet(),
+                        msg
+                    )
+                    writer.write(encLine)
                     writer.newLine()
                 }
                 writer.flush()
@@ -314,15 +361,14 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
             }
         }
 
-        // Start WebRTC engine; Group Owner sends the initial SDP offer
+        // Start WebRTC engine (DTLS-SRTP media); Group Owner sends the initial SDP offer
         webRtcManager?.initialize(isOfferer = isGroupOwnerRole)
-        startSignalingReader(conn)
+        startSignalingReader(reader)
     }
 
-    private fun startSignalingReader(conn: Socket) {
+    private fun startSignalingReader(reader: BufferedReader) {
         readJob = scope.launch {
             try {
-                val reader = BufferedReader(InputStreamReader(conn.getInputStream(), Charsets.UTF_8))
                 while (isActive && !terminating.get()) {
                     val line = reader.readLine() ?: break
                     if (line.isBlank()) continue
@@ -341,18 +387,29 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
         }
     }
 
-    private fun handleSignalingMessage(rawJson: String) {
+    private fun handleSignalingMessage(rawLine: String) {
         try {
+            val key = signalingSessionKey ?: return
+            val (seq, rawJson) = CryptoManager.decryptSignalingLine(key, rawLine) ?: run {
+                Log.w(TAG, "Dropped unencrypted or tampered signaling payload")
+                return
+            }
+            if (seq <= lastInSignalSeq.get()) {
+                Log.w(TAG, "Dropped out-of-order/replayed signaling seq=$seq")
+                return
+            }
+            lastInSignalSeq.set(seq)
+
             val json = JSONObject(rawJson)
             when (json.optString("type")) {
                 "offer" -> {
                     val sdp = json.getString("sdp")
-                    Log.d(TAG, "Received WebRTC SDP offer")
+                    Log.d(TAG, "Received E2EE WebRTC SDP offer")
                     webRtcManager?.onRemoteOfferReceived(sdp)
                 }
                 "answer" -> {
                     val sdp = json.getString("sdp")
-                    Log.d(TAG, "Received WebRTC SDP answer")
+                    Log.d(TAG, "Received E2EE WebRTC SDP answer")
                     webRtcManager?.onRemoteAnswerReceived(sdp)
                 }
                 "ice" -> {
@@ -362,7 +419,7 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
                     webRtcManager?.onRemoteIceCandidateReceived(sdpMid, mLineIndex, candidate)
                 }
                 "bye" -> {
-                    Log.d(TAG, "Peer sent WebRTC bye")
+                    Log.d(TAG, "Peer sent E2EE WebRTC bye")
                     endCallInternal(notifyBus = true, sendBye = false, reason = "Call ended")
                 }
             }
@@ -378,10 +435,16 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
             try {
                 synchronized(signalWriteLock) {
                     val writer = signalWriter
-                    if (writer == null) {
+                    val key = signalingSessionKey
+                    if (writer == null || key == null) {
                         pendingOutgoingSignals.add(serialized)
                     } else {
-                        writer.write(serialized)
+                        val encLine = CryptoManager.encryptSignalingLine(
+                            key,
+                            outSignalSeq.incrementAndGet(),
+                            serialized
+                        )
+                        writer.write(encLine)
                         writer.newLine()
                         writer.flush()
                     }
@@ -483,15 +546,22 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
             pendingOutgoingSignals.clear()
             w
         }
+        val keySnapshot = signalingSessionKey
+        signalingSessionKey = null
         val sockSnapshot = signalingSocket
         val srvSnapshot = serverSocket
         signalingSocket = null
         serverSocket = null
 
         Thread({
-            if (sendBye && writerSnapshot != null) {
+            if (sendBye && writerSnapshot != null && keySnapshot != null) {
                 try {
-                    writerSnapshot.write(JSONObject().put("type", "bye").toString())
+                    val byeEnc = CryptoManager.encryptSignalingLine(
+                        keySnapshot,
+                        outSignalSeq.incrementAndGet(),
+                        JSONObject().put("type", "bye").toString()
+                    )
+                    writerSnapshot.write(byeEnc)
                     writerSnapshot.newLine()
                     writerSnapshot.flush()
                 } catch (_: Exception) {}

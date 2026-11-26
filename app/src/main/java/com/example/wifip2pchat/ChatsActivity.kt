@@ -73,6 +73,7 @@ class ChatsActivity : AppCompatActivity() {
                     isConnected = MainActivity.isConnectedStatic(),
                     onExportChats = null,
                     onOpenProfile = { openProfileSheet() },
+                    onOpenEncryption = { EncryptionInfoBottomSheet.show(this@ChatsActivity, null, null) },
                     onClearAllHistory = { confirmClearAll(total) }
                 )
             }
