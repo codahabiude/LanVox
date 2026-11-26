@@ -19,6 +19,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
@@ -216,6 +219,23 @@ class IncomingCallActivity : AppCompatActivity() {
         sendControl(Constants.MSG_TYPE_CALL_REJECT + callType)
         CallListenerService.onIncomingCallHandled()
         CallRingtoneManager.stopRinging()
+
+        val pid = peerId?.takeIf { it.isNotBlank() }
+        if (pid != null) {
+            val appCtx = applicationContext
+            val label = if (callType == Constants.CALL_TYPE_VIDEO) "Declined video call" else "Declined audio call"
+            CoroutineScope(Dispatchers.IO).launch {
+                runCatching {
+                    ChatRepository.get(appCtx).insertCallLog(
+                        peerId = pid,
+                        peerName = callerName,
+                        callType = callType,
+                        summary = label,
+                        isSentByMe = false
+                    )
+                }
+            }
+        }
 
         overridePendingTransition(0, R.anim.slide_down)
         finish()

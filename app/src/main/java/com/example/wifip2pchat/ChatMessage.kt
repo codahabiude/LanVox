@@ -75,19 +75,40 @@ data class ChatMessage(
     val replyToSender: String? = null,
     val replyToText: String? = null,
     val reactionsJson: String? = null,
-    val isStarred: Boolean = false
+    val isStarred: Boolean = false,
+    val isPinned: Boolean = false,
+    val editedAt: Long? = null,
+    val expiresAt: Long? = null,
+    val messageType: String = TYPE_STANDARD
 ) {
     val isFileMessage: Boolean
         get() = !attachmentName.isNullOrBlank()
 
+    val isVoiceNote: Boolean
+        get() = attachmentMime?.startsWith("audio/") == true
+
+    val isCallLog: Boolean
+        get() = messageType == TYPE_CALL_LOG
+
     val hasReplyQuote: Boolean
         get() = !replyToText.isNullOrBlank()
 
+    fun formattedRemainingTtl(nowMs: Long = System.currentTimeMillis()): String? {
+        val exp = expiresAt ?: return null
+        val remSec = ((exp - nowMs) / 1000L).coerceAtLeast(0L)
+        return when {
+            remSec <= 0L -> "0s"
+            remSec < 60L -> "${remSec}s"
+            remSec < 3600L -> "${(remSec + 59L) / 60L}m"
+            else -> "${(remSec + 3599L) / 3600L}h"
+        }
+    }
+
     fun quoteSnippet(): String {
-        val raw = if (isFileMessage) {
-            "📎 ${attachmentName ?: "Attachment"}"
-        } else {
-            text
+        val raw = when {
+            isVoiceNote -> "🎤 Voice note"
+            isFileMessage -> "📎 ${attachmentName ?: "Attachment"}"
+            else -> text
         }
         val clean = raw.replace('\n', ' ').trim()
         return if (clean.length > 90) clean.take(87) + "…" else clean
@@ -145,7 +166,23 @@ data class ChatMessage(
 
     companion object {
         const val SELF_REACTOR_KEY = "__self__"
+        const val TYPE_STANDARD = "STANDARD"
+        const val TYPE_CALL_LOG = "CALL_LOG"
         val QUICK_REACTIONS = listOf("❤️", "😂", "😮", "😢", "🙏", "👍")
+
+        fun encodeTtlPayload(ttlSeconds: Long, innerPayload: String): String {
+            if (ttlSeconds <= 0L) return innerPayload
+            return "${Constants.MSG_TYPE_TTL}$ttlSeconds|$innerPayload"
+        }
+
+        fun decodeTtlPayload(payload: String): Pair<Long?, String> {
+            if (!payload.startsWith(Constants.MSG_TYPE_TTL)) return null to payload
+            val rest = payload.removePrefix(Constants.MSG_TYPE_TTL)
+            val sep = rest.indexOf('|')
+            if (sep <= 0) return null to payload
+            val secs = rest.substring(0, sep).trim().toLongOrNull()?.takeIf { it > 0L } ?: return null to payload
+            return secs to rest.substring(sep + 1)
+        }
 
         fun encodeReplyPayload(
             replyToId: String?,

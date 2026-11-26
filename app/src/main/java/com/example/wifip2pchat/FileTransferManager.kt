@@ -341,6 +341,50 @@ object FileTransferManager {
     }
 
     /**
+     * Stages a locally generated file (such as an AAC voice note) into app-private
+     * attachments storage and returns a ready [StagedFile] for P2P transfer.
+     */
+    suspend fun stageLocalFile(
+        context: Context,
+        sourceFile: File,
+        displayName: String,
+        mimeType: String
+    ): Result<StagedFile> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (!sourceFile.exists() || sourceFile.length() <= 0L) {
+                error("Recorded file is empty")
+            }
+            val safeName = sanitizeFileName(displayName)
+            val transferId = UUID.randomUUID().toString()
+            val dir = attachmentsDir(context)
+            val destFile = File(dir, "${transferId}_$safeName")
+            FileInputStream(sourceFile).use { input ->
+                FileOutputStream(destFile).use { output ->
+                    copyFixedOrAll(input, output, sourceFile.length())
+                    output.flush()
+                }
+            }
+            val totalBytes = destFile.length()
+            if (totalBytes <= 0L) {
+                destFile.delete()
+                error("Recorded file is empty")
+            }
+            val senderHost = ChatServerService.localIpForPeer(null) ?: DeviceIdentity.resolveLocalIp()
+            stagedFiles[transferId] = destFile
+            StagedFile(
+                offer = FileOffer(
+                    transferId = transferId,
+                    fileName = safeName,
+                    mimeType = mimeType,
+                    fileSize = totalBytes,
+                    senderHost = senderHost
+                ),
+                localFile = destFile
+            )
+        }
+    }
+
+    /**
      * Stages the file locally for direct serving on port [Constants.FILE_PORT] so
      * clients do not have to upload files through a central host first.
      */
@@ -540,14 +584,19 @@ object FileTransferManager {
         }
     }
 
-    fun formatSummaryText(fileName: String, sizeBytes: Long): String {
+    fun formatSummaryText(fileName: String, sizeBytes: Long, mimeType: String? = null): String {
         val temp = ChatMessage(
             text = "",
             isSentByMe = true,
             attachmentName = fileName,
+            attachmentMime = mimeType,
             attachmentSize = sizeBytes
         )
-        return "📎 $fileName (${temp.formattedFileSize()})"
+        return if (mimeType?.startsWith("audio/") == true) {
+            "🎤 Voice note (${temp.formattedFileSize()})"
+        } else {
+            "📎 $fileName (${temp.formattedFileSize()})"
+        }
     }
 
     private fun attachmentsDir(context: Context): File =

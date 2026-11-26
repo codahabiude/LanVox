@@ -18,6 +18,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
@@ -42,13 +43,15 @@ class MessageAdapter(
     private val onDoubleTapReact: ((ChatMessage) -> Unit)? = null,
     private val onLongPressMessage: ((ChatMessage) -> Unit)? = null,
     private val onReactionChipClick: ((ChatMessage, String) -> Unit)? = null,
-    private val onQuoteClick: ((String) -> Unit)? = null
+    private val onQuoteClick: ((String) -> Unit)? = null,
+    private val onCallBackClick: ((ChatMessage) -> Unit)? = null
 ) : RecyclerView.Adapter<MessageAdapter.MessageViewHolder>() {
 
     companion object {
         const val VIEW_TYPE_SENT = 1
         const val VIEW_TYPE_RECEIVED = 2
         private const val PAYLOAD_PROGRESS = "payload_progress"
+        private const val PAYLOAD_VOICE = "payload_voice"
         private const val MAX_VISIBLE_PEER_CHIPS = 6
 
         private val thumbCache = object : LruCache<String, Bitmap>(24) {}
@@ -59,6 +62,7 @@ class MessageAdapter(
     private val messages = mutableListOf<ChatMessage>()
     private var activeQuery: String = ""
     private var transferSnapshots: Map<String, FileTransferTracker.TransferSnapshot> = emptyMap()
+    private var voicePlaybackState: VoiceNoteManager.PlaybackState = VoiceNoteManager.PlaybackState()
 
     override fun getItemViewType(position: Int): Int {
         return if (messages[position].isSentByMe) VIEW_TYPE_SENT else VIEW_TYPE_RECEIVED
@@ -86,6 +90,18 @@ class MessageAdapter(
             val tid = messages[i].transferId ?: continue
             if (oldSnapshots[tid] != newSnapshots[tid]) {
                 notifyItemChanged(i, PAYLOAD_PROGRESS)
+            }
+        }
+    }
+
+    fun updateVoicePlayback(newState: VoiceNoteManager.PlaybackState) {
+        val oldState = voicePlaybackState
+        if (oldState == newState) return
+        voicePlaybackState = newState
+        for (i in messages.indices) {
+            val path = messages[i].attachmentPath ?: continue
+            if (messages[i].isVoiceNote && (path == oldState.path || path == newState.path)) {
+                notifyItemChanged(i, PAYLOAD_VOICE)
             }
         }
     }
@@ -135,7 +151,11 @@ class MessageAdapter(
                     oldItem.replyToSender == newItem.replyToSender &&
                     oldItem.replyToText == newItem.replyToText &&
                     oldItem.reactionsJson == newItem.reactionsJson &&
-                    oldItem.isStarred == newItem.isStarred
+                    oldItem.isStarred == newItem.isStarred &&
+                    oldItem.isPinned == newItem.isPinned &&
+                    oldItem.editedAt == newItem.editedAt &&
+                    oldItem.expiresAt == newItem.expiresAt &&
+                    oldItem.messageType == newItem.messageType
             }
         })
         messages.clear()
@@ -178,6 +198,10 @@ class MessageAdapter(
             holder.bindTransferProgress(messages[position])
             return
         }
+        if (payloads.contains(PAYLOAD_VOICE) && payloads.size == 1) {
+            holder.bindVoicePlaybackState(messages[position])
+            return
+        }
         super.onBindViewHolder(holder, position, payloads)
     }
 
@@ -187,6 +211,12 @@ class MessageAdapter(
         itemView: View,
         private val viewType: Int
     ) : RecyclerView.ViewHolder(itemView) {
+
+        private val layoutCallLog: LinearLayout = itemView.findViewById(R.id.layoutCallLog)
+        private val ivCallLogIcon: ImageView = itemView.findViewById(R.id.ivCallLogIcon)
+        private val tvCallLogTitle: TextView = itemView.findViewById(R.id.tvCallLogTitle)
+        private val tvCallLogMeta: TextView = itemView.findViewById(R.id.tvCallLogMeta)
+        private val tvCallLogCallback: TextView = itemView.findViewById(R.id.tvCallLogCallback)
 
         private val messageColumn: LinearLayout = itemView.findViewById(R.id.messageColumn)
         private val bubbleContainer: LinearLayout = itemView.findViewById(R.id.bubbleContainer)
@@ -210,8 +240,16 @@ class MessageAdapter(
         private val tvTransferStage: TextView = itemView.findViewById(R.id.tvTransferStage)
         private val tvTransferPeerCount: TextView = itemView.findViewById(R.id.tvTransferPeerCount)
         private val llPeerTransferChips: LinearLayout = itemView.findViewById(R.id.llPeerTransferChips)
+        private val layoutVoiceNote: LinearLayout = itemView.findViewById(R.id.layoutVoiceNote)
+        private val btnVoicePlayPause: ImageView = itemView.findViewById(R.id.btnVoicePlayPause)
+        private val seekVoiceNote: SeekBar = itemView.findViewById(R.id.seekVoiceNote)
+        private val tvVoiceDuration: TextView = itemView.findViewById(R.id.tvVoiceDuration)
+        private val tvVoiceStateBadge: TextView = itemView.findViewById(R.id.tvVoiceStateBadge)
         private val tvMessage: TextView = itemView.findViewById(R.id.tvMessage)
+        private val ivPinnedBadge: ImageView = itemView.findViewById(R.id.ivPinnedBadge)
         private val ivStarred: ImageView = itemView.findViewById(R.id.ivStarred)
+        private val tvExpiryTag: TextView = itemView.findViewById(R.id.tvExpiryTag)
+        private val tvEditedTag: TextView = itemView.findViewById(R.id.tvEditedTag)
         private val tvTimestamp: TextView = itemView.findViewById(R.id.tvTimestamp)
         private val ivTick: ImageView = itemView.findViewById(R.id.ivTick)
         private val tvReadStatus: TextView = itemView.findViewById(R.id.tvReadStatus)
@@ -258,12 +296,53 @@ class MessageAdapter(
         fun bind(message: ChatMessage) {
             boundMessage = message
             val ctx = itemView.context
-            val isSent = viewType == VIEW_TYPE_SENT || message.isSentByMe
             val formattedTime = message.formattedTimestamp(ctx)
             val highlightColor = ContextCompat.getColor(ctx, R.color.search_highlight)
 
+            if (message.isCallLog) {
+                layoutCallLog.visibility = View.VISIBLE
+                messageColumn.visibility = View.GONE
+                val isVideo = message.attachmentMime == Constants.CALL_TYPE_VIDEO
+                ivCallLogIcon.setImageResource(if (isVideo) R.drawable.ic_videocam else R.drawable.ic_phone)
+                val isMissedOrDeclined = message.text.contains("Missed", ignoreCase = true) ||
+                    message.text.contains("Declined", ignoreCase = true)
+                ivCallLogIcon.setColorFilter(
+                    ContextCompat.getColor(
+                        ctx,
+                        if (isMissedOrDeclined) R.color.call_decline else R.color.brand_secondary
+                    )
+                )
+                tvCallLogTitle.text = ChatSearchHelper.highlight(message.text, activeQuery, highlightColor)
+                tvCallLogMeta.text = formattedTime
+                tvCallLogCallback.visibility = if (onCallBackClick != null) View.VISIBLE else View.GONE
+                tvCallLogCallback.setOnClickListener { onCallBackClick?.invoke(message) }
+                layoutCallLog.setOnLongClickListener {
+                    layoutCallLog.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    onLongPressMessage?.invoke(message)
+                    true
+                }
+                return
+            }
+
+            layoutCallLog.visibility = View.GONE
+            messageColumn.visibility = View.VISIBLE
+
+            val isSent = viewType == VIEW_TYPE_SENT || message.isSentByMe
+
             bindQuoteReply(message)
-            bindAttachment(message, highlightColor)
+
+            val showVoiceInline = message.isVoiceNote &&
+                !message.attachmentPath.isNullOrBlank() &&
+                message.attachmentState != AttachmentState.FAILED
+
+            if (showVoiceInline) {
+                layoutAttachment.visibility = View.GONE
+                layoutVoiceNote.visibility = View.VISIBLE
+                bindVoiceNote(message)
+            } else {
+                layoutVoiceNote.visibility = View.GONE
+                bindAttachment(message, highlightColor)
+            }
 
             if (message.isFileMessage) {
                 tvMessage.visibility = View.GONE
@@ -272,7 +351,16 @@ class MessageAdapter(
                 tvMessage.text = ChatSearchHelper.highlight(message.text, activeQuery, highlightColor)
             }
 
+            ivPinnedBadge.visibility = if (message.isPinned) View.VISIBLE else View.GONE
             ivStarred.visibility = if (message.isStarred) View.VISIBLE else View.GONE
+            tvEditedTag.visibility = if (message.editedAt != null) View.VISIBLE else View.GONE
+            val ttlLabel = message.formattedRemainingTtl()
+            if (ttlLabel != null) {
+                tvExpiryTag.text = "⏱ $ttlLabel"
+                tvExpiryTag.visibility = View.VISIBLE
+            } else {
+                tvExpiryTag.visibility = View.GONE
+            }
 
             tvTimestamp.visibility = View.VISIBLE
             tvTimestamp.text = ChatSearchHelper.highlight(formattedTime, activeQuery, highlightColor)
@@ -309,6 +397,7 @@ class MessageAdapter(
                 tvSenderName.visibility = View.GONE
                 tvMessage.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_sent_text))
                 tvTimestamp.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_sent_time))
+                tvEditedTag.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_sent_time))
                 ivTick.visibility = View.VISIBLE
                 tvReadStatus.visibility = View.VISIBLE
                 when (message.status) {
@@ -352,11 +441,54 @@ class MessageAdapter(
                 }
                 tvMessage.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_received_text))
                 tvTimestamp.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_received_time))
+                tvEditedTag.setTextColor(ContextCompat.getColor(ctx, R.color.bubble_received_time))
                 ivTick.visibility = View.GONE
                 tvReadStatus.visibility = View.GONE
             }
 
             bindReactions(message)
+        }
+
+        private fun bindVoiceNote(message: ChatMessage) {
+            val path = message.attachmentPath ?: return
+            bindVoicePlaybackState(message)
+            btnVoicePlayPause.setOnClickListener {
+                VoiceNoteManager.togglePlayback(path)
+            }
+            seekVoiceNote.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser && voicePlaybackState.path == path) {
+                        VoiceNoteManager.seekTo(path, progress / 1000f)
+                    }
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+            layoutVoiceNote.setOnLongClickListener {
+                bubbleContainer.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                onLongPressMessage?.invoke(message)
+                true
+            }
+        }
+
+        fun bindVoicePlaybackState(message: ChatMessage) {
+            val path = message.attachmentPath ?: return
+            val active = voicePlaybackState.path == path
+            val isPlaying = active && voicePlaybackState.isPlaying
+            btnVoicePlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+            if (active && voicePlaybackState.durationMs > 0) {
+                val progress = ((voicePlaybackState.positionMs.toFloat() / voicePlaybackState.durationMs.toFloat()) * 1000f)
+                    .toInt()
+                    .coerceIn(0, 1000)
+                seekVoiceNote.progress = progress
+                tvVoiceDuration.text = "${VoiceNoteManager.formatDurationMs(voicePlaybackState.positionMs)} / ${VoiceNoteManager.formatDurationMs(voicePlaybackState.durationMs)}"
+                tvVoiceStateBadge.text = if (isPlaying) "PLAYING" else "PAUSED"
+            } else {
+                seekVoiceNote.progress = 0
+                val totalDur = VoiceNoteManager.readDurationMs(path)
+                tvVoiceDuration.text = if (totalDur > 0) VoiceNoteManager.formatDurationMs(totalDur) else message.formattedFileSize()
+                tvVoiceStateBadge.text = "VOICE"
+            }
         }
 
         private fun bindQuoteReply(message: ChatMessage) {

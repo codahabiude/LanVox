@@ -35,12 +35,15 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -101,9 +104,14 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
          * Transmit a text message addressed to a specific peer.
          * Use "*" for group broadcast.
          */
-        fun transmitMessageTo(recipientId: String, text: String, msgId: String? = null): Boolean {
+        fun transmitMessageTo(
+            recipientId: String,
+            text: String,
+            msgId: String? = null,
+            ttlSeconds: Long = 0L
+        ): Boolean {
             val instance = staticInstance ?: return false
-            return instance.transmitText(recipientId, text, msgId)
+            return instance.transmitText(recipientId, text, msgId, ttlSeconds)
         }
 
         fun transmitReplyTo(
@@ -112,10 +120,11 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             replySender: String?,
             replySnippet: String?,
             text: String,
-            msgId: String? = null
+            msgId: String? = null,
+            ttlSeconds: Long = 0L
         ): Boolean {
             val instance = staticInstance ?: return false
-            return instance.transmitReply(recipientId, replyToId, replySender, replySnippet, text, msgId)
+            return instance.transmitReply(recipientId, replyToId, replySender, replySnippet, text, msgId, ttlSeconds)
         }
 
         fun sendTypingTo(recipientId: String, isTyping: Boolean, isGroup: Boolean) {
@@ -138,6 +147,35 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             val scopeSuffix = if (isGroup) Constants.GROUP_PEER_ID else ""
             val flag = if (added) "1" else "0"
             val payload = Constants.MSG_TYPE_REACT + scopeSuffix + "|" + targetMessageId + "|" + emoji + "|" + flag
+            instance.sendControlMessage(payload, recipientId)
+        }
+
+        fun sendPinTo(
+            recipientId: String,
+            targetMessageId: String,
+            pinned: Boolean,
+            isGroup: Boolean
+        ) {
+            val instance = staticInstance ?: return
+            if (!instance.isNetworkConnected() || targetMessageId.isBlank()) return
+            val scopeSuffix = if (isGroup) Constants.GROUP_PEER_ID else ""
+            val flag = if (pinned) "1" else "0"
+            val payload = Constants.MSG_TYPE_PIN + scopeSuffix + "|" + targetMessageId + "|" + flag
+            instance.sendControlMessage(payload, recipientId)
+        }
+
+        fun sendEditTo(
+            recipientId: String,
+            targetMessageId: String,
+            editedAt: Long,
+            newText: String,
+            isGroup: Boolean
+        ) {
+            val instance = staticInstance ?: return
+            if (!instance.isNetworkConnected() || targetMessageId.isBlank()) return
+            val scopeSuffix = if (isGroup) Constants.GROUP_PEER_ID else ""
+            val safeText = newText.replace('\r', ' ').replace('\n', ' ')
+            val payload = Constants.MSG_TYPE_EDIT + scopeSuffix + "|" + targetMessageId + "|" + editedAt + "|" + safeText
             instance.sendControlMessage(payload, recipientId)
         }
 
@@ -208,6 +246,23 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             inst.sendFileFromUri(uri, recipientId, threadPeerId, threadPeerName)
             return true
         }
+
+        /** Send a recorded voice note `.m4a` file from any chat thread screen. */
+        fun sendVoiceNoteToStatic(
+            recipientId: String,
+            threadPeerId: String,
+            threadPeerName: String,
+            audioFile: File,
+            durationMs: Long
+        ): Boolean {
+            val inst = staticInstance ?: return false
+            if (!inst.isNetworkConnected()) {
+                audioFile.delete()
+                return false
+            }
+            inst.sendStagedVoiceNote(recipientId, threadPeerId, threadPeerName, audioFile, durationMs)
+            return true
+        }
     }
 
     // --- UI ---
@@ -229,11 +284,17 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private lateinit var btnInlineEmptyScan: MaterialButton
     private lateinit var progressConnecting: View
     private lateinit var tvStoragePill: TextView
+    private lateinit var tvEphemeralStripPill: TextView
     private lateinit var btnChats: ImageView
+    private lateinit var tvChatsUnreadBadge: TextView
     private lateinit var btnMoreOptions: ImageView
     private lateinit var activeChatHeader: View
     private lateinit var tvActiveChatTitle: TextView
     private lateinit var tvActiveChatSubtitle: TextView
+    private lateinit var layoutPinnedBanner: View
+    private lateinit var tvPinnedSender: TextView
+    private lateinit var tvPinnedText: TextView
+    private lateinit var btnUnpinBanner: View
     private lateinit var topOverlayContainer: LinearLayout
     private lateinit var btnSearchMessages: ImageView
     private lateinit var searchBarContainer: LinearLayout
@@ -249,8 +310,15 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private lateinit var tvReplyPreviewSender: TextView
     private lateinit var tvReplyPreviewText: TextView
     private lateinit var btnCancelReply: View
+    private lateinit var layoutVoiceRecording: View
+    private lateinit var tvVoiceRecordTimer: TextView
+    private lateinit var progressVoiceAmp: LinearProgressIndicator
+    private lateinit var btnVoiceCancel: View
+    private lateinit var btnVoiceSend: View
+    private lateinit var composerDock: View
     private lateinit var etMessage: EditText
     private lateinit var btnAttach: ImageView
+    private lateinit var btnVoiceNote: ImageView
     private lateinit var btnSend: MaterialButton
 
     // --- Radar ---
@@ -275,8 +343,28 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             ChatFeatureActions.scrollToQuotedMessage(rvMessages, messageAdapter, targetId) {
                 showSnackbar("Original message not in view")
             }
+        },
+        onCallBackClick = { msg ->
+            if (msg.attachmentMime == Constants.CALL_TYPE_VIDEO) {
+                startVideoCall()
+            } else {
+                startAudioCall()
+            }
         }
     )
+
+    private val voiceAudioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startVoiceRecording()
+        } else {
+            showSnackbar(
+                getString(R.string.voice_permission_rationale),
+                "Settings"
+            ) { openAppPermissionSettings() }
+        }
+    }
 
     private val filePickerLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -388,8 +476,22 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     private val searchQueryFlow = MutableStateFlow("")
     private val starredOnlyFlow = MutableStateFlow(false)
     private var replyingToMessage: ChatMessage? = null
+    private var editingMessage: ChatMessage? = null
+    private var currentPinnedMessage: ChatMessage? = null
     private var totalThreadMessages = 0
     private var storedCount = 0
+
+    private val voiceRecorder by lazy { VoiceNoteManager.Recorder(this) }
+    private val voiceTimerHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val voiceTimerRunnable = object : Runnable {
+        override fun run() {
+            if (!voiceRecorder.isRecording) return
+            val elapsed = voiceRecorder.elapsedMs().toInt()
+            tvVoiceRecordTimer.text = "REC ${VoiceNoteManager.formatDurationMs(elapsed)}"
+            progressVoiceAmp.setProgressCompat(voiceRecorder.currentAmplitudePercent(), true)
+            voiceTimerHandler.postDelayed(this, 90L)
+        }
+    }
 
     private val typingHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var lastTypingSentMs = 0L
@@ -419,13 +521,32 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
         onBackPressedDispatcher.addCallback(this, searchBackCallback)
 
-        // Observe Room-persisted messages, search/starred filter, typing indicator, and message count reactively
+        // Observe Room-persisted messages, pinned banner, unread totals, voice playback, and disappearing purge
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
                     chatRepository.observeTotalCount().collect { count ->
                         storedCount = count
                         updateStoragePill()
+                    }
+                }
+                launch {
+                    chatRepository.observeConversations().collect { conversations ->
+                        val totalUnread = conversations.sumOf { it.unreadCount }
+                        if (totalUnread > 0) {
+                            tvChatsUnreadBadge.text = if (totalUnread > 99) "99+" else totalUnread.toString()
+                            tvChatsUnreadBadge.visibility = View.VISIBLE
+                        } else {
+                            tvChatsUnreadBadge.visibility = View.GONE
+                        }
+                    }
+                }
+                launch {
+                    activeThreadPeerIdFlow.flatMapLatest { threadId ->
+                        chatRepository.observePinnedMessage(threadId)
+                    }.collect { pinned ->
+                        currentPinnedMessage = pinned
+                        updatePinnedBannerUi(pinned)
                     }
                 }
                 launch {
@@ -460,8 +581,19 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                     }
                 }
                 launch {
+                    VoiceNoteManager.playbackState.collect { playbackState ->
+                        messageAdapter.updateVoicePlayback(playbackState)
+                    }
+                }
+                launch {
                     ChatBus.typingPeers.collect { typingMap ->
                         updateTypingUi(typingMap)
+                    }
+                }
+                launch {
+                    while (isActive) {
+                        chatRepository.purgeExpiredMessages()
+                        delay(4_000L)
                     }
                 }
             }
@@ -469,7 +601,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
         // Initialize stable collision-free identity and start symmetric mesh + NSD discovery
         PeerRegistry.selfId = DeviceIdentity.getId(this)
-        PeerRegistry.selfName = DeviceIdentity.defaultDeviceName()
+        PeerRegistry.selfName = DeviceIdentity.defaultDeviceName(this)
         PeerRegistry.selfIpAddress = DeviceIdentity.resolveLocalIp()
         startChatServer()
         FileTransferManager.ensureServerRunning(applicationContext)
@@ -507,12 +639,16 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     override fun onPause() {
         typingHandler.removeCallbacks(stopTypingRunnable)
         if (isTypingSent) emitTypingState(false)
+        if (voiceRecorder.isRecording) cancelVoiceRecording()
         super.onPause()
         unregisterReceiver()
     }
 
     override fun onDestroy() {
         staticInstance = null
+        voiceTimerHandler.removeCallbacks(voiceTimerRunnable)
+        voiceRecorder.cancel()
+        VoiceNoteManager.stopPlayback()
         peerRegistryListener?.let { PeerRegistry.removeListener(it) }
         peerRegistryListener = null
         peerPickerSheet?.dismiss()
@@ -546,11 +682,17 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         btnInlineEmptyScan = findViewById(R.id.btnInlineEmptyScan)
         progressConnecting = findViewById(R.id.progressConnecting)
         tvStoragePill = findViewById(R.id.tvStoragePill)
+        tvEphemeralStripPill = findViewById(R.id.tvEphemeralStripPill)
         btnChats = findViewById(R.id.btnChats)
+        tvChatsUnreadBadge = findViewById(R.id.tvChatsUnreadBadge)
         btnMoreOptions = findViewById(R.id.btnMoreOptions)
         activeChatHeader = findViewById(R.id.activeChatHeader)
         tvActiveChatTitle = findViewById(R.id.tvActiveChatTitle)
         tvActiveChatSubtitle = findViewById(R.id.tvActiveChatSubtitle)
+        layoutPinnedBanner = findViewById(R.id.layoutPinnedBanner)
+        tvPinnedSender = findViewById(R.id.tvPinnedSender)
+        tvPinnedText = findViewById(R.id.tvPinnedText)
+        btnUnpinBanner = findViewById(R.id.btnUnpinBanner)
         topOverlayContainer = findViewById(R.id.topOverlayContainer)
         btnSearchMessages = findViewById(R.id.btnSearchMessages)
         searchBarContainer = findViewById(R.id.searchBarContainer)
@@ -566,8 +708,15 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         tvReplyPreviewSender = findViewById(R.id.tvReplyPreviewSender)
         tvReplyPreviewText = findViewById(R.id.tvReplyPreviewText)
         btnCancelReply = findViewById(R.id.btnCancelReply)
+        layoutVoiceRecording = findViewById(R.id.layoutVoiceRecording)
+        tvVoiceRecordTimer = findViewById(R.id.tvVoiceRecordTimer)
+        progressVoiceAmp = findViewById(R.id.progressVoiceAmp)
+        btnVoiceCancel = findViewById(R.id.btnVoiceCancel)
+        btnVoiceSend = findViewById(R.id.btnVoiceSend)
+        composerDock = findViewById(R.id.composerDock)
         etMessage = findViewById(R.id.etMessage)
         btnAttach = findViewById(R.id.btnAttach)
+        btnVoiceNote = findViewById(R.id.btnVoiceNote)
         btnSend = findViewById(R.id.btnSend)
 
         rvPeers.layoutManager = LinearLayoutManager(this)
@@ -660,7 +809,17 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 false
             }
         }
-        btnCancelReply.setOnClickListener { cancelReply() }
+        btnCancelReply.setOnClickListener { cancelReplyOrEdit() }
+        layoutPinnedBanner.setOnClickListener {
+            val targetId = currentPinnedMessage?.let { it.messageId ?: it.id } ?: return@setOnClickListener
+            ChatFeatureActions.scrollToQuotedMessage(rvMessages, messageAdapter, targetId) {
+                showSnackbar("Pinned message not in view")
+            }
+        }
+        btnUnpinBanner.setOnClickListener {
+            currentPinnedMessage?.let { togglePin(it) }
+        }
+        tvEphemeralStripPill.setOnClickListener { openEphemeralTimerPicker() }
 
         val openChannelsScreen: () -> Unit = {
             startActivity(Intent(this, ChatsActivity::class.java))
@@ -682,6 +841,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 filePickerLauncher.launch(arrayOf("*/*"))
             }
         }
+        btnVoiceNote.setOnClickListener { onVoiceNoteButtonClicked() }
+        btnVoiceCancel.setOnClickListener { cancelVoiceRecording() }
+        btnVoiceSend.setOnClickListener { finishAndSendVoiceRecording() }
         btnSend.setOnClickListener { sendCurrentMessage() }
         etMessage.doAfterTextChanged { editable ->
             val hasText = !editable?.toString().isNullOrBlank()
@@ -960,16 +1122,60 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     }
 
     private fun showMoreActionsSheet() {
+        val threadId = activeThreadPeerId()
         MainActionsBottomSheet.show(
             context = this,
             storedMessageCount = storedCount,
             isConnected = isNetworkConnected(),
             isScannerExpanded = isScannerExpanded,
+            ephemeralTtlSeconds = EphemeralPrefs.getTtlSeconds(this, threadId),
             onExportChats = { exportChatToFile() },
             onToggleRadar = { setScannerExpanded(!isScannerExpanded) },
+            onConfigureEphemeral = { openEphemeralTimerPicker() },
+            onOpenMeshDiagnostics = { openMeshDiagnosticsSheet() },
             onDisconnect = { disconnect() },
             onClearAllHistory = { confirmClearHistory() }
         )
+    }
+
+    private fun openEphemeralTimerPicker() {
+        val threadId = activeThreadPeerId()
+        EphemeralPrefs.showPickerDialog(this, threadId) { chosen ->
+            updateEphemeralHeaderUi()
+            val label = EphemeralPrefs.formatShortLabel(chosen)
+            showSnackbar(
+                if (label != null) getString(R.string.ephemeral_enabled_fmt, label)
+                else getString(R.string.ephemeral_disabled_msg)
+            )
+        }
+    }
+
+    private fun updateEphemeralHeaderUi() {
+        val ttl = EphemeralPrefs.getTtlSeconds(this, activeThreadPeerId())
+        val short = EphemeralPrefs.formatShortLabel(ttl)
+        if (short != null) {
+            tvEphemeralStripPill.text = "⏱ $short"
+            tvEphemeralStripPill.visibility = View.VISIBLE
+        } else {
+            tvEphemeralStripPill.visibility = View.GONE
+        }
+    }
+
+    private fun openMeshDiagnosticsSheet() {
+        MeshDiagnosticsBottomSheet.show(
+            context = this,
+            scope = lifecycleScope
+        ) { savedName ->
+            reannounceSelfIdentity(savedName)
+            showSnackbar("Nickname updated to $savedName")
+        }
+    }
+
+    private fun reannounceSelfIdentity(newName: String) {
+        PeerRegistry.selfName = newName
+        tvDeviceInfo.text = newName
+        localMeshDiscovery?.updateSelfName(PeerRegistry.selfId, newName)
+        ChatServerService.reannounceSelf()
     }
 
     private fun setScannerExpanded(expanded: Boolean) {
@@ -1163,6 +1369,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             },
             onPeerLost = { peerId ->
                 PeerRegistry.remove(peerId)
+                MeshDiagnosticsBus.clearPeer(peerId)
                 runOnUiThread { refreshNetworkConnectionUi() }
             }
         ).also {
@@ -1175,7 +1382,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
      * or forwarded by the standby listener.
      */
     private fun dispatchIncomingEnvelope(env: Envelope) {
-        val payload = env.payload
+        val (ttlSeconds, payload) = ChatMessage.decodeTtlPayload(env.payload)
+        val expiresAt = ttlSeconds?.let { System.currentTimeMillis() + it * 1000L }
         when {
             payload.startsWith(Constants.MSG_TYPE_CALL_REQUEST) -> {
                 val rawReq = payload.removePrefix(Constants.MSG_TYPE_CALL_REQUEST)
@@ -1197,10 +1405,24 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             }
             payload.startsWith(Constants.MSG_TYPE_TEXT) -> {
                 val text = payload.removePrefix(Constants.MSG_TYPE_TEXT)
-                onIncomingText(text, env.senderId, env.senderName, env.recipientId, env.msgId)
+                onIncomingText(
+                    text = text,
+                    senderId = env.senderId,
+                    senderName = env.senderName,
+                    recipientId = env.recipientId,
+                    msgId = env.msgId,
+                    expiresAt = expiresAt
+                )
             }
             payload.startsWith(Constants.MSG_TYPE_FILE) -> {
-                onIncomingFile(payload, env.senderId, env.senderName, env.recipientId, env.msgId)
+                onIncomingFile(
+                    payload = payload,
+                    senderId = env.senderId,
+                    senderName = env.senderName,
+                    recipientId = env.recipientId,
+                    msgId = env.msgId,
+                    expiresAt = expiresAt
+                )
             }
             payload.startsWith(Constants.MSG_TYPE_FILE_DONE) -> {
                 val transferId = payload.removePrefix(Constants.MSG_TYPE_FILE_DONE).trim()
@@ -1291,6 +1513,52 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                     }
                 }
             }
+            payload.startsWith(Constants.MSG_TYPE_PIN) -> {
+                val rawPin = payload.removePrefix(Constants.MSG_TYPE_PIN)
+                val parts = rawPin.split('|', limit = 3)
+                if (parts.size >= 3) {
+                    val scopeSuffix = parts[0]
+                    val targetMsgId = parts[1].trim()
+                    val pinned = parts[2].trim() == "1"
+                    val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
+                        Constants.GROUP_PEER_ID
+                    } else {
+                        env.senderId
+                    }
+                    lifecycleScope.launch {
+                        chatRepository.applyRemotePin(targetThread, targetMsgId, pinned)
+                    }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_EDIT) -> {
+                val rawEdit = payload.removePrefix(Constants.MSG_TYPE_EDIT)
+                val parts = rawEdit.split('|', limit = 4)
+                if (parts.size >= 4) {
+                    val scopeSuffix = parts[0]
+                    val targetMsgId = parts[1].trim()
+                    val editedAt = parts[2].trim().toLongOrNull() ?: System.currentTimeMillis()
+                    val newText = parts[3]
+                    val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
+                        Constants.GROUP_PEER_ID
+                    } else {
+                        env.senderId
+                    }
+                    lifecycleScope.launch {
+                        chatRepository.applyRemoteEdit(targetThread, targetMsgId, newText, editedAt)
+                    }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_PING) -> {
+                val rawPing = payload.removePrefix(Constants.MSG_TYPE_PING)
+                sendControlMessage(Constants.MSG_TYPE_PONG + rawPing, env.senderId)
+            }
+            payload.startsWith(Constants.MSG_TYPE_PONG) -> {
+                val parts = payload.removePrefix(Constants.MSG_TYPE_PONG).split('|', limit = 2)
+                if (parts.size == 2) {
+                    val sentMs = parts[1].trim().toLongOrNull() ?: 0L
+                    MeshDiagnosticsBus.recordPong(env.senderId, parts[0].trim(), sentMs)
+                }
+            }
             payload.startsWith(Constants.MSG_TYPE_REPLY) -> {
                 val decoded = ChatMessage.decodeReplyPayload(payload)
                 if (decoded != null) {
@@ -1302,7 +1570,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                         msgId = env.msgId,
                         replyToId = decoded.replyToId,
                         replyToSender = decoded.replySender,
-                        replyToText = decoded.replySnippet
+                        replyToText = decoded.replySnippet,
+                        expiresAt = expiresAt
                     )
                 }
             }
@@ -1344,7 +1613,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         msgId: String? = null,
         replyToId: String? = null,
         replyToSender: String? = null,
-        replyToText: String? = null
+        replyToText: String? = null,
+        expiresAt: Long? = null
     ) {
         val threadPeerId = if (recipientId == Constants.RECIPIENT_BROADCAST) {
             Constants.GROUP_PEER_ID
@@ -1369,7 +1639,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             messageId = msgId,
             replyToMessageId = replyToId,
             replyToSender = replyToSender,
-            replyToText = replyToText
+            replyToText = replyToText,
+            expiresAt = expiresAt
         )
 
         lifecycleScope.launch {
@@ -1402,7 +1673,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         senderId: String,
         senderName: String,
         recipientId: String,
-        msgId: String? = null
+        msgId: String? = null,
+        expiresAt: Long? = null
     ) {
         val offer = FileTransferManager.FileOffer.fromPayload(payload) ?: return
         val threadPeerId = if (recipientId == Constants.RECIPIENT_BROADCAST) {
@@ -1416,7 +1688,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             senderName
         }
         val displaySender = if (recipientId == Constants.RECIPIENT_BROADCAST) senderName else null
-        val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize)
+        val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize, offer.mimeType)
         val isActivelyViewing = (ChatBus.isChatScreenForeground && ChatBus.activeChatPeerId == threadPeerId) ||
             (threadPeerId == activeThreadPeerId() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
         val canAck = envIsDirectOrKnown(senderId)
@@ -1431,7 +1703,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             attachmentSize = offer.fileSize,
             attachmentState = AttachmentState.TRANSFERRING,
             transferId = offer.transferId,
-            messageId = msgId
+            messageId = msgId,
+            expiresAt = expiresAt
         )
 
         lifecycleScope.launch {
@@ -1507,7 +1780,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
             FileTransferTracker.registerOutgoing(offer.transferId, offer.fileSize, targets)
 
-            val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize)
+            val ttlSeconds = EphemeralPrefs.getTtlSeconds(this@MainActivity, threadPeerId)
+            val expiresAt = if (ttlSeconds > 0L) System.currentTimeMillis() + ttlSeconds * 1000L else null
+            val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize, offer.mimeType)
             val msg = ChatMessage(
                 text = summary,
                 isSentByMe = true,
@@ -1516,14 +1791,16 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 attachmentSize = offer.fileSize,
                 attachmentPath = staged.localFile.absolutePath,
                 attachmentState = AttachmentState.TRANSFERRING,
-                transferId = offer.transferId
+                transferId = offer.transferId,
+                expiresAt = expiresAt
             )
 
             chatRepository.insertMessage(msg, threadPeerId, threadPeerName)
             ChatBus.notifyMessageSaved(msg, threadPeerId)
 
             val uploaded = FileTransferManager.pushStagedFileToGroup(staged)
-            val signaled = if (uploaded) transmitPayload(recipientId, offer.toPayload(), msg.messageId) else false
+            val wirePayload = ChatMessage.encodeTtlPayload(ttlSeconds, offer.toPayload())
+            val signaled = if (uploaded) transmitPayload(recipientId, wirePayload, msg.messageId) else false
             if (!signaled) {
                 FileTransferTracker.markSignalFailed(offer.transferId)
                 chatRepository.updateAttachmentState(offer.transferId, staged.localFile.absolutePath, AttachmentState.FAILED)
@@ -1533,6 +1810,131 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                 chatRepository.updateAttachmentState(offer.transferId, staged.localFile.absolutePath, AttachmentState.COMPLETED)
             }
         }
+    }
+
+    private fun sendStagedVoiceNote(
+        recipientId: String,
+        threadPeerId: String,
+        threadPeerName: String,
+        audioFile: File,
+        durationMs: Long
+    ) {
+        lifecycleScope.launch {
+            val stamp = SimpleDateFormat("HHmmss", Locale.US).format(Date())
+            val displayName = "voice_note_$stamp.m4a"
+            val stagedResult = FileTransferManager.stageLocalFile(
+                applicationContext,
+                audioFile,
+                displayName,
+                "audio/mp4"
+            )
+            audioFile.delete()
+            val staged = stagedResult.getOrElse { err ->
+                showSnackbar(err.message ?: "Could not stage voice note")
+                return@launch
+            }
+            val offer = staged.offer
+            val targets = if (recipientId == Constants.RECIPIENT_BROADCAST) {
+                PeerRegistry.snapshot()
+            } else {
+                val targetPeer = PeerRegistry.snapshot().firstOrNull { it.id == recipientId }
+                    ?: PeerRegistry.Peer(recipientId, threadPeerName, isGroupOwner = false)
+                listOf(targetPeer)
+            }
+
+            FileTransferTracker.registerOutgoing(offer.transferId, offer.fileSize, targets)
+
+            val ttlSeconds = EphemeralPrefs.getTtlSeconds(this@MainActivity, threadPeerId)
+            val expiresAt = if (ttlSeconds > 0L) System.currentTimeMillis() + ttlSeconds * 1000L else null
+            val durLabel = VoiceNoteManager.formatDurationMs(durationMs.toInt())
+            val msg = ChatMessage(
+                text = "🎤 Voice note ($durLabel)",
+                isSentByMe = true,
+                attachmentName = offer.fileName,
+                attachmentMime = offer.mimeType,
+                attachmentSize = offer.fileSize,
+                attachmentPath = staged.localFile.absolutePath,
+                attachmentState = AttachmentState.TRANSFERRING,
+                transferId = offer.transferId,
+                expiresAt = expiresAt
+            )
+
+            chatRepository.insertMessage(msg, threadPeerId, threadPeerName)
+            ChatBus.notifyMessageSaved(msg, threadPeerId)
+
+            val uploaded = FileTransferManager.pushStagedFileToGroup(staged)
+            val wirePayload = ChatMessage.encodeTtlPayload(ttlSeconds, offer.toPayload())
+            val signaled = if (uploaded) transmitPayload(recipientId, wirePayload, msg.messageId) else false
+            if (!signaled) {
+                FileTransferTracker.markSignalFailed(offer.transferId)
+                chatRepository.updateAttachmentState(offer.transferId, staged.localFile.absolutePath, AttachmentState.FAILED)
+                showSnackbar("Failed to send voice note")
+            } else if (targets.isEmpty()) {
+                FileTransferTracker.markOutgoingNoTargets(offer.transferId)
+                chatRepository.updateAttachmentState(offer.transferId, staged.localFile.absolutePath, AttachmentState.COMPLETED)
+            }
+        }
+    }
+
+    private fun onVoiceNoteButtonClicked() {
+        if (!isNetworkConnected()) {
+            showSnackbar("Connect to a peer first to send voice notes")
+            return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            startVoiceRecording()
+        } else {
+            voiceAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun startVoiceRecording() {
+        VoiceNoteManager.stopPlayback()
+        val file = voiceRecorder.start()
+        if (file == null) {
+            showSnackbar("Could not access microphone")
+            return
+        }
+        composerDock.visibility = View.GONE
+        layoutVoiceRecording.visibility = View.VISIBLE
+        tvVoiceRecordTimer.text = "REC 00:00"
+        progressVoiceAmp.setProgressCompat(12, false)
+        voiceTimerHandler.removeCallbacks(voiceTimerRunnable)
+        voiceTimerHandler.post(voiceTimerRunnable)
+    }
+
+    private fun cancelVoiceRecording() {
+        voiceTimerHandler.removeCallbacks(voiceTimerRunnable)
+        voiceRecorder.cancel()
+        layoutVoiceRecording.visibility = View.GONE
+        composerDock.visibility = View.VISIBLE
+    }
+
+    private fun finishAndSendVoiceRecording() {
+        voiceTimerHandler.removeCallbacks(voiceTimerRunnable)
+        val recorded = voiceRecorder.stopAndReturnFile()
+        layoutVoiceRecording.visibility = View.GONE
+        composerDock.visibility = View.VISIBLE
+        if (recorded == null) {
+            showSnackbar("Hold longer to record a voice note")
+            return
+        }
+        val (file, durationMs) = recorded
+        if (!isNetworkConnected()) {
+            file.delete()
+            showSnackbar("Disconnected before sending voice note")
+            return
+        }
+        val threadPeerId = activeThreadPeerId()
+        val threadPeerName = activeThreadPeerName()
+        val recipient = if (threadPeerId == Constants.GROUP_PEER_ID) {
+            Constants.RECIPIENT_BROADCAST
+        } else {
+            threadPeerId
+        }
+        sendStagedVoiceNote(recipient, threadPeerId, threadPeerName, file, durationMs)
     }
 
     private fun envIsDirectOrKnown(senderId: String): Boolean =
@@ -1570,6 +1972,23 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
     private fun loadMainChatHistory() {
         activeThreadPeerIdFlow.value = activeThreadPeerId()
+        updateEphemeralHeaderUi()
+    }
+
+    private fun updatePinnedBannerUi(pinned: ChatMessage?) {
+        if (pinned == null) {
+            layoutPinnedBanner.visibility = View.GONE
+            return
+        }
+        val senderLabel = if (pinned.isSentByMe) {
+            "Pinned · You"
+        } else {
+            val sender = pinned.senderName?.takeIf { it.isNotBlank() } ?: activeThreadPeerName()
+            "Pinned · $sender"
+        }
+        tvPinnedSender.text = senderLabel
+        tvPinnedText.text = pinned.quoteSnippet()
+        layoutPinnedBanner.visibility = View.VISIBLE
     }
 
     private fun sendCurrentMessage() {
@@ -1581,10 +2000,21 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
         val threadPeerId = activeThreadPeerId()
         val threadPeerName = activeThreadPeerName()
-        val recipient = if (threadPeerId == Constants.GROUP_PEER_ID) {
-            Constants.RECIPIENT_BROADCAST
-        } else {
-            threadPeerId
+        val isGroup = threadPeerId == Constants.GROUP_PEER_ID
+        val recipient = if (isGroup) Constants.RECIPIENT_BROADCAST else threadPeerId
+
+        val editing = editingMessage
+        if (editing != null) {
+            val cleanEdited = text.replace('\r', ' ').replace('\n', ' ')
+            val editedAt = System.currentTimeMillis()
+            lifecycleScope.launch {
+                chatRepository.editLocalMessage(editing, cleanEdited, editedAt)
+            }
+            if (isNetworkConnected() && !editing.messageId.isNullOrBlank()) {
+                sendEditTo(recipient, editing.messageId, editedAt, cleanEdited, isGroup)
+            }
+            cancelReplyOrEdit()
+            return
         }
 
         val quote = replyingToMessage
@@ -1594,25 +2024,29 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         val replySnippet = quote?.quoteSnippet()
         val replyTargetId = quote?.let { it.messageId ?: it.id }
 
+        val ttlSeconds = EphemeralPrefs.getTtlSeconds(this, threadPeerId)
+        val expiresAt = if (ttlSeconds > 0L) System.currentTimeMillis() + ttlSeconds * 1000L else null
+
         val message = ChatMessage(
             text = text,
             isSentByMe = true,
             replyToMessageId = replyTargetId,
             replyToSender = replySender,
-            replyToText = replySnippet
+            replyToText = replySnippet,
+            expiresAt = expiresAt
         )
         if (isNetworkConnected()) {
             val sent = if (quote != null) {
-                transmitReply(recipient, replyTargetId, replySender, replySnippet, text, message.messageId)
+                transmitReply(recipient, replyTargetId, replySender, replySnippet, text, message.messageId, ttlSeconds)
             } else {
-                transmitText(recipient, text, message.messageId)
+                transmitText(recipient, text, message.messageId, ttlSeconds)
             }
             if (!sent) {
                 showSnackbar("Failed to transmit — saved locally")
             }
         }
 
-        cancelReply()
+        cancelReplyOrEdit()
         etMessage.text.clear()
         if (searchQueryFlow.value.isNotBlank()) {
             setSearchOpen(false)
@@ -1626,6 +2060,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
     }
 
     private fun startReplyTo(message: ChatMessage) {
+        editingMessage = null
         replyingToMessage = message
         val senderLabel = if (message.isSentByMe) {
             "You"
@@ -1640,9 +2075,27 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         imm?.showSoftInput(etMessage, InputMethodManager.SHOW_IMPLICIT)
     }
 
-    private fun cancelReply() {
+    private fun startEditMessage(message: ChatMessage) {
         replyingToMessage = null
+        editingMessage = message
+        tvReplyPreviewSender.text = getString(R.string.editing_banner_title)
+        tvReplyPreviewText.text = message.quoteSnippet()
+        layoutReplyPreview.visibility = View.VISIBLE
+        etMessage.setText(message.text)
+        etMessage.setSelection(message.text.length)
+        etMessage.requestFocus()
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.showSoftInput(etMessage, InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    private fun cancelReplyOrEdit() {
+        val wasEditing = editingMessage != null
+        replyingToMessage = null
+        editingMessage = null
         layoutReplyPreview.visibility = View.GONE
+        if (wasEditing) {
+            etMessage.text.clear()
+        }
     }
 
     private fun showMessageActions(message: ChatMessage) {
@@ -1661,6 +2114,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
                     message = message
                 ) { feedback -> showSnackbar(feedback) }
             },
+            onTogglePin = { togglePin(message) },
+            onEdit = { startEditMessage(message) },
             onDelete = {
                 val threadPeerId = activeThreadPeerId()
                 val threadPeerName = activeThreadPeerName()
@@ -1694,6 +2149,21 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         lifecycleScope.launch {
             chatRepository.setStarred(message, next)
             showSnackbar(getString(if (next) R.string.msg_starred else R.string.msg_unstarred))
+        }
+    }
+
+    private fun togglePin(message: ChatMessage) {
+        val next = !message.isPinned
+        val threadPeerId = activeThreadPeerId()
+        val isGroup = threadPeerId == Constants.GROUP_PEER_ID
+        val recipient = if (isGroup) Constants.RECIPIENT_BROADCAST else threadPeerId
+        lifecycleScope.launch {
+            chatRepository.setPinned(message, next)
+            val targetMsgId = message.messageId
+            if (!targetMsgId.isNullOrBlank()) {
+                sendPinTo(recipient, targetMsgId, next, isGroup)
+            }
+            showSnackbar(getString(if (next) R.string.msg_pinned else R.string.msg_unpinned))
         }
     }
 
@@ -1783,8 +2253,15 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
      * If [recipientId] is "*" the message goes to the group chat (broadcast).
      * Otherwise it routes directly to that peer (with relay fallback).
      */
-    private fun transmitText(recipientId: String, text: String, msgId: String? = null): Boolean =
-        transmitPayload(recipientId, Constants.MSG_TYPE_TEXT + text, msgId)
+    private fun transmitText(
+        recipientId: String,
+        text: String,
+        msgId: String? = null,
+        ttlSeconds: Long = 0L
+    ): Boolean {
+        val payload = ChatMessage.encodeTtlPayload(ttlSeconds, Constants.MSG_TYPE_TEXT + text)
+        return transmitPayload(recipientId, payload, msgId)
+    }
 
     private fun transmitReply(
         recipientId: String,
@@ -1792,9 +2269,11 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         replySender: String?,
         replySnippet: String?,
         text: String,
-        msgId: String? = null
+        msgId: String? = null,
+        ttlSeconds: Long = 0L
     ): Boolean {
-        val payload = ChatMessage.encodeReplyPayload(replyToId, replySender, replySnippet, text)
+        val inner = ChatMessage.encodeReplyPayload(replyToId, replySender, replySnippet, text)
+        val payload = ChatMessage.encodeTtlPayload(ttlSeconds, inner)
         return transmitPayload(recipientId, payload, msgId)
     }
 
@@ -2244,7 +2723,8 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
     override fun onDeviceChanged(device: WifiP2pDevice?) {
         device?.let {
-            val name = it.deviceName.ifBlank { DeviceIdentity.defaultDeviceName() }
+            val customName = DeviceIdentity.getCustomName(this)
+            val name = customName ?: it.deviceName.ifBlank { DeviceIdentity.defaultDeviceName(this) }
             tvDeviceInfo.text = name
             PeerRegistry.selfId = DeviceIdentity.getId(this, it.deviceAddress)
             PeerRegistry.selfName = name

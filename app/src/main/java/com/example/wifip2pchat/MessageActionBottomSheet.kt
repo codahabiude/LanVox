@@ -28,6 +28,8 @@ object MessageActionBottomSheet {
         onCopy: () -> Unit,
         onToggleStar: () -> Unit,
         onForward: () -> Unit,
+        onTogglePin: () -> Unit,
+        onEdit: () -> Unit,
         onDelete: () -> Unit
     ) {
         val dialog = BottomSheetDialog(context)
@@ -87,7 +89,7 @@ object MessageActionBottomSheet {
         }
 
         val rowCopy = view.findViewById<View>(R.id.rowMsgCopy)
-        if (message.text.isNotBlank()) {
+        if (message.text.isNotBlank() && !message.isCallLog) {
             rowCopy.visibility = View.VISIBLE
             rowCopy.setOnClickListener {
                 dialog.dismiss()
@@ -112,7 +114,7 @@ object MessageActionBottomSheet {
         }
 
         val rowForward = view.findViewById<View>(R.id.rowMsgForward)
-        if (!message.isFileMessage && message.text.isNotBlank()) {
+        if (!message.isFileMessage && !message.isCallLog && message.text.isNotBlank()) {
             rowForward.visibility = View.VISIBLE
             rowForward.setOnClickListener {
                 dialog.dismiss()
@@ -120,6 +122,32 @@ object MessageActionBottomSheet {
             }
         } else {
             rowForward.visibility = View.GONE
+        }
+
+        val rowPin = view.findViewById<View>(R.id.rowMsgPin)
+        val tvPin = view.findViewById<TextView>(R.id.tvActionPin)
+        if (!message.isCallLog) {
+            rowPin.visibility = View.VISIBLE
+            tvPin.text = context.getString(
+                if (message.isPinned) R.string.action_unpin_message else R.string.action_pin_message
+            )
+            rowPin.setOnClickListener {
+                dialog.dismiss()
+                onTogglePin()
+            }
+        } else {
+            rowPin.visibility = View.GONE
+        }
+
+        val rowEdit = view.findViewById<View>(R.id.rowMsgEdit)
+        if (message.isSentByMe && !message.isFileMessage && !message.isCallLog && message.text.isNotBlank()) {
+            rowEdit.visibility = View.VISIBLE
+            rowEdit.setOnClickListener {
+                dialog.dismiss()
+                onEdit()
+            }
+        } else {
+            rowEdit.visibility = View.GONE
         }
 
         view.findViewById<View>(R.id.rowMsgDelete).setOnClickListener {

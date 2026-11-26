@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Hostless LAN / Wi-Fi / Mobile-Hotspot peer discovery using Android NSD (mDNS).
  *
  * Publishes this device as `_lanvox._tcp.` on [Constants.CHAT_PORT] and discovers
- * other LANVOX devices on the same network so peers can chat, share files, and call
+ * other LanVox devices on the same network so peers can chat, share files, and call
  * directly without needing a Wi-Fi Direct Group Owner or central server.
  */
 class LocalMeshDiscovery(
@@ -45,6 +45,17 @@ class LocalMeshDiscovery(
         acquireMulticastLock()
         registerService(mgr, selfId, selfName)
         discoverServices(mgr)
+    }
+
+    fun updateSelfName(selfId: String, newName: String) {
+        if (!started.get()) return
+        val mgr = nsdManager ?: return
+        try {
+            registrationListener?.let { mgr.unregisterService(it) }
+        } catch (_: Exception) {}
+        registrationListener = null
+        registeredServiceName = null
+        registerService(mgr, selfId, newName)
     }
 
     fun stop() {

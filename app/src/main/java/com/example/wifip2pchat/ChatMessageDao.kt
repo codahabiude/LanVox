@@ -124,6 +124,24 @@ interface ChatMessageDao {
     @Query("UPDATE messages SET is_starred = :starred WHERE _id = :id")
     suspend fun updateStarredById(id: Long, starred: Int): Int
 
+    @Query("SELECT * FROM messages WHERE peer_id = :peerId AND is_pinned = 1 ORDER BY timestamp DESC, _id DESC LIMIT 1")
+    fun observePinnedMessage(peerId: String): Flow<ChatMessageEntity?>
+
+    @Query("UPDATE messages SET is_pinned = :pinned WHERE _id = :id")
+    suspend fun updatePinnedById(id: Long, pinned: Int): Int
+
+    @Query("UPDATE messages SET is_pinned = :pinned WHERE peer_id = :peerId AND message_id = :messageId")
+    suspend fun updatePinnedByMessageId(peerId: String, messageId: String, pinned: Int): Int
+
+    @Query("UPDATE messages SET text = :newText, edited_at = :editedAt WHERE _id = :id")
+    suspend fun updateEditedTextById(id: Long, newText: String, editedAt: Long): Int
+
+    @Query("UPDATE messages SET text = :newText, edited_at = :editedAt WHERE peer_id = :peerId AND message_id = :messageId")
+    suspend fun updateEditedTextByMessageId(peerId: String, messageId: String, newText: String, editedAt: Long): Int
+
+    @Query("DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at <= :nowMs")
+    suspend fun purgeExpiredMessages(nowMs: Long): Int
+
     @Query("UPDATE messages SET status = :newStatus WHERE peer_id = :peerId AND is_sent = 1 AND status IN (:fromStatuses)")
     suspend fun updateOutgoingStatus(peerId: String, newStatus: String, fromStatuses: List<String>): Int
 

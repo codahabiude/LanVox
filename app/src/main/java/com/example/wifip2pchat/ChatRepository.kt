@@ -70,7 +70,11 @@ class ChatRepository(private val dao: ChatMessageDao) {
             replyToSender = message.replyToSender,
             replyToText = message.replyToText,
             reactions = message.reactionsJson,
-            isStarred = if (message.isStarred) 1 else 0
+            isStarred = if (message.isStarred) 1 else 0,
+            isPinned = if (message.isPinned) 1 else 0,
+            editedAt = message.editedAt,
+            expiresAt = message.expiresAt,
+            messageType = message.messageType
         )
         return dao.insertMessage(entity)
     }
@@ -124,6 +128,62 @@ class ChatRepository(private val dao: ChatMessageDao) {
     suspend fun setStarred(message: ChatMessage, starred: Boolean) {
         val rowId = message.id.removePrefix("room_").toLongOrNull() ?: return
         dao.updateStarredById(rowId, if (starred) 1 else 0)
+    }
+
+    fun observePinnedMessage(peerId: String?): Flow<ChatMessage?> {
+        if (peerId.isNullOrBlank()) return flowOf(null)
+        return dao.observePinnedMessage(peerId).map { it?.toDomain() }
+    }
+
+    suspend fun setPinned(message: ChatMessage, pinned: Boolean) {
+        val rowId = message.id.removePrefix("room_").toLongOrNull() ?: return
+        dao.updatePinnedById(rowId, if (pinned) 1 else 0)
+    }
+
+    suspend fun applyRemotePin(threadPeerId: String, targetMessageId: String, pinned: Boolean) {
+        if (threadPeerId.isBlank() || targetMessageId.isBlank()) return
+        dao.updatePinnedByMessageId(threadPeerId, targetMessageId, if (pinned) 1 else 0)
+    }
+
+    suspend fun editLocalMessage(message: ChatMessage, newText: String, editedAt: Long): Boolean {
+        val clean = newText.trim()
+        if (clean.isEmpty()) return false
+        val rowId = message.id.removePrefix("room_").toLongOrNull() ?: return false
+        return dao.updateEditedTextById(rowId, clean, editedAt) > 0
+    }
+
+    suspend fun applyRemoteEdit(
+        threadPeerId: String,
+        targetMessageId: String,
+        newText: String,
+        editedAt: Long
+    ) {
+        if (threadPeerId.isBlank() || targetMessageId.isBlank() || newText.isBlank()) return
+        dao.updateEditedTextByMessageId(threadPeerId, targetMessageId, newText.trim(), editedAt)
+    }
+
+    suspend fun purgeExpiredMessages(nowMs: Long = System.currentTimeMillis()): Int =
+        dao.purgeExpiredMessages(nowMs)
+
+    suspend fun insertCallLog(
+        peerId: String?,
+        peerName: String?,
+        callType: String,
+        summary: String,
+        isSentByMe: Boolean
+    ) {
+        val pid = peerId?.takeIf { it.isNotBlank() } ?: return
+        val resolvedName = peerName?.takeIf { it.isNotBlank() } ?: peerNameFor(pid) ?: pid
+        val msg = ChatMessage(
+            text = summary,
+            isSentByMe = isSentByMe,
+            status = MessageStatus.NONE,
+            attachmentMime = callType,
+            messageId = null,
+            messageType = ChatMessage.TYPE_CALL_LOG
+        )
+        insertMessage(msg, pid, resolvedName)
+        ChatBus.notifyMessageSaved(msg, pid)
     }
 
     suspend fun markThreadDelivered(peerId: String) {
@@ -254,7 +314,11 @@ class ChatRepository(private val dao: ChatMessageDao) {
             replyToSender = replyToSender,
             replyToText = replyToText,
             reactionsJson = reactions,
-            isStarred = isStarred == 1
+            isStarred = isStarred == 1,
+            isPinned = isPinned == 1,
+            editedAt = editedAt,
+            expiresAt = expiresAt,
+            messageType = messageType
         )
     }
 

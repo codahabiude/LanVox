@@ -60,7 +60,35 @@ object DeviceIdentity {
         return generated
     }
 
-    fun defaultDeviceName(): String = Build.MODEL?.takeIf { it.isNotBlank() } ?: "LanVox Device"
+    private const val KEY_CUSTOM_NAME = "custom_display_name"
+
+    fun getCustomName(context: Context): String? {
+        val raw = context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_CUSTOM_NAME, null)
+            ?.trim()
+        return raw?.takeIf { it.isNotBlank() }
+    }
+
+    fun setCustomName(context: Context, name: String?) {
+        val clean = name?.trim()?.take(32)
+        val editor = context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+        if (clean.isNullOrBlank()) {
+            editor.remove(KEY_CUSTOM_NAME)
+        } else {
+            editor.putString(KEY_CUSTOM_NAME, clean)
+        }
+        editor.apply()
+    }
+
+    fun defaultDeviceName(context: Context? = null): String {
+        if (context != null) {
+            getCustomName(context)?.let { return it }
+        }
+        return Build.MODEL?.takeIf { it.isNotBlank() } ?: "LanVox Device"
+    }
 
     /**
      * Resolves the best local non-loopback IPv4 address for direct peer connections.

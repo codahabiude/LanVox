@@ -8,6 +8,70 @@
     android:paddingHorizontal="10dp"
     android:paddingVertical="5dp">
 
+    <!-- Centered Call History Timeline Pill -->
+    <LinearLayout
+        android:id="@+id/layoutCallLog"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginVertical="4dp"
+        android:background="@drawable/bg_glass_thread_bar"
+        android:gravity="center_vertical"
+        android:minHeight="48dp"
+        android:orientation="horizontal"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="8dp"
+        android:visibility="gone">
+
+        <ImageView
+            android:id="@+id/ivCallLogIcon"
+            android:layout_width="18dp"
+            android:layout_height="18dp"
+            android:layout_marginEnd="10dp"
+            android:contentDescription="@string/btn_audio_call"
+            android:src="@drawable/ic_phone"
+            android:tint="@color/brand_secondary" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tvCallLogTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/space_grotesk"
+                android:textColor="@color/text_primary"
+                android:textSize="12.5sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvCallLogMeta"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/jetbrains_mono"
+                android:textColor="@color/text_secondary"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvCallLogCallback"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:background="@drawable/pill_green_small"
+            android:clickable="true"
+            android:focusable="true"
+            android:fontFamily="@font/space_grotesk"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="5dp"
+            android:text="@string/call_log_callback"
+            android:textColor="@color/brand_secondary"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
     <LinearLayout
         android:id="@+id/messageColumn"
         android:layout_width="wrap_content"
@@ -265,6 +329,74 @@
                 </LinearLayout>
             </LinearLayout>
 
+            <!-- Inline Push-to-Talk Voice Note Player -->
+            <LinearLayout
+                android:id="@+id/layoutVoiceNote"
+                android:layout_width="236dp"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <ImageView
+                    android:id="@+id/btnVoicePlayPause"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="@drawable/bg_glass_circle"
+                    android:clickable="true"
+                    android:contentDescription="@string/cd_voice_play"
+                    android:focusable="true"
+                    android:padding="13dp"
+                    android:src="@drawable/ic_play"
+                    android:tint="@color/brand_secondary" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <SeekBar
+                        android:id="@+id/seekVoiceNote"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:max="1000"
+                        android:paddingStart="0dp"
+                        android:paddingEnd="0dp"
+                        android:progressTint="@color/brand_secondary"
+                        android:thumbTint="@color/brand_secondary" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:id="@+id/tvVoiceDuration"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:fontFamily="@font/jetbrains_mono"
+                            android:text="00:00"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="10.5sp" />
+
+                        <TextView
+                            android:id="@+id/tvVoiceStateBadge"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="@font/jetbrains_mono"
+                            android:text="VOICE"
+                            android:textColor="@color/brand_secondary"
+                            android:textSize="9.5sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+
             <TextView
                 android:id="@+id/tvMessage"
                 android:layout_width="wrap_content"
@@ -285,6 +417,16 @@
                 android:orientation="horizontal">
 
                 <ImageView
+                    android:id="@+id/ivPinnedBadge"
+                    android:layout_width="12dp"
+                    android:layout_height="12dp"
+                    android:layout_marginEnd="4dp"
+                    android:contentDescription="@string/action_pin_message"
+                    android:src="@drawable/ic_push_pin"
+                    android:tint="@color/brand_secondary"
+                    android:visibility="gone" />
+
+                <ImageView
                     android:id="@+id/ivStarred"
                     android:layout_width="12dp"
                     android:layout_height="12dp"
@@ -292,6 +434,27 @@
                     android:contentDescription="@string/action_star_message"
                     android:src="@drawable/ic_star"
                     android:tint="@color/status_discovering"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/tvExpiryTag"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="5dp"
+                    android:fontFamily="@font/jetbrains_mono"
+                    android:textColor="@color/status_discovering"
+                    android:textSize="9.5sp"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/tvEditedTag"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="5dp"
+                    android:fontFamily="@font/jetbrains_mono"
+                    android:text="@string/msg_edited_tag"
+                    android:textColor="@color/bubble_received_time"
+                    android:textSize="9.5sp"
                     android:visibility="gone" />
 
                 <TextView

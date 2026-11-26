@@ -106,4 +106,39 @@
     <string name="forward_title">Forward message to…</string>
     <string name="msg_forwarded">Message forwarded</string>
     <string name="typing_single">typing…</string>
+
+    <!-- 6 Recommended Features -->
+    <string name="action_pin_message">Pin Message</string>
+    <string name="action_unpin_message">Unpin Message</string>
+    <string name="action_edit_message">Edit Message</string>
+    <string name="msg_pinned">Message pinned to thread</string>
+    <string name="msg_unpinned">Message unpinned</string>
+    <string name="msg_edited_tag">(edited)</string>
+    <string name="editing_banner_title">Editing message</string>
+    <string name="cd_unpin_banner">Unpin message</string>
+    <string name="cd_voice_note">Record voice note</string>
+    <string name="cd_voice_cancel">Cancel voice note</string>
+    <string name="cd_voice_send">Send voice note</string>
+    <string name="cd_voice_play">Play or pause voice note</string>
+    <string name="voice_recording_label">REC</string>
+    <string name="voice_permission_rationale">Microphone permission is needed to record voice notes.</string>
+    <string name="action_ephemeral_title">Disappearing Messages</string>
+    <string name="action_ephemeral_sub_off">Off · Messages stay saved</string>
+    <string name="ephemeral_dialog_title">Disappearing messages timer</string>
+    <string name="ephemeral_off">Off</string>
+    <string name="ephemeral_30s">30 seconds</string>
+    <string name="ephemeral_5m">5 minutes</string>
+    <string name="ephemeral_1h">1 hour</string>
+    <string name="ephemeral_24h">24 hours</string>
+    <string name="ephemeral_enabled_fmt">Disappearing messages set to %1$s</string>
+    <string name="ephemeral_disabled_msg">Disappearing messages turned off</string>
+    <string name="cd_ephemeral_timer">Disappearing messages timer</string>
+    <string name="action_mesh_diagnostics">Device Profile &amp; Mesh Ping</string>
+    <string name="action_mesh_diagnostics_sub">Customize nickname, inspect IP &amp; measure peer RTT</string>
+    <string name="diag_title">Node Profile &amp; Mesh</string>
+    <string name="diag_nickname_hint">Your display nickname</string>
+    <string name="diag_save_nickname">Save</string>
+    <string name="diag_ping_mesh">Ping Peers</string>
+    <string name="diag_no_peers">No active mesh peers connected yet. Start a scan or join the same Wi-Fi/hotspot to measure live RTT.</string>
+    <string name="call_log_callback">Call back</string>
 </resources>

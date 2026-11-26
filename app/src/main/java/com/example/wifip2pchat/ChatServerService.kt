@@ -96,6 +96,11 @@ class ChatServerService : Service() {
         /** Send a broadcast message to all directly connected peers (with dedup msgId). */
         fun sendBroadcast(payload: String, msgId: String? = null): Boolean =
             serviceInstance?.sendBroadcastInternal(payload, msgId) == true
+
+        /** Re-broadcast HELLO with updated [PeerRegistry.selfName] to all connected peers. */
+        fun reannounceSelf() {
+            serviceInstance?.reannounceSelfInternal()
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -303,8 +308,9 @@ class ChatServerService : Service() {
         }
     }
 
-    private fun sendHello(conn: PeerConn) {
-        if (!conn.sentHello.compareAndSet(false, true)) return
+    private fun sendHello(conn: PeerConn, force: Boolean = false) {
+        if (!force && !conn.sentHello.compareAndSet(false, true)) return
+        if (force) conn.sentHello.set(true)
         val localIp = conn.socket.localAddress?.hostAddress
             ?: DeviceIdentity.resolveLocalIp(conn.hostIp)
         if (!localIp.isNullOrBlank()) {
@@ -407,9 +413,12 @@ class ChatServerService : Service() {
             }
         }
 
+        val isNicknameUpdate = existing === conn
         peers[peerId] = conn
-        // Always answer HELLO so both sides know each other's ID, name, and direct IP
-        sendHello(conn)
+        // Answer initial HELLO once so both sides know each other's ID, name, and direct IP
+        if (!isNicknameUpdate) {
+            sendHello(conn)
+        }
 
         PeerRegistry.upsert(
             PeerRegistry.Peer(
@@ -573,6 +582,17 @@ class ChatServerService : Service() {
             }
         }
         return true
+    }
+
+    private fun reannounceSelfInternal() {
+        scope.launch {
+            peers.values.forEach { c ->
+                if (c.peerId != null && !c.socket.isClosed) {
+                    sendHello(c, force = true)
+                }
+            }
+            broadcastPeerList()
+        }
     }
 
     /** Push the current known peer list (with direct IPs) to connected peers. */

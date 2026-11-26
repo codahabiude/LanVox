@@ -57,5 +57,13 @@ data class ChatMessageEntity(
     @ColumnInfo(name = "reactions")
     val reactions: String? = null,
     @ColumnInfo(name = "is_starred")
-    val isStarred: Int = 0
+    val isStarred: Int = 0,
+    @ColumnInfo(name = "is_pinned")
+    val isPinned: Int = 0,
+    @ColumnInfo(name = "edited_at")
+    val editedAt: Long? = null,
+    @ColumnInfo(name = "expires_at")
+    val expiresAt: Long? = null,
+    @ColumnInfo(name = "message_type")
+    val messageType: String = ChatMessage.TYPE_STANDARD
 )

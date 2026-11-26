@@ -29,6 +29,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -75,6 +76,7 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
     private var timerLoopRunning = false
     private var pulseBright = true
     private var endedLocally = false
+    private var callLogRecorded = false
 
     private val durationHandler = Handler(Looper.getMainLooper())
     private val durationRunnable = object : Runnable {
@@ -417,6 +419,7 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
     }
 
     private fun cleanupAndFinish() {
+        recordCallHistoryIfNeeded()
         stopDurationTimerLoop()
         VideoCallService.onRemoteVideoFrame = null
         VideoCallService.attachLocalPreviewSurface(null)
@@ -428,6 +431,33 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         CallSessionBus.restoreVoiceAudio(this)
         CallSessionBus.clearSession()
         finish()
+    }
+
+    private fun recordCallHistoryIfNeeded() {
+        if (callLogRecorded) return
+        callLogRecorded = true
+        val targetPid = peerId?.takeIf { it.isNotBlank() } ?: return
+        val elapsedMs = CallSessionBus.elapsedCallMs()
+        val label = if (elapsedMs > 0L) {
+            val dur = CallSessionBus.formatDuration(elapsedMs)
+            if (isOutgoing) "Outgoing video call · $dur" else "Incoming video call · $dur"
+        } else {
+            if (isOutgoing) "Outgoing video call (unanswered)" else "Incoming video call"
+        }
+        val appCtx = applicationContext
+        val name = peerName
+        val outgoing = isOutgoing
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching {
+                ChatRepository.get(appCtx).insertCallLog(
+                    peerId = targetPid,
+                    peerName = name,
+                    callType = Constants.CALL_TYPE_VIDEO,
+                    summary = label,
+                    isSentByMe = outgoing
+                )
+            }
+        }
     }
 
     // ======================== Duration Timer ========================
@@ -455,6 +485,7 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         remoteFrameChannel.close()
         CallSessionBus.removeListener(this)
         if (!endedLocally && isFinishing) {
+            recordCallHistoryIfNeeded()
             VideoCallService.onRemoteVideoFrame = null
             VideoCallService.attachLocalPreviewSurface(null)
             VideoCallService.endCall()

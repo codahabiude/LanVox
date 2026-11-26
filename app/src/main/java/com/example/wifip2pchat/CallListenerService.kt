@@ -396,7 +396,9 @@ class CallListenerService : Service() {
         if (MainActivity.handleStandbyLine(line)) return
 
         val env = Envelope.parse(line)
-        val payload = env?.payload ?: line
+        val rawPayload = env?.payload ?: line
+        val (ttlSeconds, payload) = ChatMessage.decodeTtlPayload(rawPayload)
+        val expiresAt = ttlSeconds?.let { System.currentTimeMillis() + it * 1000L }
         val senderId = env?.senderId?.takeIf { it.isNotBlank() && it != "legacy" }
             ?: LastSession.peerMac(this)?.takeIf { it.isNotBlank() }
             ?: "unknown"
@@ -498,6 +500,58 @@ class CallListenerService : Service() {
                     }
                 }
             }
+            payload.startsWith(Constants.MSG_TYPE_PIN) -> {
+                val rawPin = payload.removePrefix(Constants.MSG_TYPE_PIN)
+                val parts = rawPin.split('|', limit = 3)
+                if (parts.size >= 3) {
+                    val scopeSuffix = parts[0]
+                    val targetMsgId = parts[1].trim()
+                    val pinned = parts[2].trim() == "1"
+                    val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
+                        Constants.GROUP_PEER_ID
+                    } else {
+                        senderId
+                    }
+                    scope.launch {
+                        runCatching {
+                            ChatRepository.get(applicationContext)
+                                .applyRemotePin(targetThread, targetMsgId, pinned)
+                        }
+                    }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_EDIT) -> {
+                val rawEdit = payload.removePrefix(Constants.MSG_TYPE_EDIT)
+                val parts = rawEdit.split('|', limit = 4)
+                if (parts.size >= 4) {
+                    val scopeSuffix = parts[0]
+                    val targetMsgId = parts[1].trim()
+                    val editedAt = parts[2].trim().toLongOrNull() ?: System.currentTimeMillis()
+                    val newText = parts[3]
+                    val targetThread = if (scopeSuffix == Constants.GROUP_PEER_ID) {
+                        Constants.GROUP_PEER_ID
+                    } else {
+                        senderId
+                    }
+                    scope.launch {
+                        runCatching {
+                            ChatRepository.get(applicationContext)
+                                .applyRemoteEdit(targetThread, targetMsgId, newText, editedAt)
+                        }
+                    }
+                }
+            }
+            payload.startsWith(Constants.MSG_TYPE_PING) -> {
+                val rawPing = payload.removePrefix(Constants.MSG_TYPE_PING)
+                sendControl(Constants.MSG_TYPE_PONG + rawPing, senderId)
+            }
+            payload.startsWith(Constants.MSG_TYPE_PONG) -> {
+                val parts = payload.removePrefix(Constants.MSG_TYPE_PONG).split('|', limit = 2)
+                if (parts.size == 2) {
+                    val sentMs = parts[1].trim().toLongOrNull() ?: 0L
+                    MeshDiagnosticsBus.recordPong(senderId, parts[0].trim(), sentMs)
+                }
+            }
             payload.startsWith(Constants.MSG_TYPE_REPLY) -> {
                 val decoded = ChatMessage.decodeReplyPayload(payload)
                 if (decoded != null) {
@@ -509,16 +563,17 @@ class CallListenerService : Service() {
                         msgId = env?.msgId,
                         replyToId = decoded.replyToId,
                         replyToSender = decoded.replySender,
-                        replyToText = decoded.replySnippet
+                        replyToText = decoded.replySnippet,
+                        expiresAt = expiresAt
                     )
                 }
             }
             payload.startsWith(Constants.MSG_TYPE_TEXT) -> {
                 val cleanText = payload.removePrefix(Constants.MSG_TYPE_TEXT)
-                onIncomingText(cleanText, senderId, senderName, recipientId, env?.msgId)
+                onIncomingText(cleanText, senderId, senderName, recipientId, env?.msgId, expiresAt = expiresAt)
             }
             payload.startsWith(Constants.MSG_TYPE_FILE) -> {
-                onIncomingFile(payload, senderId, senderName, recipientId, env?.msgId)
+                onIncomingFile(payload, senderId, senderName, recipientId, env?.msgId, expiresAt = expiresAt)
             }
             payload.startsWith(Constants.MSG_TYPE_FILE_DONE) -> {
                 val transferId = payload.removePrefix(Constants.MSG_TYPE_FILE_DONE).trim()
@@ -638,7 +693,18 @@ class CallListenerService : Service() {
             delay(RING_TIMEOUT_MS)
             if (pendingCallType != null) {
                 Log.d(TAG, "Call missed — nobody answered")
-                writeLine(Constants.MSG_TYPE_CALL_REJECT + (pendingCallType ?: callType))
+                val actualType = pendingCallType ?: callType
+                writeLine(Constants.MSG_TYPE_CALL_REJECT + actualType)
+                val logTitle = if (actualType == Constants.CALL_TYPE_VIDEO) "Missed video call" else "Missed audio call"
+                runCatching {
+                    ChatRepository.get(applicationContext).insertCallLog(
+                        peerId = peerId,
+                        peerName = callerName,
+                        callType = actualType,
+                        summary = logTitle,
+                        isSentByMe = false
+                    )
+                }
                 showMissedCallNotification(callerName, callLabel)
                 endIncomingCallLocally()
             }
@@ -685,7 +751,8 @@ class CallListenerService : Service() {
         msgId: String? = null,
         replyToId: String? = null,
         replyToSender: String? = null,
-        replyToText: String? = null
+        replyToText: String? = null,
+        expiresAt: Long? = null
     ) {
         val threadId = if (recipientId == Constants.RECIPIENT_BROADCAST && senderId != "unknown") {
             Constants.GROUP_PEER_ID
@@ -713,7 +780,8 @@ class CallListenerService : Service() {
                             messageId = msgId,
                             replyToMessageId = replyToId,
                             replyToSender = replyToSender,
-                            replyToText = replyToText
+                            replyToText = replyToText,
+                            expiresAt = expiresAt
                         ),
                         threadId,
                         threadName
@@ -752,7 +820,8 @@ class CallListenerService : Service() {
         senderId: String,
         senderName: String,
         recipientId: String,
-        msgId: String? = null
+        msgId: String? = null,
+        expiresAt: Long? = null
     ) {
         val offer = FileTransferManager.FileOffer.fromPayload(payload) ?: return
         val threadId = if (recipientId == Constants.RECIPIENT_BROADCAST && senderId != "unknown") {
@@ -766,7 +835,7 @@ class CallListenerService : Service() {
             senderName
         }
         val displaySender = if (threadId == Constants.GROUP_PEER_ID) senderName else null
-        val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize)
+        val summary = FileTransferManager.formatSummaryText(offer.fileName, offer.fileSize, offer.mimeType)
         val scopeSuffix = if (threadId == Constants.GROUP_PEER_ID) Constants.GROUP_PEER_ID else ""
         val idSuffix = msgId?.takeIf { it.isNotBlank() }?.let { "|$it" } ?: ""
 
@@ -783,7 +852,8 @@ class CallListenerService : Service() {
                         attachmentSize = offer.fileSize,
                         attachmentState = AttachmentState.TRANSFERRING,
                         transferId = offer.transferId,
-                        messageId = msgId
+                        messageId = msgId,
+                        expiresAt = expiresAt
                     ),
                     threadId,
                     threadName

@@ -16,9 +16,15 @@ Requires Android 7.0 (API 24) or newer. This is a debug build, not from the Play
 
 | Feature | Description |
 |---------|-------------|
-| 💬 **1:1 & Multi-Phone Mesh Chat** | Symmetric `ChatServerService` (`8988`) runs on every phone with direct peer links + Group Chat (`__group__`) broadcast routing, `MID:` packet deduplication, and an IG Direct / Messenger-style chat icon (`ic_chats`) — no single central host bottleneck |
+| 💬 **1:1 & Multi-Phone Mesh Chat** | Symmetric `ChatServerService` (`8988`) runs on every phone with direct peer links + Group Chat (`__group__`) broadcast routing, `MID:` packet deduplication, and an IG Direct / Messenger-style chat icon (`ic_chats`) with a live total unread badge — no single central host bottleneck |
 | 🌐 **Hostless Wi-Fi / Hotspot NSD** | `LocalMeshDiscovery` (`_lanvox._tcp.`) automatically discovers and connects nearby LanVox devices sharing the same Wi-Fi network or mobile hotspot alongside Wi-Fi Direct |
-| ❤️ **Reactions, Double-Tap & Action Sheet** | Instagram-style **double-tap bubble** to heart (`❤️`), interactive clickable reaction chips (`REACT:`), and a frosted long-press **Message Action Sheet** (`❤️ 😂 😮 😢 🙏 👍`, Reply, Copy, Star, Forward, Delete) |
+| 🎤 **Push-to-Talk Voice Notes** | Record AAC `.m4a` voice clips (`VoiceNoteManager`) directly from the composer mic button with live `REC MM:SS` timer and amplitude meter, stream over TCP `8991`, and play inline with an interactive `SeekBar` inside bubbles |
+| 📌 **Pinned Messages & Banner** | Pin or unpin any message from the action sheet (`PIN:` wire sync); a frosted pinned banner (`layoutPinnedBanner`) stays docked at the top of the thread with tap-to-scroll and quick unpin |
+| ✏️ **Message Editing** | Edit your sent text messages inline (`EDIT:` wire sync) with an `(edited)` badge and synced timestamp across devices |
+| ⏳ **Disappearing Messages** | Configure per-thread self-destruct timers (`Off`, `30s`, `5m`, `1h`, `24h` via `EphemeralPrefs` + `TTL:` wire wrapper) with live bubble countdown badges (`⏱`) and automatic Room expiration purging |
+| 🩺 **Custom Nickname & Mesh RTT Ping** | Customize your visible device nickname (`DeviceIdentity`), inspect node ID / local IP / transport links, and measure live TCP round-trip latency (`PING:`/`PONG:` in ms via `MeshDiagnosticsBottomSheet`) |
+| 📞 **Call History Cards & Call Back** | Incoming, outgoing, and missed audio/video calls log automatically as centered frosted timeline cards (`CALL_LOG`) inside the thread with one-tap **Call back** |
+| ❤️ **Reactions, Double-Tap & Action Sheet** | Instagram-style **double-tap bubble** to heart (`❤️`), interactive clickable reaction chips (`REACT:`), and a frosted long-press **Message Action Sheet** (`❤️ 😂 😮 😢 🙏 👍`, Reply, Copy, Star, Pin, Edit, Forward, Delete) |
 | ↩️ **Swipe-to-Reply & Quote Jump** | WhatsApp/Messenger-style **swipe-right** on any bubble (`MessageSwipeHelper`) opens the composer reply bar (`REPLY:` JSON wire payload) and renders a quote card inside the bubble — tap the quote to smoothly scroll & pulse the original message; **swipe-left** deletes with **Undo** |
 | ⌨️ **Live Typing Indicators** | Throttled `TYPING:` wire packets (`ChatBus.typingPeers` with 3.8s auto-expiry) surface live typing pills above the composer, in chat headers, and as mint italic previews inside `ChatsActivity` rows |
 | ⭐ **Starred Filter, Copy & Forward** | Bookmark important messages with a bubble `★` badge, toggle the `★ Starred` filter pill inside the search bar, copy message text, or forward any message to another 1:1 contact or Group Chat |
@@ -27,12 +33,12 @@ Requires Android 7.0 (API 24) or newer. This is a debug build, not from the Play
 | 🔎 **In-Chat Search & Star Filter** | Frosted glass search bar in both `MainActivity` and `ChatActivity` filters messages live by body text, sender name, file name, MIME type, timestamp (`14:30`, `3:54 PM`, `Nov 21`, `today`), or `★ Starred` status with match highlights and hit counter |
 | 📡 **Peer Picker Bottom Sheet** | Interactive `PeerPickerBottomSheet` with live sweeping `RadarView`, outward sonar ring ripple during scans, an illustrated empty state (`img_no_peers_empty`) with embedded radar & **Start Scan** CTA, discovered peer list, and one-tap connect/disconnect |
 | 🔐 **Wi-Fi P2P Runtime Permissions** | Android 13+ `NEARBY_WIFI_DEVICES` and Android 7–12 `ACCESS_FINE_LOCATION` permission flow with rationale dialog and Settings fallback |
-| 💾 **Room Database Persistence (v4)** | Every message, quote-reply link, emoji reaction JSON, starred flag, `message_id` receipt state, and file attachment auto-saved locally via **Room** (`LanvoxDatabase` v4 with `MIGRATION_1_2`, `MIGRATION_2_3`, and `MIGRATION_3_4`) + reactive Kotlin `Flow` |
+| 💾 **Room Database Persistence (v5)** | Every message, quote-reply link, emoji reaction JSON, starred/pinned flag, edit/expiry timestamp, call log type, `message_id` receipt state, and file attachment auto-saved locally via **Room** (`LanvoxDatabase` v5 with `MIGRATION_1_2` → `MIGRATION_4_5`) + reactive Kotlin `Flow` |
 | 📞 **WebRTC P2P Audio Call** | Background-resilient **WebRTC** (`io.github.webrtc-sdk:android`) Opus/SRTP voice calling inside a `microphone` foreground service with hardware AEC/NS, wake/Wi-Fi locks, floating live call timer overlay (`MM:SS` / `HH:MM:SS`), and notification Mute/Hangup controls |
 | 📹 **Direct 1:1 Video Call** | Live Camera2 JPEG-over-TCP video call (`8990`) + PiP preview + WebRTC audio + floating glassmorphic active call timer overlay (`● LIVE  00:00`); in multi-phone sessions (>2 phones), prompts you to pick the target peer and streams directly between caller and callee |
 | 🔀 **Camera Switch, Mute & Speaker** | Switch front/back camera during video calls and toggle mute/speakerphone |
 | 🌙 **Dark Mode & Cryo-Cyan HUD** | Obsidian Glassmorphism UI with ambient blurred orbs and bundled Space Grotesk / Plus Jakarta Sans / JetBrains Mono fonts |
-| 📖 **Onboarding & Standby Alerts** | First-launch tutorial plus `CallListenerService` background standby so incoming calls, messages, replies, reactions, files, and `ACK:` receipts work even when the app is closed |
+| 📖 **Onboarding & Standby Alerts** | First-launch tutorial plus `CallListenerService` background standby so incoming calls, messages, replies, reactions, pins, edits, files, and `ACK:` receipts work even when the app is closed |
 | 👥 **Per-Contact & Group Chats** | Conversations list (`ChatsActivity`) with true unread count badges, bold unread previews, live typing status, delivery/read ticks (`✓` / `✓✓`), and per-contact or Group Chat threads |
 | 🔄 **Auto-Reconnect** | Chat mesh links and audio/video call sockets automatically retry after transient drops or handovers |
 | 📤 **Export & Clear History** | Export all conversations to a `.txt` file in Downloads, delete one thread (long-press), or clear all history |
@@ -63,11 +69,11 @@ Requires Android 7.0 (API 24) or newer. This is a debug build, not from the Play
   - Per-peer status chips (`⏳` waiting, `↑ <peer> <pct>%`, `✓ <peer>`, `✕ <peer>`) in multi-phone Group Chat transfers
   - End-to-end `FILE_DONE:` / `FILE_FAIL:` confirmation from each recipient before marking completion.
 
-### Persistent Chat Storage (Room Database v4)
+### Persistent Chat Storage (Room Database v5)
 - Saved locally in `/data/data/com.example.lanvox/databases/lanvox_room_chat.db`:
-  - `ChatMessageEntity` (`@Entity(tableName = "messages")`): stores `text`, `is_sent`, `timestamp`, `peer_id`, `peer_name`, `sender_name`, `status`, `message_id` (indexed as `idx_messages_msg_id`), quote-reply columns (`reply_to_id`, `reply_to_sender`, `reply_to_text`), `reactions` JSON map, `is_starred`, and attachment columns (`attachment_name`, `attachment_mime`, `attachment_size`, `attachment_path`, `attachment_state`, `transfer_id`).
-  - `ChatMessageDao` (`@Dao`): reactive `Flow` message/conversation queries (`ConversationTuple` includes `lastStatus` and `unreadCount`), `updateReactionsById(...)`, `updateStarredById(...)`, `updateOutgoingStatusByMessageIds(...)`, `getUnreadIncomingMessageIds(...)`, and `markIncomingThreadRead(...)`.
-  - `LanvoxDatabase` (`@Database(version = 4)`): non-destructive `MIGRATION_1_2`, `MIGRATION_2_3`, and `MIGRATION_3_4` preserve prior messages.
+  - `ChatMessageEntity` (`@Entity(tableName = "messages")`): stores `text`, `is_sent`, `timestamp`, `peer_id`, `peer_name`, `sender_name`, `status`, `message_id` (indexed as `idx_messages_msg_id`), quote-reply columns (`reply_to_id`, `reply_to_sender`, `reply_to_text`), `reactions` JSON map, `is_starred`, `is_pinned`, `edited_at`, `expires_at`, `message_type` (`STANDARD` / `CALL_LOG`), and attachment columns (`attachment_name`, `attachment_mime`, `attachment_size`, `attachment_path`, `attachment_state`, `transfer_id`).
+  - `ChatMessageDao` (`@Dao`): reactive `Flow` message/conversation/pinned queries (`ConversationTuple` includes `lastStatus` and `unreadCount`), `updateReactionsById(...)`, `updateStarredById(...)`, `updatePinnedById(...)`, `updateEditedTextById(...)`, `purgeExpiredMessages(...)`, `updateOutgoingStatusByMessageIds(...)`, `getUnreadIncomingMessageIds(...)`, and `markIncomingThreadRead(...)`.
+  - `LanvoxDatabase` (`@Database(version = 5)`): non-destructive migrations (`MIGRATION_1_2` through `MIGRATION_4_5`) preserve prior messages.
 
 ### Audio & Video Calling (1:1 Direct Calls Across 2+ Phones)
 - **Audio (`WebRtcAudioCallManager` & `AudioCallService`, port `8989`)**: Full-duplex WebRTC `PeerConnection` (`JavaAudioDeviceModule` with hardware AEC/NS/AGC, Opus DTLS-SRTP, NetEQ jitter buffer) over LAN ICE host candidates inside a `microphone` foreground service with wake/Wi-Fi locks and notification Mute/End controls.
@@ -152,26 +158,30 @@ app/src/main/java/com/example/wifip2pchat/
 ├── ChatMessage.kt                  — Domain ChatMessage model (`ReactionChip`, `DecodedReply`, `MessageStatus`, quotes & stars)
 ├── ChatMessageEntity.kt            — Room @Entity table definition ("messages")
 ├── ChatMessageDao.kt               — Room @Dao queries (Flow & suspend), reactions, stars & unread count queries
-├── LanvoxDatabase.kt               — Room @Database v4 singleton ("lanvox_room_chat.db") with v1→v2→v3→v4 migrations
-├── ChatRepository.kt               — Repository layer, receipt transitions, reaction/star mutations & Conversation model
+├── LanvoxDatabase.kt               — Room @Database v5 singleton ("lanvox_room_chat.db") with v1→v5 migrations
+├── ChatRepository.kt               — Repository layer, receipt transitions, pin/edit/expiry/call-log mutations & Conversation model
 ├── ChatBus.kt                      — Foreground thread, message & auto-expiring typing indicator StateFlow bus
+├── VoiceNoteManager.kt             — Push-to-Talk `.m4a` AAC recorder & single-track MediaPlayer playback StateFlow
+├── EphemeralPrefs.kt               — Per-thread disappearing-messages TTL preferences & duration picker
+├── MeshDiagnosticsBus.kt           — Live TCP `PING:`/`PONG:` round-trip latency (RTT) StateFlow tracker
 ├── CallSessionBus.kt               — Shared call signaling state, monotonic active call timer, mute sync & AudioFocus manager
 ├── WebRtcAudioCallManager.kt       — WebRTC PeerConnection, JavaAudioDeviceModule (AEC/NS/AGC) & ICE queue
 ├── AudioCallService.kt             — Microphone foreground service hosting WebRTC P2P audio & notification actions
 ├── VideoCallService.kt             — Video streaming foreground service (Camera2 + conflated TCP frame writer)
-├── AudioCallActivity.kt            — Audio call UI with floating live timer overlay HUD & edge-to-edge safe insets
-├── VideoCallActivity.kt            — Video call UI with floating live timer overlay pill, PiP & edge-to-edge safe insets
-├── IncomingCallActivity.kt         — Incoming call lock-screen UI
-├── MainActivity.kt                 — Main HUD: PeerPickerBottomSheet, inline social mesh chat, reactions/replies & 1:1 call routing
-├── MainActionsBottomSheet.kt       — Material BottomSheetDialog for secondary/destructive actions
-├── MessageActionBottomSheet.kt     — Floating frosted bottom sheet for quick emoji reactions & message actions
+├── AudioCallActivity.kt            — Audio call UI with floating live timer overlay HUD, call logging & edge-to-edge safe insets
+├── VideoCallActivity.kt            — Video call UI with floating live timer overlay pill, PiP, call logging & edge-to-edge safe insets
+├── IncomingCallActivity.kt         — Incoming call lock-screen UI with decline call logging
+├── MainActivity.kt                 — Main HUD: PeerPickerBottomSheet, inline social mesh chat, voice notes, pins, edits, TTL & 1:1 call routing
+├── MainActionsBottomSheet.kt       — Material BottomSheetDialog for secondary actions, disappearing timer, diagnostics & destructive actions
+├── MeshDiagnosticsBottomSheet.kt   — Nickname editor, node/IP telemetry & live per-peer RTT latency sheet
+├── MessageActionBottomSheet.kt     — Floating frosted bottom sheet for quick emoji reactions & message actions (Reply, Copy, Star, Pin, Edit, Forward, Delete)
 ├── PeerPickerBottomSheet.kt        — Material BottomSheetDialog for peer discovery, RadarView & empty-state CTA
 ├── ChatFeatureActions.kt           — Shared helpers for clipboard copy, starred filter styling, quote scroll & forwarding
 ├── ChatsActivity.kt                — Conversations list (observed via Room Flow with live typing & unread badges)
 ├── ChatsAdapter.kt                 — RecyclerView adapter for conversations, unread badges & typing indicators
-├── ChatActivity.kt                 — Per-contact / Group thread with reactions, swipe-to-reply, typing, search & file sharing
+├── ChatActivity.kt                 — Per-contact / Group thread with voice notes, pins, edits, disappearing timer, reactions, swipe-to-reply, search & file sharing
 ├── PeerAdapter.kt                  — RecyclerView adapter for discovered peers
-├── MessageAdapter.kt               — RecyclerView adapter for bubbles, quotes, reaction chips, stars, receipts & file progress
+├── MessageAdapter.kt               — RecyclerView adapter for bubbles, voice note players, call-log cards, quotes, reaction chips, stars/pins, receipts & file progress
 ├── ChatSearchHelper.kt             — Live message filtering by text, sender, filename, MIME, or timestamp
 ├── MessageSwipeHelper.kt           — Bidirectional swipe-right (reply) & swipe-left (delete + Undo) ItemTouchHelper
 ├── GlassEffects.kt                 — RenderEffect backdrop blur & luminous glow shadows
@@ -222,7 +232,7 @@ app/src/main/java/com/example/wifip2pchat/
 - **Language**: Kotlin (AGP 9.1.1 built-in Kotlin, Gradle 9.3.1)
 - **Min SDK**: 24 (Android 7.0)
 - **Target SDK**: 34 (Android 14)
-- **Persistence**: AndroidX Room (`2.7.1`, schema v4 with `MIGRATION_1_2`, `MIGRATION_2_3` & `MIGRATION_3_4`) with KSP (`2.3.5`), Repository pattern, and Kotlin `Flow` / `StateFlow`
+- **Persistence**: AndroidX Room (`2.7.1`, schema v5 with `MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_3_4` & `MIGRATION_4_5`) with KSP (`2.3.5`), Repository pattern, and Kotlin `Flow` / `StateFlow`
 - **Networking**: Symmetric TCP mesh (`8988`), Wi-Fi Direct + Android NSD (`_lanvox._tcp.`), TCP binary file server/relay (`8991`), WebRTC audio (`8989`), and Camera2 JPEG video (`8990`)
 - **UI / UX**: Glassmorphism & Cryo-Cyan Orbital HUD aesthetic (`#050811` void, `#00F0FF` cryo-cyan, `#00F5A0` read-receipt mint), fitted adaptive launcher icon (`drawable/ic_launcher_foreground` safe-zone inset over `#00162B` + density `ic_launcher` / `ic_launcher_round` fallbacks) and centered `ic_brand_logo`, IG Direct / Messenger chat badge, `RadarView` conical sweep & sonar pulse, custom no-peers illustration, bundled `Space Grotesk`, `Plus Jakarta Sans`, & `JetBrains Mono` typography (`res/font/`), `MaterialProgressIndicator`, `BottomSheetDialog`, `RecyclerView` (`DiffUtil` + `ItemTouchHelper`), and ViewBinding
 

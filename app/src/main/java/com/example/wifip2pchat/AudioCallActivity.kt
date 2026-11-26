@@ -18,6 +18,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
@@ -57,6 +60,7 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
     private var timerLoopRunning = false
     private var pulseBright = true
     private var endedLocally = false
+    private var callLogRecorded = false
 
     private val durationHandler = Handler(Looper.getMainLooper())
     private val durationRunnable = object : Runnable {
@@ -294,12 +298,40 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
     }
 
     private fun cleanupAndFinish() {
+        recordCallHistoryIfNeeded()
         stopDurationTimerLoop()
         AudioCallService.endCall()
         CallSessionBus.removeListener(this)
         CallSessionBus.restoreVoiceAudio(this)
         CallSessionBus.clearSession()
         finish()
+    }
+
+    private fun recordCallHistoryIfNeeded() {
+        if (callLogRecorded) return
+        callLogRecorded = true
+        val targetPid = peerId?.takeIf { it.isNotBlank() } ?: return
+        val elapsedMs = CallSessionBus.elapsedCallMs()
+        val label = if (elapsedMs > 0L) {
+            val dur = CallSessionBus.formatDuration(elapsedMs)
+            if (isOutgoing) "Outgoing audio call · $dur" else "Incoming audio call · $dur"
+        } else {
+            if (isOutgoing) "Outgoing audio call (unanswered)" else "Incoming audio call"
+        }
+        val appCtx = applicationContext
+        val name = peerName
+        val outgoing = isOutgoing
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching {
+                ChatRepository.get(appCtx).insertCallLog(
+                    peerId = targetPid,
+                    peerName = name,
+                    callType = Constants.CALL_TYPE_AUDIO,
+                    summary = label,
+                    isSentByMe = outgoing
+                )
+            }
+        }
     }
 
     // ======================== Duration Timer ========================
@@ -327,6 +359,7 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
         stopDurationTimerLoop()
         CallSessionBus.removeListener(this)
         if (!endedLocally && isFinishing) {
+            recordCallHistoryIfNeeded()
             AudioCallService.endCall()
             CallSessionBus.restoreVoiceAudio(this)
             CallSessionBus.clearSession()

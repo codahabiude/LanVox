@@ -21,8 +21,11 @@ object MainActionsBottomSheet {
         storedMessageCount: Int,
         isConnected: Boolean,
         isScannerExpanded: Boolean? = null,
+        ephemeralTtlSeconds: Long = 0L,
         onExportChats: (() -> Unit)? = null,
         onToggleRadar: (() -> Unit)? = null,
+        onConfigureEphemeral: (() -> Unit)? = null,
+        onOpenMeshDiagnostics: (() -> Unit)? = null,
         onDisconnect: (() -> Unit)? = null,
         onClearAllHistory: () -> Unit
     ) {
@@ -77,6 +80,33 @@ object MainActionsBottomSheet {
             }
         } else {
             rowRadar.visibility = View.GONE
+        }
+
+        val rowEphemeral = view.findViewById<View>(R.id.rowActionEphemeral)
+        val tvEphemeralSub = view.findViewById<TextView>(R.id.tvActionEphemeralSub)
+        if (onConfigureEphemeral != null) {
+            rowEphemeral.visibility = View.VISIBLE
+            tvEphemeralSub.text = EphemeralPrefs.describeForSheet(context, ephemeralTtlSeconds)
+            rowEphemeral.setOnClickListener {
+                dialog.dismiss()
+                onConfigureEphemeral()
+            }
+        } else {
+            rowEphemeral.visibility = View.GONE
+        }
+
+        val rowMeshDiag = view.findViewById<View>(R.id.rowActionMeshDiagnostics)
+        val tvMeshDiagSub = view.findViewById<TextView>(R.id.tvActionMeshDiagnosticsSub)
+        if (onOpenMeshDiagnostics != null) {
+            rowMeshDiag.visibility = View.VISIBLE
+            val nick = DeviceIdentity.defaultDeviceName(context)
+            tvMeshDiagSub.text = "$nick · ${PeerRegistry.snapshot().size} active peer(s)"
+            rowMeshDiag.setOnClickListener {
+                dialog.dismiss()
+                onOpenMeshDiagnostics()
+            }
+        } else {
+            rowMeshDiag.visibility = View.GONE
         }
 
         val rowDisconnect = view.findViewById<View>(R.id.rowActionDisconnect)
