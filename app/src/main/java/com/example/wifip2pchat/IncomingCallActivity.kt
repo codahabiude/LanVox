@@ -162,6 +162,15 @@ class IncomingCallActivity : AppCompatActivity() {
     private fun acceptCall() {
         pulseRing.clearAnimation()
 
+        if (!peerId.isNullOrBlank() && CryptoManager.isPeerKeyBlocked(this, peerId)) {
+            Log.w(TAG, "Cannot accept call from $peerId: peer key is blocked")
+            sendControl(Constants.MSG_TYPE_CALL_REJECT + callType)
+            CallListenerService.onIncomingCallHandled()
+            CallRingtoneManager.stopRinging()
+            finish()
+            return
+        }
+
         val missing = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED

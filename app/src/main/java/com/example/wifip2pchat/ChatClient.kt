@@ -89,7 +89,7 @@ class ChatClient(private val context: Context) {
             senderId = PeerRegistry.selfId,
             senderName = PeerRegistry.selfName,
             recipientId = "GO",
-            payload = CryptoManager.buildHelloPayload(null, pubB64)
+            payload = CryptoManager.buildSignedHelloPayload(context, null, pubB64)
         ) + "\n"
         try {
             if (writeSynchronized(line)) {
@@ -113,6 +113,10 @@ class ChatClient(private val context: Context) {
 
     /** Send an E2EE payload addressed to one specific peer. */
     fun sendTo(recipientId: String, payload: String) {
+        if (CryptoManager.isPeerKeyBlocked(context, recipientId)) {
+            Log.w(TAG, "sendTo($recipientId) blocked: peer key changed and pending")
+            return
+        }
         scope.launch {
             val wirePayload = if (payload.startsWith(Constants.MSG_TYPE_KEYX) ||
                 payload.startsWith(Constants.MSG_TYPE_E2E_DIRECT)
@@ -153,7 +157,7 @@ class ChatClient(private val context: Context) {
         scope.launch {
             val keyTargets = PeerRegistry.snapshot()
                 .map { it.id }
-                .filter { it != PeerRegistry.selfId && CryptoManager.hasPeerKey(context, it) }
+                .filter { it != PeerRegistry.selfId && CryptoManager.hasPeerKey(context, it) && !CryptoManager.isPeerKeyBlocked(context, it) }
             val wirePayload = CryptoManager.encryptForBroadcast(
                 context = context,
                 senderId = PeerRegistry.selfId,
@@ -207,27 +211,37 @@ class ChatClient(private val context: Context) {
         val env = Envelope.parse(raw) ?: return
 
         if (CryptoManager.isHelloPayload(env.payload)) {
-            val (ip, pubB64) = CryptoManager.parseHelloPayload(env.payload)
-            if (!pubB64.isNullOrBlank()) {
-                CryptoManager.registerPeerPublicKey(context, env.senderId, pubB64)
+            val (ip, pubB64, sigBytes) = CryptoManager.parseSignedHelloPayload(env.payload)
+            if (!pubB64.isNullOrBlank() && sigBytes != null) {
+                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubB64)) }.getOrNull()
+                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, env.senderId, pubB64, sigBytes)) {
+                    CryptoManager.registerPeerPublicKey(context, env.senderId, pubB64, isFromThirdPartyBroadcast = false)
+                    PeerRegistry.upsert(
+                        PeerRegistry.Peer(
+                            id = env.senderId,
+                            name = env.senderName,
+                            isGroupOwner = false,
+                            ipAddress = ip,
+                            publicKeyB64 = pubB64
+                        )
+                    )
+                } else {
+                    Log.w(TAG, "Invalid identity signature in HELLO from ${env.senderId} — rejecting")
+                }
             }
-            PeerRegistry.upsert(
-                PeerRegistry.Peer(
-                    id = env.senderId,
-                    name = env.senderName,
-                    isGroupOwner = false,
-                    ipAddress = ip,
-                    publicKeyB64 = pubB64
-                )
-            )
             return
         }
 
         if (env.payload.startsWith(Constants.MSG_TYPE_KEYX)) {
-            val pubB64 = env.payload.removePrefix(Constants.MSG_TYPE_KEYX).trim()
-            if (pubB64.isNotBlank()) {
-                CryptoManager.registerPeerPublicKey(context, env.senderId, pubB64)
-                PeerRegistry.updatePublicKey(env.senderId, pubB64)
+            val (pubB64, sigBytes) = CryptoManager.parseSignedKeyxPayload(env.payload)
+            if (pubB64.isNotBlank() && sigBytes != null) {
+                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubB64)) }.getOrNull()
+                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, env.senderId, pubB64, sigBytes)) {
+                    CryptoManager.registerPeerPublicKey(context, env.senderId, pubB64, isFromThirdPartyBroadcast = false)
+                    PeerRegistry.updatePublicKey(env.senderId, pubB64)
+                } else {
+                    Log.w(TAG, "Invalid identity signature in KEYX from ${env.senderId} — rejecting")
+                }
             }
             return
         }
@@ -240,7 +254,7 @@ class ChatClient(private val context: Context) {
             )
             list.forEach { p ->
                 if (!p.publicKeyB64.isNullOrBlank()) {
-                    CryptoManager.registerPeerPublicKey(context, p.id, p.publicKeyB64)
+                    CryptoManager.registerPeerPublicKey(context, p.id, p.publicKeyB64, isFromThirdPartyBroadcast = true)
                 }
             }
             PeerRegistry.mergeFromPeersPayload(list)

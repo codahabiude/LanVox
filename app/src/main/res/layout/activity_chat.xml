@@ -137,6 +137,36 @@
             android:tint="@color/brand_secondary" />
     </LinearLayout>
 
+    <LinearLayout
+        android:id="@+id/layoutKeyBlockedBanner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="#2E1114"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="⚠️ Peer identity key changed! Messaging &amp; calls blocked."
+            android:textColor="#FF8A8A"
+            android:textSize="12sp"
+            android:fontFamily="@font/space_grotesk" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnReviewKey"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Review Key"
+            android:textColor="#00F0FF"
+            android:textSize="12sp" />
+    </LinearLayout>
+
     <!-- Slim Thread Utility Strip (Nudge, Poll, Shared Media Gallery) -->
     <HorizontalScrollView
         android:layout_width="match_parent"

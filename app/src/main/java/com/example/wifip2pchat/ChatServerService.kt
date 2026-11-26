@@ -323,7 +323,7 @@ class ChatServerService : Service() {
             PeerRegistry.selfIpAddress = localIp
         }
         val selfPubB64 = CryptoManager.getSelfPublicKeyB64(applicationContext)
-        val helloPayload = CryptoManager.buildHelloPayload(localIp, selfPubB64)
+        val helloPayload = CryptoManager.buildSignedHelloPayload(applicationContext, localIp, selfPubB64)
         val line = Envelope.build(
             senderId = PeerRegistry.selfId,
             senderName = PeerRegistry.selfName,
@@ -352,21 +352,35 @@ class ChatServerService : Service() {
         }
 
         if (CryptoManager.isHelloPayload(env.payload)) {
-            val (advertisedIp, pubKeyB64) = CryptoManager.parseHelloPayload(env.payload)
-            if (!pubKeyB64.isNullOrBlank()) {
-                CryptoManager.registerPeerPublicKey(applicationContext, env.senderId, pubKeyB64)
+            val (advertisedIp, pubKeyB64, sigBytes) = CryptoManager.parseSignedHelloPayload(env.payload)
+            if (!pubKeyB64.isNullOrBlank() && sigBytes != null) {
+                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubKeyB64)) }.getOrNull()
+                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, env.senderId, pubKeyB64, sigBytes)) {
+                    CryptoManager.registerPeerPublicKey(applicationContext, env.senderId, pubKeyB64, isFromThirdPartyBroadcast = false)
+                    registerPeer(conn, env.senderId, env.senderName, advertisedIp ?: conn.hostIp, pubKeyB64)
+                } else {
+                    Log.w(TAG, "Invalid identity signature in HELLO from ${env.senderId} — rejecting")
+                }
             }
-            registerPeer(conn, env.senderId, env.senderName, advertisedIp ?: conn.hostIp, pubKeyB64)
             return
         }
 
         if (env.payload.startsWith(Constants.MSG_TYPE_KEYX)) {
-            val pubKeyB64 = env.payload.removePrefix(Constants.MSG_TYPE_KEYX).trim()
-            if (pubKeyB64.isNotBlank()) {
-                val res = CryptoManager.registerPeerPublicKey(applicationContext, env.senderId, pubKeyB64)
-                PeerRegistry.updatePublicKey(env.senderId, pubKeyB64)
-                if (res == CryptoManager.KeyRegistrationResult.ADDED || res == CryptoManager.KeyRegistrationResult.CHANGED) {
-                    broadcastPeerList()
+            val body = env.payload.removePrefix(Constants.MSG_TYPE_KEYX)
+            val parts = body.split("|SIG:", limit = 2)
+            val pubKeyB64 = parts[0].trim()
+            val sigB64 = if (parts.size == 2) parts[1].trim() else ""
+            if (pubKeyB64.isNotBlank() && sigB64.isNotBlank()) {
+                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubKeyB64)) }.getOrNull()
+                val sigBytes = CryptoManager.b64UrlDecode(sigB64)
+                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, env.senderId, pubKeyB64, sigBytes)) {
+                    val res = CryptoManager.registerPeerPublicKey(applicationContext, env.senderId, pubKeyB64, isFromThirdPartyBroadcast = false)
+                    PeerRegistry.updatePublicKey(env.senderId, pubKeyB64)
+                    if (res == CryptoManager.KeyRegistrationResult.ADDED || res == CryptoManager.KeyRegistrationResult.CHANGED) {
+                        broadcastPeerList()
+                    }
+                } else {
+                    Log.w(TAG, "Invalid identity signature in KEYX from ${env.senderId}")
                 }
             }
             return
@@ -387,7 +401,7 @@ class ChatServerService : Service() {
             )
             list.forEach { p ->
                 if (!p.publicKeyB64.isNullOrBlank()) {
-                    CryptoManager.registerPeerPublicKey(applicationContext, p.id, p.publicKeyB64)
+                    CryptoManager.registerPeerPublicKey(applicationContext, p.id, p.publicKeyB64, isFromThirdPartyBroadcast = true)
                 }
             }
             PeerRegistry.mergeFromPeersPayload(list)
@@ -576,8 +590,8 @@ class ChatServerService : Service() {
         val last = keyxCooldown[peerId] ?: 0L
         if (now - last < 3_000L) return
         keyxCooldown[peerId] = now
-        val pubB64 = CryptoManager.getSelfPublicKeyB64(applicationContext)
-        sendToInternal(peerId, Constants.MSG_TYPE_KEYX + pubB64)
+        val keyxPayload = CryptoManager.buildSignedKeyxPayload(applicationContext)
+        sendToInternal(peerId, keyxPayload)
     }
 
     private fun notifyMeshPeersChanged() {
@@ -610,6 +624,10 @@ class ChatServerService : Service() {
             payload.startsWith(Constants.MSG_TYPE_E2E_MULTI)
 
     private fun sendToInternal(recipientId: String, payload: String, explicitMsgId: String? = null): Boolean {
+        if (CryptoManager.isPeerKeyBlocked(applicationContext, recipientId)) {
+            Log.w(TAG, "sendTo($recipientId) blocked: peer key changed and pending")
+            return false
+        }
         val wirePayload = if (isWireControlPlaintext(payload)) {
             payload
         } else {
@@ -662,7 +680,7 @@ class ChatServerService : Service() {
         } else {
             val keyTargets = (peers.keys + PeerRegistry.snapshot().map { it.id })
                 .distinct()
-                .filter { it != PeerRegistry.selfId && CryptoManager.hasPeerKey(applicationContext, it) }
+                .filter { it != PeerRegistry.selfId && CryptoManager.hasPeerKey(applicationContext, it) && !CryptoManager.isPeerKeyBlocked(applicationContext, it) }
             if (keyTargets.isEmpty()) {
                 Log.w(TAG, "Cannot broadcast — no peer public keys registered yet")
                 return false

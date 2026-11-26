@@ -281,6 +281,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             uri: Uri
         ): Boolean {
             val inst = staticInstance ?: return false
+            if (threadPeerId != Constants.GROUP_PEER_ID && CryptoManager.isPeerKeyBlocked(inst, threadPeerId)) return false
             if (!inst.isNetworkConnected()) return false
             inst.sendFileFromUri(uri, recipientId, threadPeerId, threadPeerName)
             return true
@@ -295,6 +296,10 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             durationMs: Long
         ): Boolean {
             val inst = staticInstance ?: return false
+            if (threadPeerId != Constants.GROUP_PEER_ID && CryptoManager.isPeerKeyBlocked(inst, threadPeerId)) {
+                audioFile.delete()
+                return false
+            }
             if (!inst.isNetworkConnected()) {
                 audioFile.delete()
                 return false
@@ -1865,26 +1870,36 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
         val senderId = env.senderId
         if (CryptoManager.isHelloPayload(env.payload)) {
-            val (ip, pubB64) = CryptoManager.parseHelloPayload(env.payload)
-            if (!pubB64.isNullOrBlank()) {
-                CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64)
+            val (ip, pubB64, sigBytes) = CryptoManager.parseSignedHelloPayload(env.payload)
+            if (!pubB64.isNullOrBlank() && sigBytes != null) {
+                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubB64)) }.getOrNull()
+                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, senderId, pubB64, sigBytes)) {
+                    CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64, isFromThirdPartyBroadcast = false)
+                    PeerRegistry.upsert(
+                        PeerRegistry.Peer(
+                            id = senderId,
+                            name = env.senderName,
+                            isGroupOwner = false,
+                            ipAddress = ip,
+                            publicKeyB64 = pubB64
+                        )
+                    )
+                } else {
+                    Log.w(TAG, "Invalid identity signature in HELLO from $senderId — rejecting")
+                }
             }
-            PeerRegistry.upsert(
-                PeerRegistry.Peer(
-                    id = senderId,
-                    name = env.senderName,
-                    isGroupOwner = false,
-                    ipAddress = ip,
-                    publicKeyB64 = pubB64
-                )
-            )
             return
         }
         if (env.payload.startsWith(Constants.MSG_TYPE_KEYX)) {
-            val pubB64 = env.payload.removePrefix(Constants.MSG_TYPE_KEYX).trim()
-            if (pubB64.isNotBlank()) {
-                CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64)
-                PeerRegistry.updatePublicKey(senderId, pubB64)
+            val (pubB64, sigBytes) = CryptoManager.parseSignedKeyxPayload(env.payload)
+            if (pubB64.isNotBlank() && sigBytes != null) {
+                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubB64)) }.getOrNull()
+                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, senderId, pubB64, sigBytes)) {
+                    CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64, isFromThirdPartyBroadcast = false)
+                    PeerRegistry.updatePublicKey(senderId, pubB64)
+                } else {
+                    Log.w(TAG, "Invalid identity signature in KEYX from $senderId — rejecting")
+                }
             }
             return
         }
@@ -1893,7 +1908,7 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             val peers = PeerRegistry.parsePeersPayload(env.payload, env.senderId, env.senderName)
             peers.forEach { p ->
                 if (!p.publicKeyB64.isNullOrBlank()) {
-                    CryptoManager.registerPeerPublicKey(applicationContext, p.id, p.publicKeyB64)
+                    CryptoManager.registerPeerPublicKey(applicationContext, p.id, p.publicKeyB64, isFromThirdPartyBroadcast = true)
                 }
             }
             PeerRegistry.replaceAll(peers)
@@ -2147,6 +2162,12 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         threadPeerId: String,
         threadPeerName: String
     ) {
+        if (threadPeerId != Constants.GROUP_PEER_ID && CryptoManager.isPeerKeyBlocked(this, threadPeerId)) {
+            showSnackbar("Peer identity key changed! File transfer blocked.", "Review Key") {
+                EncryptionInfoBottomSheet.show(this, threadPeerId, threadPeerName)
+            }
+            return
+        }
         lifecycleScope.launch {
             val stagedResult = FileTransferManager.stageFromUri(applicationContext, uri)
             val staged = stagedResult.getOrElse { err ->
@@ -2203,6 +2224,13 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         audioFile: File,
         durationMs: Long
     ) {
+        if (threadPeerId != Constants.GROUP_PEER_ID && CryptoManager.isPeerKeyBlocked(this, threadPeerId)) {
+            showSnackbar("Peer identity key changed! Voice note blocked.", "Review Key") {
+                EncryptionInfoBottomSheet.show(this, threadPeerId, threadPeerName)
+            }
+            audioFile.delete()
+            return
+        }
         lifecycleScope.launch {
             val stamp = SimpleDateFormat("HHmmss", Locale.US).format(Date())
             val displayName = "voice_note_$stamp.m4a"
@@ -2384,6 +2412,12 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
 
         val threadPeerId = activeThreadPeerId()
         val threadPeerName = activeThreadPeerName()
+        if (threadPeerId != Constants.GROUP_PEER_ID && CryptoManager.isPeerKeyBlocked(this, threadPeerId)) {
+            showSnackbar("Peer identity key changed! Messaging & calls are blocked until accepted.", "Review Key") {
+                EncryptionInfoBottomSheet.show(this, threadPeerId, threadPeerName)
+            }
+            return
+        }
         val isGroup = threadPeerId == Constants.GROUP_PEER_ID
         val recipient = if (isGroup) Constants.RECIPIENT_BROADCAST else threadPeerId
 
@@ -2884,6 +2918,12 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             return
         }
         resolveCallTarget(targetPeerId, targetPeerName) { resolvedId, resolvedName ->
+            if (!resolvedId.isNullOrBlank() && CryptoManager.isPeerKeyBlocked(this, resolvedId)) {
+                showSnackbar("Peer identity key changed! Call blocked.", "Review Key") {
+                    EncryptionInfoBottomSheet.show(this, resolvedId, resolvedName)
+                }
+                return@resolveCallTarget
+            }
             pendingCallTargetPeerId = resolvedId
             pendingCallTargetPeerName = resolvedName
             ensureCallPermissions(video = false) {
@@ -2901,6 +2941,12 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             return
         }
         resolveCallTarget(targetPeerId, targetPeerName) { resolvedId, resolvedName ->
+            if (!resolvedId.isNullOrBlank() && CryptoManager.isPeerKeyBlocked(this, resolvedId)) {
+                showSnackbar("Peer identity key changed! Call blocked.", "Review Key") {
+                    EncryptionInfoBottomSheet.show(this, resolvedId, resolvedName)
+                }
+                return@resolveCallTarget
+            }
             pendingCallTargetPeerId = resolvedId
             pendingCallTargetPeerName = resolvedName
             ensureCallPermissions(video = true) {

@@ -199,6 +199,11 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
     }
 
     private fun startAudioCall() {
+        if (!peerId.isNullOrBlank() && CryptoManager.isPeerKeyBlocked(this, peerId)) {
+            tvCallStatus.text = "Call blocked: Peer identity key changed"
+            finish()
+            return
+        }
         val isGroupOwner = intent.getBooleanExtra(EXTRA_IS_GROUP_OWNER, false)
         val hostAddress = intent.getStringExtra(EXTRA_HOST_ADDRESS)
 

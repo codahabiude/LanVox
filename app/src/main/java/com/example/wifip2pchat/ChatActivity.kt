@@ -396,6 +396,7 @@ class ChatActivity : AppCompatActivity() {
         observeHistory()
         updateEphemeralIconUi()
         updateConnectionUi()
+        updateKeyBlockedBanner()
     }
 
     override fun onResume() {
@@ -405,6 +406,7 @@ class ChatActivity : AppCompatActivity() {
         refreshHeaderProfileUi()
         updateEphemeralIconUi()
         updateConnectionUi()
+        updateKeyBlockedBanner()
         MainActivity.sendReadReceiptStatic(peerId)
     }
 
@@ -713,9 +715,35 @@ class ChatActivity : AppCompatActivity() {
         MainActivity.sendTypingTo(recipient, isTyping, isGroup)
     }
 
+    private fun checkPeerKeyBlockedOrWarn(): Boolean {
+        val pid = peerId
+        if (!pid.isNullOrBlank() && pid != Constants.GROUP_PEER_ID && CryptoManager.isPeerKeyBlocked(this, pid)) {
+            Snackbar.make(chatRoot, "Peer identity key changed! Messaging & calls are blocked until you review the new key.", Snackbar.LENGTH_LONG)
+                .setAction("Review Key") {
+                    EncryptionInfoBottomSheet.show(this, pid, peerName)
+                }
+                .show()
+            return true
+        }
+        return false
+    }
+
+    private fun updateKeyBlockedBanner() {
+        val pid = peerId
+        val blocked = !pid.isNullOrBlank() && pid != Constants.GROUP_PEER_ID && CryptoManager.isPeerKeyBlocked(this, pid)
+        val banner = findViewById<View>(R.id.layoutKeyBlockedBanner)
+        if (banner != null) {
+            banner.visibility = if (blocked) View.VISIBLE else View.GONE
+            findViewById<View>(R.id.btnReviewKey)?.setOnClickListener {
+                EncryptionInfoBottomSheet.show(this, pid, peerName)
+            }
+        }
+    }
+
     // ======================== Sending ========================
 
     private fun sendCurrentMessage() {
+        if (checkPeerKeyBlockedOrWarn()) return
         val text = etMessage.text.toString().trim()
         if (text.isEmpty()) return
 
@@ -806,6 +834,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun pickAndSendFile() {
+        if (checkPeerKeyBlockedOrWarn()) return
         if (!MainActivity.isConnectedStatic()) {
             Snackbar.make(
                 chatRoot,
@@ -827,6 +856,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun onVoiceNoteButtonClicked() {
+        if (checkPeerKeyBlockedOrWarn()) return
         if (!MainActivity.isConnectedStatic()) {
             Snackbar.make(
                 chatRoot,
@@ -845,6 +875,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun startVoiceRecording() {
+        if (checkPeerKeyBlockedOrWarn()) return
         VoiceNoteManager.stopPlayback()
         val file = voiceRecorder.start()
         if (file == null) {
@@ -889,6 +920,7 @@ class ChatActivity : AppCompatActivity() {
     // ======================== Calling ========================
 
     private fun startCall(video: Boolean) {
+        if (checkPeerKeyBlockedOrWarn()) return
         val started = if (video) {
             MainActivity.startVideoCallStatic(peerId, peerName)
         } else {

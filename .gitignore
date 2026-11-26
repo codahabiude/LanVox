@@ -26,3 +26,7 @@ Thumbs.db
 # Built artifacts
 *.apk
 *.aab
+
+# Kotlin compiler cache
+.kotlin/
+

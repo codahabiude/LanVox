@@ -127,6 +127,10 @@ class CallListenerService : Service() {
                 PeerRegistry.selfName = DeviceIdentity.defaultDeviceName(inst.applicationContext)
             }
             val target = recipientId ?: LastSession.peerMac(inst) ?: Constants.RECIPIENT_BROADCAST
+            if (target != Constants.RECIPIENT_BROADCAST && CryptoManager.isPeerKeyBlocked(inst.applicationContext, target)) {
+                Log.w(TAG, "Standby sendControl($target) blocked: peer key changed and pending")
+                return false
+            }
             if (text.startsWith(Constants.ENVELOPE_PREFIX + Constants.ENVELOPE_DELIM)) {
                 return inst.writeLine(text)
             }
@@ -139,7 +143,7 @@ class CallListenerService : Service() {
             } else if (target == Constants.RECIPIENT_BROADCAST) {
                 val known = (PeerRegistry.snapshot().map { it.id } + CryptoManager.getAllKnownPeerIds(inst.applicationContext))
                     .distinct()
-                    .filter { it != PeerRegistry.selfId && CryptoManager.hasPeerKey(inst.applicationContext, it) }
+                    .filter { it != PeerRegistry.selfId && CryptoManager.hasPeerKey(inst.applicationContext, it) && !CryptoManager.isPeerKeyBlocked(inst.applicationContext, it) }
                 if (known.isEmpty()) {
                     Log.w(TAG, "Standby sendControl broadcast skipped: no known peer keys")
                     return false
@@ -399,7 +403,7 @@ class CallListenerService : Service() {
             senderId = PeerRegistry.selfId,
             senderName = PeerRegistry.selfName,
             recipientId = LastSession.peerMac(applicationContext) ?: "GO",
-            payload = CryptoManager.buildHelloPayload(localIp, pubB64)
+            payload = CryptoManager.buildSignedHelloPayload(applicationContext, localIp, pubB64)
         )
         writeLine(line)
     }
@@ -464,27 +468,37 @@ class CallListenerService : Service() {
         val recipientId = env.recipientId
 
         if (CryptoManager.isHelloPayload(env.payload)) {
-            val (ip, pubB64) = CryptoManager.parseHelloPayload(env.payload)
-            if (!pubB64.isNullOrBlank() && senderId != "unknown") {
-                CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64)
+            val (ip, pubB64, sigBytes) = CryptoManager.parseSignedHelloPayload(env.payload)
+            if (!pubB64.isNullOrBlank() && sigBytes != null && senderId != "unknown") {
+                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubB64)) }.getOrNull()
+                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, senderId, pubB64, sigBytes)) {
+                    CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64, isFromThirdPartyBroadcast = false)
+                    PeerRegistry.upsert(
+                        PeerRegistry.Peer(
+                            id = senderId,
+                            name = senderName,
+                            isGroupOwner = false,
+                            ipAddress = ip,
+                            publicKeyB64 = pubB64
+                        )
+                    )
+                } else {
+                    Log.w(TAG, "Invalid identity signature in HELLO from $senderId — rejecting")
+                }
             }
-            PeerRegistry.upsert(
-                PeerRegistry.Peer(
-                    id = senderId,
-                    name = senderName,
-                    isGroupOwner = false,
-                    ipAddress = ip,
-                    publicKeyB64 = pubB64
-                )
-            )
             return
         }
 
         if (env.payload.startsWith(Constants.MSG_TYPE_KEYX)) {
-            val pubB64 = env.payload.removePrefix(Constants.MSG_TYPE_KEYX).trim()
-            if (pubB64.isNotBlank() && senderId != "unknown") {
-                CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64)
-                PeerRegistry.updatePublicKey(senderId, pubB64)
+            val (pubB64, sigBytes) = CryptoManager.parseSignedKeyxPayload(env.payload)
+            if (pubB64.isNotBlank() && sigBytes != null && senderId != "unknown") {
+                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubB64)) }.getOrNull()
+                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, senderId, pubB64, sigBytes)) {
+                    CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64, isFromThirdPartyBroadcast = false)
+                    PeerRegistry.updatePublicKey(senderId, pubB64)
+                } else {
+                    Log.w(TAG, "Invalid identity signature in KEYX from $senderId — rejecting")
+                }
             }
             return
         }
@@ -495,7 +509,7 @@ class CallListenerService : Service() {
             val list = PeerRegistry.parsePeersPayload(env.payload, env.senderId, env.senderName)
             list.forEach { p ->
                 if (!p.publicKeyB64.isNullOrBlank()) {
-                    CryptoManager.registerPeerPublicKey(applicationContext, p.id, p.publicKeyB64)
+                    CryptoManager.registerPeerPublicKey(applicationContext, p.id, p.publicKeyB64, isFromThirdPartyBroadcast = true)
                 }
             }
             PeerRegistry.replaceAll(list)
