@@ -920,6 +920,11 @@ class ChatActivity : AppCompatActivity() {
     // ======================== Calling ========================
 
     private fun startCall(video: Boolean) {
+        val pid = peerId
+        if (pid.isNullOrBlank() || pid == Constants.GROUP_PEER_ID || !CryptoManager.hasPeerKey(this, pid)) {
+            Snackbar.make(chatRoot, "Cannot call: peer has no saved encryption key", Snackbar.LENGTH_SHORT).show()
+            return
+        }
         if (checkPeerKeyBlockedOrWarn()) return
         val started = if (video) {
             MainActivity.startVideoCallStatic(peerId, peerName)

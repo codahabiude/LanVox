@@ -122,45 +122,56 @@ class LanVoxCryptoTest {
 
     @Test
     fun testForgedGroupMessageRejected() {
-        val peerId = "node_bob"
+        val bobId = "node_bob"
+        val malloryId = "node_mallory"
         val kpBob = CryptoManager.generateEcP256KeyPair()
-        val bobPubB64 = CryptoManager.b64UrlEncode(kpBob.public.encoded)
-        CryptoManager.registerPeerPublicKey(context, peerId, bobPubB64, isFromThirdPartyBroadcast = false)
+        val kpMallory = CryptoManager.generateEcP256KeyPair()
 
+        CryptoManager.registerPeerPublicKey(context, bobId, CryptoManager.b64UrlEncode(kpBob.public.encoded), false)
+        CryptoManager.registerPeerPublicKey(context, malloryId, CryptoManager.b64UrlEncode(kpMallory.public.encoded), false)
+
+        // 1. Valid message from Bob decrypts successfully
         val broadcastCipher = CryptoManager.encryptForBroadcast(
             context = context,
-            senderId = PeerRegistry.selfId,
-            targetPeerIds = listOf(peerId),
-            plaintext = "Broadcast text"
+            senderId = bobId,
+            targetPeerIds = listOf(PeerRegistry.selfId),
+            plaintext = "Genuine broadcast from Bob"
         )
         assertNotNull(broadcastCipher)
 
-        // Tamper with the message ciphertext portion
-        val parts = broadcastCipher!!.removePrefix(Constants.MSG_TYPE_E2E_MULTI).split(':', limit = 3)
-        val tamperedCt = CryptoManager.b64UrlDecode(parts[1])
-        tamperedCt[0] = (tamperedCt[0].toInt() xor 0x55).toByte()
-        val forgedCipher = "${Constants.MSG_TYPE_E2E_MULTI}${parts[0]}:${CryptoManager.b64UrlEncode(tamperedCt)}:${parts[2]}"
+        val decryptedValid = CryptoManager.decryptBroadcast(context, bobId, PeerRegistry.selfId, broadcastCipher!!)
+        assertEquals("Genuine broadcast from Bob", decryptedValid)
 
-        val decrypted = CryptoManager.decryptBroadcast(context, PeerRegistry.selfId, peerId, forgedCipher)
-        assertNull(decrypted)
+        // 2. Forgery attack: Mallory acts as a real third group member, but tries to forge a message
+        // by signing it with Mallory's private key while claiming/routing as Bob, or tampering with ciphertext.
+        val parts = broadcastCipher.removePrefix(Constants.MSG_TYPE_E2E_MULTI).split(':', limit = 5)
+        val tamperedCt = CryptoManager.b64UrlDecode(parts[1])
+        tamperedCt[0] = (tamperedCt[0].toInt() xor 0xFF).toByte()
+        val forgedCipher = "${Constants.MSG_TYPE_E2E_MULTI}${parts[0]}:${CryptoManager.b64UrlEncode(tamperedCt)}:${parts[2]}:${parts[3]}:${parts[4]}"
+
+        val decryptedForged = CryptoManager.decryptBroadcast(context, bobId, PeerRegistry.selfId, forgedCipher)
+        assertNull(decryptedForged)
     }
 
     @Test
     fun testReplayRejectedWithAlteredSender() {
-        val peerId = "node_bob"
+        val bobId = "node_bob"
         val kpBob = CryptoManager.generateEcP256KeyPair()
-        val bobPubB64 = CryptoManager.b64UrlEncode(kpBob.public.encoded)
-        CryptoManager.registerPeerPublicKey(context, peerId, bobPubB64, isFromThirdPartyBroadcast = false)
+        CryptoManager.registerPeerPublicKey(context, bobId, CryptoManager.b64UrlEncode(kpBob.public.encoded), false)
 
+        // 1. Valid message decrypts successfully
         val broadcastCipher = CryptoManager.encryptForBroadcast(
             context = context,
-            senderId = PeerRegistry.selfId,
-            targetPeerIds = listOf(peerId),
-            plaintext = "Original message"
+            senderId = bobId,
+            targetPeerIds = listOf(PeerRegistry.selfId),
+            plaintext = "Original valid message"
         )!!
 
-        // Attempting to decrypt claiming a different sender than Alice
-        val decryptedWithFakeSender = CryptoManager.decryptBroadcast(context, "node_mallory", peerId, broadcastCipher)
+        val decryptedValid = CryptoManager.decryptBroadcast(context, bobId, PeerRegistry.selfId, broadcastCipher)
+        assertEquals("Original valid message", decryptedValid)
+
+        // 2. Replay attack with altered sender ID
+        val decryptedWithFakeSender = CryptoManager.decryptBroadcast(context, "node_mallory", PeerRegistry.selfId, broadcastCipher)
         assertNull(decryptedWithFakeSender)
     }
 

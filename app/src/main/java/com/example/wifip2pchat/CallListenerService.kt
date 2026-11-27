@@ -811,6 +811,10 @@ class CallListenerService : Service() {
         callerName: String,
         callerIp: String?
     ) {
+        if (peerId.isBlank() || !CryptoManager.hasPeerKey(applicationContext, peerId) || CryptoManager.isPeerKeyBlocked(applicationContext, peerId)) {
+            Log.w(TAG, "Refusing call from $peerId: missing or blocked encryption key")
+            return
+        }
         if (pendingCallType != null) {
             Log.d(TAG, "Already ringing — ignoring second call request")
             return

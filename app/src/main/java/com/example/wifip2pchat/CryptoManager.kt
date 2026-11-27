@@ -235,14 +235,32 @@ object CryptoManager {
         }.getOrDefault(false)
     }
 
-    fun buildSignedHelloPayload(context: Context, localIp: String?, pubKeyB64: String): String {
+    fun signChallenge(privateKey: PrivateKey, nonce: String, peerId: String, pubKeyB64: String): ByteArray {
+        val data = "$nonce|$peerId|$pubKeyB64".toByteArray(Charsets.UTF_8)
+        val sig = java.security.Signature.getInstance("SHA256withECDSA")
+        sig.initSign(privateKey)
+        sig.update(data)
+        return sig.sign()
+    }
+
+    fun verifyChallengeSignature(publicKey: PublicKey, nonce: String, peerId: String, pubKeyB64: String, signatureBytes: ByteArray): Boolean {
+        return runCatching {
+            val data = "$nonce|$peerId|$pubKeyB64".toByteArray(Charsets.UTF_8)
+            val sig = java.security.Signature.getInstance("SHA256withECDSA")
+            sig.initVerify(publicKey)
+            sig.update(data)
+            sig.verify(signatureBytes)
+        }.getOrDefault(false)
+    }
+
+    fun buildSignedHelloPayload(context: Context, localIp: String?, pubKeyB64: String, nonce: String = "nonce_${System.currentTimeMillis()}" ): String {
         ensureInitialized(context)
         val priv = identityKeyPair?.private
         val selfId = PeerRegistry.selfId
-        val sig = if (priv != null) signIdentity(priv, selfId, pubKeyB64) else ByteArray(0)
+        val sig = if (priv != null) signChallenge(priv, nonce, selfId, pubKeyB64) else ByteArray(0)
         val sigB64 = if (sig.isNotEmpty()) b64UrlEncode(sig) else ""
         val base = if (!localIp.isNullOrBlank()) "${Constants.PAYLOAD_HELLO}:$localIp" else Constants.PAYLOAD_HELLO
-        return if (sigB64.isNotBlank()) "$base|KEY:$pubKeyB64|SIG:$sigB64" else "$base|KEY:$pubKeyB64"
+        return if (sigB64.isNotBlank()) "$base|KEY:$pubKeyB64|NONCE:$nonce|SIG:$sigB64" else "$base|KEY:$pubKeyB64|NONCE:$nonce"
     }
 
     fun parseSignedHelloPayload(payload: String): Triple<String?, String?, ByteArray?> {
@@ -250,9 +268,12 @@ object CryptoManager {
         val sigB64 = if (sigIdx >= 0) payload.substring(sigIdx + 5).trim().takeIf { it.isNotBlank() } else null
         val remainder = if (sigIdx >= 0) payload.substring(0, sigIdx) else payload
 
-        val keyIdx = remainder.indexOf("|KEY:")
-        val pubB64 = if (keyIdx >= 0) remainder.substring(keyIdx + 5).trim().takeIf { it.isNotBlank() } else null
-        val head = if (keyIdx >= 0) remainder.substring(0, keyIdx) else remainder
+        val nonceIdx = remainder.indexOf("|NONCE:")
+        val rem2 = if (nonceIdx >= 0) remainder.substring(0, nonceIdx) else remainder
+
+        val keyIdx = rem2.indexOf("|KEY:")
+        val pubB64 = if (keyIdx >= 0) rem2.substring(keyIdx + 5).trim().takeIf { it.isNotBlank() } else null
+        val head = if (keyIdx >= 0) rem2.substring(0, keyIdx) else rem2
         val ip = if (head.startsWith("${Constants.PAYLOAD_HELLO}:")) {
             head.substringAfter(':', "").trim().takeIf { it.isNotBlank() }
         } else {
@@ -262,22 +283,25 @@ object CryptoManager {
         return Triple(ip, pubB64, sigBytes)
     }
 
-    fun buildSignedKeyxPayload(context: Context): String {
+    fun buildSignedKeyxPayload(context: Context, nonce: String = "nonce_${System.currentTimeMillis()}"): String {
         ensureInitialized(context)
-        val pubB64 = getSelfPublicKeyB64(context)
+        val selfPubB64 = getSelfPublicKeyB64(context)
         val priv = identityKeyPair?.private
         val selfId = PeerRegistry.selfId
-        val sig = if (priv != null) signIdentity(priv, selfId, pubB64) else ByteArray(0)
+        val sig = if (priv != null) signChallenge(priv, nonce, selfId, selfPubB64) else ByteArray(0)
         val sigB64 = if (sig.isNotEmpty()) b64UrlEncode(sig) else ""
-        return if (sigB64.isNotBlank()) "${Constants.MSG_TYPE_KEYX}$pubB64|SIG:$sigB64" else "${Constants.MSG_TYPE_KEYX}$pubB64"
+        return if (sigB64.isNotBlank()) "${Constants.MSG_TYPE_KEYX}$selfPubB64|NONCE:$nonce|SIG:$sigB64" else "${Constants.MSG_TYPE_KEYX}$selfPubB64|NONCE:$nonce"
     }
 
     fun parseSignedKeyxPayload(payload: String): Pair<String, ByteArray?> {
         val body = payload.removePrefix(Constants.MSG_TYPE_KEYX)
         val parts = body.split("|SIG:", limit = 2)
-        val pubB64 = parts[0].trim()
+        val left = parts[0]
         val sigB64 = if (parts.size == 2) parts[1].trim() else ""
         val sigBytes = if (sigB64.isNotBlank()) b64UrlDecode(sigB64) else null
+
+        val nonceIdx = left.indexOf("|NONCE:")
+        val pubB64 = if (nonceIdx >= 0) left.substring(0, nonceIdx).trim() else left.trim()
         return pubB64 to sigBytes
     }
 
@@ -531,6 +555,18 @@ object CryptoManager {
         val aadMsg = "$senderId|${Constants.RECIPIENT_BROADCAST}".toByteArray(Charsets.UTF_8)
         val (msgIv, msgCt) = aesGcmEncrypt(msgKey, plaintext.toByteArray(Charsets.UTF_8), aadMsg)
 
+        val msgId = java.util.UUID.randomUUID().toString()
+        val msgCtB64 = b64UrlEncode(msgCt)
+        val priv = identityKeyPair?.private
+        val signData = "$senderId|${Constants.RECIPIENT_BROADCAST}|$msgId|$msgCtB64".toByteArray(Charsets.UTF_8)
+        val sig = if (priv != null) {
+            val s = java.security.Signature.getInstance("SHA256withECDSA")
+            s.initSign(priv)
+            s.update(signData)
+            s.sign()
+        } else ByteArray(0)
+        val sigB64 = b64UrlEncode(sig)
+
         val wrappedEntries = mutableListOf<String>()
         for (pid in uniqueTargets) {
             val peerChatKey = getOrDeriveChatKey(context, pid) ?: continue
@@ -545,7 +581,11 @@ object CryptoManager {
             append(Constants.MSG_TYPE_E2E_MULTI)
             append(b64UrlEncode(msgIv))
             append(':')
-            append(b64UrlEncode(msgCt))
+            append(msgCtB64)
+            append(':')
+            append(msgId)
+            append(':')
+            append(sigB64)
             append(':')
             append(wrappedEntries.joinToString(";"))
         }
@@ -558,13 +598,36 @@ object CryptoManager {
         cipherPayload: String
     ): String? {
         if (!cipherPayload.startsWith(Constants.MSG_TYPE_E2E_MULTI)) return null
+        val peerPubKey = getPeerPublicKey(context, senderId) ?: return null
         val peerChatKey = getOrDeriveChatKey(context, senderId) ?: return null
+
         val body = cipherPayload.removePrefix(Constants.MSG_TYPE_E2E_MULTI)
-        val parts = body.split(':', limit = 3)
-        if (parts.size != 3) return null
+        val parts = body.split(':', limit = 5)
+        if (parts.size < 5) return null
+
+        val msgIvB64 = parts[0]
+        val msgCtB64 = parts[1]
+        val msgId = parts[2]
+        val sigB64 = parts[3]
+        val entriesStr = parts[4]
+
+        // Verify signature over senderId | broadcast | msgId | msgCt
+        val sigBytes = b64UrlDecode(sigB64)
+        val signData = "$senderId|${Constants.RECIPIENT_BROADCAST}|$msgId|$msgCtB64".toByteArray(Charsets.UTF_8)
+        val validSig = runCatching {
+            val sig = java.security.Signature.getInstance("SHA256withECDSA")
+            sig.initVerify(peerPubKey)
+            sig.update(signData)
+            sig.verify(sigBytes)
+        }.getOrDefault(false)
+
+        if (!validSig) {
+            Log.w(TAG, "Group message signature verification failed for sender $senderId")
+            return null
+        }
 
         val encodedSelf = b64UrlEncode(selfId.toByteArray(Charsets.UTF_8))
-        val entry = parts[2].split(';').firstOrNull { it.startsWith("$encodedSelf=") } ?: return null
+        val entry = entriesStr.split(';').firstOrNull { it.startsWith("$encodedSelf=") } ?: return null
         val wrapPair = entry.substringAfter('=').split('.', limit = 2)
         if (wrapPair.size != 2) return null
 
@@ -575,8 +638,8 @@ object CryptoManager {
             val msgKeyBytes = aesGcmDecrypt(peerChatKey, wIv, wCt, wrapAad)
             val msgKey = SecretKeySpec(msgKeyBytes, "AES")
 
-            val msgIv = b64UrlDecode(parts[0])
-            val msgCt = b64UrlDecode(parts[1])
+            val msgIv = b64UrlDecode(msgIvB64)
+            val msgCt = b64UrlDecode(msgCtB64)
             val aadMsg = "$senderId|${Constants.RECIPIENT_BROADCAST}".toByteArray(Charsets.UTF_8)
             String(aesGcmDecrypt(msgKey, msgIv, msgCt, aadMsg), Charsets.UTF_8)
         }.onFailure {
