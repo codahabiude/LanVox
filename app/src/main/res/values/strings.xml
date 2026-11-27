@@ -197,11 +197,11 @@
     <string name="nudge_sent_fmt">Nudged %1$s</string>
     <string name="nudge_received_fmt">⚡ %1$s nudged you!</string>
 
-    <!-- 100% Encryption & Safety Numbers -->
+    <!-- End-to-End Encryption & Safety Numbers -->
     <string name="encrypted_call_badge">E2EE · AES-256-GCM</string>
     <string name="action_encryption_info">Encryption &amp; Safety Keys</string>
     <string name="action_encryption_info_sub">Verify 60-digit safety numbers &amp; vault status</string>
-    <string name="enc_sheet_title">100% Encryption Active</string>
+    <string name="enc_sheet_title">End-to-End Encryption Active</string>
     <string name="enc_sheet_subtitle">ECDH P-256 · HKDF-SHA256 · AES-256-GCM</string>
     <string name="enc_layer_vault">Hardware Vault: AndroidKeyStore AES-256-GCM master key</string>
     <string name="enc_layer_chat">Messages &amp; Mesh: ECDH P-256 + AES-256-GCM (E2E1 / E2EM)</string>

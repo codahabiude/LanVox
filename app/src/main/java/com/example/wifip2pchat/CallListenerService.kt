@@ -416,13 +416,15 @@ class CallListenerService : Service() {
         if (PeerRegistry.selfName == "This device" || PeerRegistry.selfName.isBlank()) {
             PeerRegistry.selfName = DeviceIdentity.defaultDeviceName(applicationContext)
         }
+        val verifierId = targetId.ifBlank { LastSession.peerMac(applicationContext).orEmpty() }
+        if (verifierId.isBlank() || verifierId == "unknown") return
         val localIp = controlSocket?.localAddress?.hostAddress ?: DeviceIdentity.resolveLocalIp()
         val pubB64 = CryptoManager.getSelfPublicKeyB64(applicationContext)
         val line = Envelope.build(
             senderId = PeerRegistry.selfId,
             senderName = PeerRegistry.selfName,
-            recipientId = targetId.ifBlank { LastSession.peerMac(applicationContext) ?: "GO" },
-            payload = CryptoManager.buildSignedHelloPayload(applicationContext, localIp, pubB64, challengeNonce)
+            recipientId = verifierId,
+            payload = CryptoManager.buildSignedHelloPayload(applicationContext, localIp, pubB64, verifierId, challengeNonce)
         )
         writeLine(line)
     }
@@ -478,6 +480,12 @@ class CallListenerService : Service() {
             Log.w(TAG, "Standby dropped unencrypted bare line")
             return
         }
+        if (PeerRegistry.selfId == "UNKNOWN") {
+            PeerRegistry.selfId = DeviceIdentity.getId(applicationContext)
+        }
+        if (PeerRegistry.selfName == "This device" || PeerRegistry.selfName.isBlank()) {
+            PeerRegistry.selfName = DeviceIdentity.defaultDeviceName(applicationContext)
+        }
         val senderId = env.senderId.takeIf { it.isNotBlank() && it != "legacy" }
             ?: LastSession.peerMac(this)?.takeIf { it.isNotBlank() }
             ?: "unknown"
@@ -501,12 +509,12 @@ class CallListenerService : Service() {
 
         if (env.payload.startsWith(Constants.MSG_TYPE_KEYX_CHALLENGE)) {
             val nonce = env.payload.removePrefix(Constants.MSG_TYPE_KEYX_CHALLENGE).trim()
-            if (nonce.isNotBlank()) {
+            if (nonce.isNotBlank() && senderId.isNotBlank() && senderId != "unknown") {
                 val line = Envelope.build(
                     senderId = PeerRegistry.selfId,
                     senderName = PeerRegistry.selfName,
                     recipientId = senderId,
-                    payload = CryptoManager.buildSignedKeyxPayload(applicationContext, nonce)
+                    payload = CryptoManager.buildSignedKeyxPayload(applicationContext, senderId, nonce)
                 )
                 writeLine(line)
             }

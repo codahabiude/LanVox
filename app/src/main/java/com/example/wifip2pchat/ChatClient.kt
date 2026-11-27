@@ -101,12 +101,13 @@ class ChatClient(private val context: Context) {
 
     private fun sendSignedHelloResponse(targetId: String, challengeNonce: String) {
         CryptoManager.ensureInitialized(context)
+        if (targetId.isBlank()) return
         val pubB64 = CryptoManager.getSelfPublicKeyB64(context)
         val line = Envelope.build(
             senderId = PeerRegistry.selfId,
             senderName = PeerRegistry.selfName,
-            recipientId = targetId.ifBlank { "GO" },
-            payload = CryptoManager.buildSignedHelloPayload(context, null, pubB64, challengeNonce)
+            recipientId = targetId,
+            payload = CryptoManager.buildSignedHelloPayload(context, null, pubB64, targetId, challengeNonce)
         ) + "\n"
         try {
             if (writeSynchronized(line)) {
@@ -244,12 +245,12 @@ class ChatClient(private val context: Context) {
 
         if (env.payload.startsWith(Constants.MSG_TYPE_KEYX_CHALLENGE)) {
             val nonce = env.payload.removePrefix(Constants.MSG_TYPE_KEYX_CHALLENGE).trim()
-            if (nonce.isNotBlank()) {
+            if (nonce.isNotBlank() && env.senderId.isNotBlank()) {
                 val line = Envelope.build(
                     senderId = PeerRegistry.selfId,
                     senderName = PeerRegistry.selfName,
                     recipientId = env.senderId,
-                    payload = CryptoManager.buildSignedKeyxPayload(context, nonce)
+                    payload = CryptoManager.buildSignedKeyxPayload(context, env.senderId, nonce)
                 ) + "\n"
                 try { writeSynchronized(line) } catch (_: Exception) {}
             }

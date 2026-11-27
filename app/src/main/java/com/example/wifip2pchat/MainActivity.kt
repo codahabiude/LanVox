@@ -1875,11 +1875,11 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
         if (env.payload.startsWith(Constants.MSG_TYPE_CHALLENGE)) {
             val nonce = env.payload.removePrefix(Constants.MSG_TYPE_CHALLENGE).trim()
-            if (nonce.isNotBlank()) {
+            if (nonce.isNotBlank() && senderId.isNotBlank()) {
                 val pubB64 = CryptoManager.getSelfPublicKeyB64(applicationContext)
                 val localIp = DeviceIdentity.resolveLocalIp()
                 CallListenerService.sendControl(
-                    CryptoManager.buildSignedHelloPayload(applicationContext, localIp, pubB64, nonce),
+                    CryptoManager.buildSignedHelloPayload(applicationContext, localIp, pubB64, senderId, nonce),
                     senderId
                 )
             }
@@ -1887,9 +1887,9 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
         }
         if (env.payload.startsWith(Constants.MSG_TYPE_KEYX_CHALLENGE)) {
             val nonce = env.payload.removePrefix(Constants.MSG_TYPE_KEYX_CHALLENGE).trim()
-            if (nonce.isNotBlank()) {
+            if (nonce.isNotBlank() && senderId.isNotBlank()) {
                 CallListenerService.sendControl(
-                    CryptoManager.buildSignedKeyxPayload(applicationContext, nonce),
+                    CryptoManager.buildSignedKeyxPayload(applicationContext, senderId, nonce),
                     senderId
                 )
             }
@@ -2938,7 +2938,11 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             return
         }
         resolveCallTarget(targetPeerId, targetPeerName) { resolvedId, resolvedName ->
-            if (!resolvedId.isNullOrBlank() && CryptoManager.isPeerKeyBlocked(this, resolvedId)) {
+            if (resolvedId.isNullOrBlank() || !CryptoManager.hasPeerKey(this, resolvedId)) {
+                showSnackbar("Cannot call: peer has no saved encryption key")
+                return@resolveCallTarget
+            }
+            if (CryptoManager.isPeerKeyBlocked(this, resolvedId)) {
                 showSnackbar("Peer identity key changed! Call blocked.", "Review Key") {
                     EncryptionInfoBottomSheet.show(this, resolvedId, resolvedName)
                 }
@@ -2961,7 +2965,11 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             return
         }
         resolveCallTarget(targetPeerId, targetPeerName) { resolvedId, resolvedName ->
-            if (!resolvedId.isNullOrBlank() && CryptoManager.isPeerKeyBlocked(this, resolvedId)) {
+            if (resolvedId.isNullOrBlank() || !CryptoManager.hasPeerKey(this, resolvedId)) {
+                showSnackbar("Cannot call: peer has no saved encryption key")
+                return@resolveCallTarget
+            }
+            if (CryptoManager.isPeerKeyBlocked(this, resolvedId)) {
                 showSnackbar("Peer identity key changed! Call blocked.", "Review Key") {
                     EncryptionInfoBottomSheet.show(this, resolvedId, resolvedName)
                 }

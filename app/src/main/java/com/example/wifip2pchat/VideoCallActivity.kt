@@ -245,7 +245,8 @@ class VideoCallActivity : AppCompatActivity(), CallSessionBus.Listener {
     }
 
     private fun startVideoCall() {
-        if (!peerId.isNullOrBlank() && CryptoManager.isPeerKeyBlocked(this, peerId)) {
+        val pid = peerId
+        if (pid.isNullOrBlank() || !CryptoManager.hasPeerKey(this, pid) || CryptoManager.isPeerKeyBlocked(this, pid)) {
             finish()
             return
         }

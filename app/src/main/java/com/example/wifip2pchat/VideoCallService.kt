@@ -102,6 +102,95 @@ class VideoCallService : Service() {
         fun switchCamera() {
             instance?.switchCameraInternal()
         }
+
+        internal fun establishAuthenticatedVideoChannel(
+            context: android.content.Context,
+            conn: Socket,
+            expectedPeerId: String,
+            expectedIp: String? = PeerRegistry.ipFor(expectedPeerId)
+        ): CryptoManager.DirectionalCallKeys {
+            require(expectedPeerId.isNotBlank() && expectedPeerId != PeerRegistry.selfId) {
+                "Invalid intended peer for video call"
+            }
+            if (CryptoManager.isPeerKeyBlocked(context, expectedPeerId)) {
+                throw SecurityException("Peer identity key changed and is blocked")
+            }
+            if (!CryptoManager.hasPeerKey(context, expectedPeerId)) {
+                throw SecurityException("Missing saved identity key for $expectedPeerId")
+            }
+            val remoteIp = conn.inetAddress?.hostAddress
+            if (!expectedIp.isNullOrBlank() && remoteIp != null && remoteIp != expectedIp) {
+                throw SecurityException("Rejected video connection from unexpected IP $remoteIp (expected $expectedIp)")
+            }
+
+            conn.soTimeout = 10_000
+            try {
+                val ephKp = CryptoManager.generateEcP256KeyPair()
+                val selfPub = ephKp.public.encoded
+                val myNonce = CryptoManager.generateRandomNonce()
+                val dos = DataOutputStream(conn.getOutputStream())
+                dos.writeBytes("LVV2")
+                dos.writeUTF(PeerRegistry.selfId)
+                dos.writeShort(selfPub.size)
+                dos.write(selfPub)
+                dos.writeUTF(myNonce)
+                dos.flush()
+
+                val dis = DataInputStream(conn.getInputStream())
+                val magic = ByteArray(4)
+                dis.readFully(magic)
+                require(magic.contentEquals("LVV2".toByteArray(Charsets.US_ASCII))) { "Invalid video E2EE magic" }
+                val remotePeerId = dis.readUTF().trim()
+                if (remotePeerId != expectedPeerId) {
+                    throw SecurityException("Rejected video peer $remotePeerId (expected $expectedPeerId)")
+                }
+                val len = dis.readUnsignedShort()
+                require(len in 32..256) { "Invalid video ECDH key length: $len" }
+                val remotePubBytes = ByteArray(len)
+                dis.readFully(remotePubBytes)
+                val remoteEphPub = CryptoManager.decodeEcPublicKey(remotePubBytes)
+                val remoteNonce = dis.readUTF().trim()
+                require(remoteNonce.isNotBlank() && remoteNonce != myNonce) { "Invalid video peer nonce" }
+
+                val authSig = CryptoManager.signCallHandshake(
+                    context = context,
+                    channelPurpose = "VIDEO_CALL",
+                    verifierId = expectedPeerId,
+                    verifierNonce = remoteNonce,
+                    responderNonce = myNonce,
+                    selfEphPub = selfPub,
+                    peerEphPub = remoteEphPub.encoded
+                ) ?: throw SecurityException("Unable to sign video call handshake")
+                dos.writeUTF(authSig)
+                dos.flush()
+
+                val remoteSig = dis.readUTF().trim()
+                val verified = CryptoManager.verifyCallHandshake(
+                    context = context,
+                    channelPurpose = "VIDEO_CALL",
+                    signerId = expectedPeerId,
+                    verifierNonce = myNonce,
+                    responderNonce = remoteNonce,
+                    signerEphPub = remoteEphPub.encoded,
+                    verifierEphPub = selfPub,
+                    sigB64 = remoteSig
+                )
+                if (!verified) {
+                    throw SecurityException("Video call peer authentication failed for $expectedPeerId")
+                }
+
+                val ephSecret = CryptoManager.computeEcdhSecret(ephKp.private, remoteEphPub)
+                return CryptoManager.deriveVideoStreamSessionKeys(
+                    context = context,
+                    peerId = expectedPeerId,
+                    ephSecret = ephSecret,
+                    ephPubA = selfPub,
+                    ephPubB = remoteEphPub.encoded
+                )
+            } finally {
+                runCatching { conn.soTimeout = 0 }
+            }
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -116,7 +205,8 @@ class VideoCallService : Service() {
     @Volatile private var outputStream: OutputStream? = null
     @Volatile private var inputStream: InputStream? = null
     @Volatile private var peerId: String? = null
-    @Volatile private var videoSessionKey: SecretKey? = null
+    @Volatile private var sendVideoKey: SecretKey? = null
+    @Volatile private var recvVideoKey: SecretKey? = null
     private val sendFrameSeq = AtomicLong(0L)
     private val recvFrameSeq = AtomicLong(0L)
     private val outgoingFrameChannel = Channel<ByteArray>(Channel.CONFLATED)
@@ -211,6 +301,25 @@ class VideoCallService : Service() {
         if (!sessionStarted.compareAndSet(false, true)) return
         this.peerId = peerId
 
+        if (peerId.isNullOrBlank() || peerId == PeerRegistry.selfId) {
+            Log.e(TAG, "Refusing video call: missing intended peer ID")
+            CallSessionBus.notifyEnded("Cannot verify peer identity")
+            stopSelf()
+            return
+        }
+        if (CryptoManager.isPeerKeyBlocked(applicationContext, peerId)) {
+            Log.e(TAG, "Refusing video call: peer key changed and is blocked ($peerId)")
+            CallSessionBus.notifyEnded("Peer identity key changed — verify before calling")
+            stopSelf()
+            return
+        }
+        if (!CryptoManager.hasPeerKey(applicationContext, peerId)) {
+            Log.e(TAG, "Refusing video call: peer $peerId has no saved identity key")
+            CallSessionBus.notifyEnded("Peer has no saved encryption key")
+            stopSelf()
+            return
+        }
+
         if (isGroupOwner) {
             startAsGroupOwnerInternal()
         } else if (!hostAddress.isNullOrBlank()) {
@@ -223,6 +332,7 @@ class VideoCallService : Service() {
     }
 
     private fun startAsGroupOwnerInternal() {
+        val targetPeerId = peerId ?: return
         connectJob = scope.launch {
             try {
                 val srv = ServerSocket().apply {
@@ -230,18 +340,37 @@ class VideoCallService : Service() {
                     bind(InetSocketAddress(Constants.VIDEO_PORT))
                 }
                 serverSocket = srv
-                Log.d(TAG, "Video server listening on port ${Constants.VIDEO_PORT}")
-                val conn = srv.accept()
-                conn.tcpNoDelay = true
-                socket = conn
-                outputStream = conn.getOutputStream()
-                inputStream = conn.getInputStream()
-                performVideoEcdhHandshake(conn, inputStream!!, outputStream!!)
-                Log.d(TAG, "Video client connected (E2EE stream ready)")
-                CallSessionBus.notifyConnected()
-                startVideoSender()
-                openCameraAndStream()
-                startVideoPlayback()
+                Log.d(TAG, "Video server listening on port ${Constants.VIDEO_PORT} for $targetPeerId")
+                repeat(10) {
+                    if (!isActive || terminating.get()) return@launch
+                    val conn = srv.accept()
+                    conn.tcpNoDelay = true
+                    val authenticated = try {
+                        val keys = establishAuthenticatedVideoChannel(applicationContext, conn, targetPeerId)
+                        socket = conn
+                        outputStream = conn.getOutputStream()
+                        inputStream = conn.getInputStream()
+                        sendVideoKey = keys.sendKey
+                        recvVideoKey = keys.recvKey
+                        sendFrameSeq.set(0L)
+                        recvFrameSeq.set(0L)
+                        true
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Rejected unauthorized video connection from ${conn.inetAddress?.hostAddress}: ${e.message}")
+                        try { conn.close() } catch (_: Exception) {}
+                        false
+                    }
+                    if (authenticated) {
+                        Log.d(TAG, "Video client connected (authenticated E2EE stream ready)")
+                        CallSessionBus.notifyConnected()
+                        startVideoSender()
+                        openCameraAndStream()
+                        startVideoPlayback()
+                        return@launch
+                    }
+                }
+                CallSessionBus.notifyEnded("Video peer authentication failed")
+                endCallInternal(notifyBus = false, reason = "Peer authentication failed")
             } catch (e: Exception) {
                 if (scope.isActive && !terminating.get()) {
                     Log.e(TAG, "GO video error: ${e.message}")
@@ -253,6 +382,7 @@ class VideoCallService : Service() {
     }
 
     private fun connectToGroupOwnerInternal(hostAddress: String) {
+        val targetPeerId = peerId ?: return
         connectJob = scope.launch {
             repeat(30) { attempt ->
                 if (!isRunning || terminating.get() || !isActive) return@launch
@@ -260,11 +390,23 @@ class VideoCallService : Service() {
                     val conn = Socket()
                     conn.tcpNoDelay = true
                     conn.connect(InetSocketAddress(hostAddress, Constants.VIDEO_PORT), 3_000)
-                    socket = conn
-                    outputStream = conn.getOutputStream()
-                    inputStream = conn.getInputStream()
-                    performVideoEcdhHandshake(conn, inputStream!!, outputStream!!)
-                    Log.d(TAG, "Connected to GO video at $hostAddress:${Constants.VIDEO_PORT} (E2EE stream ready)")
+                    try {
+                        val keys = establishAuthenticatedVideoChannel(applicationContext, conn, targetPeerId)
+                        socket = conn
+                        outputStream = conn.getOutputStream()
+                        inputStream = conn.getInputStream()
+                        sendVideoKey = keys.sendKey
+                        recvVideoKey = keys.recvKey
+                        sendFrameSeq.set(0L)
+                        recvFrameSeq.set(0L)
+                    } catch (sec: SecurityException) {
+                        try { conn.close() } catch (_: Exception) {}
+                        Log.e(TAG, "Video peer authentication failed: ${sec.message}")
+                        CallSessionBus.notifyEnded("Video peer authentication failed")
+                        endCallInternal(notifyBus = false, reason = "Peer authentication failed")
+                        return@launch
+                    }
+                    Log.d(TAG, "Connected to GO video at $hostAddress:${Constants.VIDEO_PORT} (authenticated E2EE stream ready)")
                     CallSessionBus.notifyConnected()
                     startVideoSender()
                     openCameraAndStream()
@@ -280,41 +422,6 @@ class VideoCallService : Service() {
                 CallSessionBus.notifyEnded("Peer did not answer")
             }
             endCallInternal(notifyBus = false, reason = "Connect timeout")
-        }
-    }
-
-    private fun performVideoEcdhHandshake(conn: Socket, input: InputStream, output: OutputStream) {
-        conn.soTimeout = 10_000
-        try {
-            val ephKp = CryptoManager.generateEcP256KeyPair()
-            val selfPub = ephKp.public.encoded
-            val dos = DataOutputStream(output)
-            dos.writeBytes("LVV1")
-            dos.writeShort(selfPub.size)
-            dos.write(selfPub)
-            dos.flush()
-
-            val dis = DataInputStream(input)
-            val magic = ByteArray(4)
-            dis.readFully(magic)
-            require(magic.contentEquals("LVV1".toByteArray(Charsets.US_ASCII))) { "Invalid video E2EE magic" }
-            val len = dis.readUnsignedShort()
-            require(len in 32..256) { "Invalid video ECDH key length: $len" }
-            val remotePubBytes = ByteArray(len)
-            dis.readFully(remotePubBytes)
-            val remoteEphPub = CryptoManager.decodeEcPublicKey(remotePubBytes)
-            val ephSecret = CryptoManager.computeEcdhSecret(ephKp.private, remoteEphPub)
-            videoSessionKey = CryptoManager.deriveVideoStreamSessionKey(
-                context = applicationContext,
-                peerId = peerId,
-                ephSecret = ephSecret,
-                ephPubA = selfPub,
-                ephPubB = remoteEphPub.encoded
-            )
-            sendFrameSeq.set(0L)
-            recvFrameSeq.set(0L)
-        } finally {
-            runCatching { conn.soTimeout = 0 }
         }
     }
 
@@ -549,7 +656,7 @@ class VideoCallService : Service() {
         sendJob?.cancel()
         sendJob = scope.launch {
             val out = outputStream ?: return@launch
-            val key = videoSessionKey ?: return@launch
+            val key = sendVideoKey ?: return@launch
             val dos = DataOutputStream(out)
             try {
                 for (frame in outgoingFrameChannel) {
@@ -574,7 +681,7 @@ class VideoCallService : Service() {
         playJob?.cancel()
         playJob = scope.launch {
             try {
-                val key = videoSessionKey ?: return@launch
+                val key = recvVideoKey ?: return@launch
                 val dis = DataInputStream(inputStream ?: return@launch)
                 val maxEncryptedSize = Constants.VIDEO_BUFFER_SIZE + 64
                 while (isActive && !terminating.get()) {
@@ -632,7 +739,8 @@ class VideoCallService : Service() {
     }
 
     private fun closeSockets() {
-        videoSessionKey = null
+        sendVideoKey = null
+        recvVideoKey = null
         try { outputStream?.close() } catch (_: Exception) {}
         try { inputStream?.close() } catch (_: Exception) {}
         try { socket?.close() } catch (_: Exception) {}

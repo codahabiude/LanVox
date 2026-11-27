@@ -334,12 +334,14 @@ class ChatServerService : Service() {
         if (!localIp.isNullOrBlank()) {
             PeerRegistry.selfIpAddress = localIp
         }
+        val verifierId = targetId.ifBlank { conn.peerId.orEmpty() }
+        if (verifierId.isBlank()) return
         val selfPubB64 = CryptoManager.getSelfPublicKeyB64(applicationContext)
-        val helloPayload = CryptoManager.buildSignedHelloPayload(applicationContext, localIp, selfPubB64, challengeNonce)
+        val helloPayload = CryptoManager.buildSignedHelloPayload(applicationContext, localIp, selfPubB64, verifierId, challengeNonce)
         val line = Envelope.build(
             senderId = PeerRegistry.selfId,
             senderName = PeerRegistry.selfName,
-            recipientId = targetId.ifBlank { "GO" },
+            recipientId = verifierId,
             payload = helloPayload
         ) + "\n"
         try {
@@ -386,8 +388,8 @@ class ChatServerService : Service() {
                 return
             }
             val nonce = env.payload.removePrefix(Constants.MSG_TYPE_KEYX_CHALLENGE).trim()
-            if (nonce.isNotBlank()) {
-                val keyxPayload = CryptoManager.buildSignedKeyxPayload(applicationContext, nonce)
+            if (nonce.isNotBlank() && env.senderId.isNotBlank()) {
+                val keyxPayload = CryptoManager.buildSignedKeyxPayload(applicationContext, env.senderId, nonce)
                 val line = Envelope.build(
                     senderId = PeerRegistry.selfId,
                     senderName = PeerRegistry.selfName,

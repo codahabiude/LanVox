@@ -13,13 +13,16 @@ import org.robolectric.annotation.Config
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.security.PrivateKey
 import java.security.Signature
 import java.util.UUID
 import java.util.concurrent.Executors
+import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
 @RunWith(RobolectricTestRunner::class)
@@ -27,6 +30,7 @@ import javax.crypto.spec.SecretKeySpec
 class LanVoxCryptoTest {
 
     private lateinit var context: Context
+    private lateinit var testMasterKey: SecretKey
 
     @Before
     fun setUp() {
@@ -34,8 +38,8 @@ class LanVoxCryptoTest {
         context.getSharedPreferences("lanvox_crypto_prefs", Context.MODE_PRIVATE).edit().clear().commit()
         PeerRegistry.clear()
         FileTransferManager.filePortOverrideForTest = null
-        val testKey = SecretKeySpec(ByteArray(32) { 5 }, "AES")
-        CryptoManager.injectTestMasterKey(testKey)
+        testMasterKey = SecretKeySpec(ByteArray(32) { 5 }, "AES")
+        CryptoManager.injectTestMasterKey(testMasterKey)
         CryptoManager.ensureInitialized(context)
         PeerRegistry.selfId = "node_alice"
     }
@@ -45,6 +49,15 @@ class LanVoxCryptoTest {
         FileTransferManager.filePortOverrideForTest = null
         PeerRegistry.clear()
     }
+
+    private fun signRaw(priv: PrivateKey, bytes: ByteArray): ByteArray =
+        Signature.getInstance("SHA256withECDSA").apply {
+            initSign(priv)
+            update(bytes)
+        }.sign()
+
+    private fun signFileReq(priv: PrivateKey, commandArgsWithoutSig: String): String =
+        CryptoManager.b64UrlEncode(signRaw(priv, CryptoManager.fileRequestSignatureInput(commandArgsWithoutSig)))
 
     @Test
     fun testLocalStorageEncryptionAndDecryptionRoundtrip() {
@@ -179,10 +192,10 @@ class LanVoxCryptoTest {
             "$bobId|${Constants.RECIPIENT_BROADCAST}".toByteArray(Charsets.UTF_8)
         )
         val forgedCtB64 = CryptoManager.b64UrlEncode(forgedCt)
-        val mallorySig = Signature.getInstance("SHA256withECDSA").apply {
-            initSign(kpMallory.private)
-            update("$bobId|${Constants.RECIPIENT_BROADCAST}|$forgedMsgId|$forgedCtB64".toByteArray(Charsets.UTF_8))
-        }.sign()
+        val mallorySig = signRaw(
+            kpMallory.private,
+            CryptoManager.groupMessageSignatureInput(bobId, Constants.RECIPIENT_BROADCAST, forgedMsgId, forgedCtB64)
+        )
 
         val forgedCipher = "${Constants.MSG_TYPE_E2E_MULTI}${CryptoManager.b64UrlEncode(forgedIv)}:$forgedCtB64:$forgedMsgId:${CryptoManager.b64UrlEncode(mallorySig)}:${parts[4]}"
 
@@ -222,6 +235,33 @@ class LanVoxCryptoTest {
     }
 
     @Test
+    fun testGroupMessageReplayRejectedAfterAppRestart() {
+        val aliceId = PeerRegistry.selfId
+        val bobId = "node_bob"
+        val alicePubKey = CryptoManager.decodeEcPublicKey(CryptoManager.getSelfPublicKeyBytes(context))
+        val kpBob = CryptoManager.generateEcP256KeyPair()
+        CryptoManager.registerPeerPublicKey(context, bobId, CryptoManager.b64UrlEncode(kpBob.public.encoded), false)
+
+        val broadcastCipher = CryptoManager.encryptForBroadcastWithIdentity(
+            senderId = bobId,
+            senderKeyPair = kpBob,
+            targetPeerKeys = mapOf(aliceId to alicePubKey),
+            plaintext = "Persistent replay check"
+        )!!
+
+        assertEquals(
+            "Persistent replay check",
+            CryptoManager.decryptBroadcast(context, bobId, aliceId, broadcastCipher)
+        )
+
+        // Simulate full app process restart (wipes CryptoManager in-memory state, keeps persisted prefs)
+        CryptoManager.injectTestMasterKey(testMasterKey)
+        CryptoManager.ensureInitialized(context)
+
+        assertNull(CryptoManager.decryptBroadcast(context, bobId, aliceId, broadcastCipher))
+    }
+
+    @Test
     fun testThirdPartyPeerListKeyHeldAsPendingAndNotTrustedDirectly() {
         val peerId = "peer_third_party"
         val kp = CryptoManager.generateEcP256KeyPair()
@@ -235,17 +275,31 @@ class LanVoxCryptoTest {
 
     @Test
     fun testHelloChallengeResponseAcceptedAndReplayRejected() {
-        // Receiver issues a fresh challenge payload
+        // Receiver (node_alice) issues a fresh challenge payload
         val challengePayload = CryptoManager.buildChallengePayload()
         assertTrue(challengePayload.startsWith(Constants.MSG_TYPE_CHALLENGE))
-        val nonce = challengePayload.removePrefix(Constants.MSG_TYPE_CHALLENGE)
+        val vNonce = challengePayload.removePrefix(Constants.MSG_TYPE_CHALLENGE)
 
-        // App builds a signed HELLO response as node_bob using the issued challenge nonce
+        // App builds a signed HELLO response as node_bob using Alice's ID & issued challenge nonce
         PeerRegistry.selfId = "node_bob"
         val bobPubB64 = CryptoManager.getSelfPublicKeyB64(context)
-        val appBuiltHello = CryptoManager.buildSignedHelloPayload(context, "192.168.49.5", bobPubB64, nonce)
+        val appBuiltHello = CryptoManager.buildSignedHelloPayload(
+            context = context,
+            localIp = "192.168.49.5",
+            pubKeyB64 = bobPubB64,
+            verifierId = "node_alice",
+            verifierNonce = vNonce
+        )
+        val parsed = CryptoManager.parseSignedHelloPayload(appBuiltHello)
+        assertEquals(vNonce, parsed.verifierNonce)
+        assertFalse(parsed.responderNonce.isNullOrBlank())
+        assertNotEquals(parsed.verifierNonce, parsed.responderNonce)
 
-        // Receiver (node_alice) verifies and accepts the HELLO once
+        // Wrong verifierId ("node_charlie") must reject the HELLO bound to "node_alice"
+        PeerRegistry.selfId = "node_charlie"
+        assertNull(CryptoManager.verifyAndAcceptSignedHello(context, "node_bob", appBuiltHello, expectedVerifierId = "node_charlie"))
+
+        // Intended receiver (node_alice) verifies and accepts the HELLO once
         PeerRegistry.selfId = "node_alice"
         val accepted = CryptoManager.verifyAndAcceptSignedHello(context, "node_bob", appBuiltHello)
         assertNotNull(accepted)
@@ -254,14 +308,38 @@ class LanVoxCryptoTest {
         assertTrue(CryptoManager.hasPeerKey(context, "node_bob"))
 
         // Replaying the exact same signed HELLO must be rejected (nonce was consumed)
-        val replayed = CryptoManager.verifyAndAcceptSignedHello(context, "node_bob", appBuiltHello)
-        assertNull(replayed)
+        assertNull(CryptoManager.verifyAndAcceptSignedHello(context, "node_bob", appBuiltHello))
 
         // Signing an unissued nonce must also be rejected
         PeerRegistry.selfId = "node_bob"
-        val unissuedHello = CryptoManager.buildSignedHelloPayload(context, "192.168.49.5", bobPubB64, "forged_nonce_123")
+        val unissuedHello = CryptoManager.buildSignedHelloPayload(context, "192.168.49.5", bobPubB64, "node_alice", "forged_nonce_123")
         PeerRegistry.selfId = "node_alice"
         assertNull(CryptoManager.verifyAndAcceptSignedHello(context, "node_bob", unissuedHello))
+
+        // Cross-purpose replay: reusing a HELLO signature in a KEYX payload must fail even with an issued KEYX nonce
+        val chal2 = CryptoManager.buildKeyxChallengePayload().removePrefix(Constants.MSG_TYPE_KEYX_CHALLENGE)
+        val helloSig = CryptoManager.signHandshakeChallenge(
+            privateKey = CryptoManager.generateEcP256KeyPair().private,
+            purpose = "HELLO",
+            signerId = "node_bob",
+            verifierId = "node_alice",
+            verifierNonce = chal2,
+            responderNonce = "rnonce_xyz",
+            signerKeyMaterialB64 = bobPubB64
+        )
+        val bobKey = CryptoManager.getPeerPublicKey(context, "node_bob")!!
+        assertFalse(
+            CryptoManager.verifyAndConsumeChallenge(
+                publicKey = bobKey,
+                purpose = "KEYX",
+                verifierNonce = chal2,
+                responderNonce = "rnonce_xyz",
+                signerId = "node_bob",
+                verifierId = "node_alice",
+                pubKeyB64 = bobPubB64,
+                signatureBytes = helloSig
+            )
+        )
     }
 
     @Test
@@ -271,8 +349,13 @@ class LanVoxCryptoTest {
         val nonce = chalPayload.removePrefix(Constants.MSG_TYPE_KEYX_CHALLENGE)
 
         PeerRegistry.selfId = "node_bob"
-        val appBuiltKeyx = CryptoManager.buildSignedKeyxPayload(context, nonce)
+        val appBuiltKeyx = CryptoManager.buildSignedKeyxPayload(context, "node_alice", nonce)
 
+        // Wrong verifier must fail
+        PeerRegistry.selfId = "node_charlie"
+        assertNull(CryptoManager.verifyAndAcceptSignedKeyx(context, "node_bob", appBuiltKeyx, expectedVerifierId = "node_charlie"))
+
+        // Intended verifier accepts once
         PeerRegistry.selfId = "node_alice"
         val accepted = CryptoManager.verifyAndAcceptSignedKeyx(context, "node_bob", appBuiltKeyx)
         assertNotNull(accepted)
@@ -324,14 +407,6 @@ class LanVoxCryptoTest {
             s.getOutputStream().flush()
         }
 
-        fun signWith(priv: java.security.PrivateKey, msg: String): String {
-            val sig = Signature.getInstance("SHA256withECDSA").apply {
-                initSign(priv)
-                update(msg.toByteArray(Charsets.UTF_8))
-            }.sign()
-            return CryptoManager.b64UrlEncode(sig)
-        }
-
         try {
             // 1. Unauthenticated bare GET must be rejected
             runServerOnce { s ->
@@ -346,7 +421,7 @@ class LanVoxCryptoTest {
             runServerOnce { s ->
                 val nonce = readLine(s)!!.removePrefix("NONCE ").trim()
                 val cmd = "GET $transferId node_stranger $nonce"
-                writeLine(s, "$cmd ${signWith(strangerKp.private, cmd)}")
+                writeLine(s, "$cmd ${signFileReq(strangerKp.private, cmd)}")
                 assertEquals("ERR unknown_sender", readLine(s))
             }
 
@@ -354,7 +429,7 @@ class LanVoxCryptoTest {
             runServerOnce { s ->
                 readLine(s)!! // ignore real server nonce
                 val cmd = "GET $transferId $bobId wrong_nonce"
-                writeLine(s, "$cmd ${signWith(kpBob.private, cmd)}")
+                writeLine(s, "$cmd ${signFileReq(kpBob.private, cmd)}")
                 assertEquals("ERR bad_nonce", readLine(s))
             }
 
@@ -362,7 +437,16 @@ class LanVoxCryptoTest {
             runServerOnce { s ->
                 val nonce = readLine(s)!!.removePrefix("NONCE ").trim()
                 val cmd = "GET $transferId $bobId $nonce"
-                writeLine(s, "$cmd ${signWith(kpCharlie.private, cmd)}")
+                writeLine(s, "$cmd ${signFileReq(kpCharlie.private, cmd)}")
+                assertEquals("ERR unauthorized", readLine(s))
+            }
+
+            // 4b. Cross-purpose signature without LANVOX-SIG-FILE-V1 domain label must be rejected
+            runServerOnce { s ->
+                val nonce = readLine(s)!!.removePrefix("NONCE ").trim()
+                val cmd = "GET $transferId $bobId $nonce"
+                val rawUnlabeledSig = CryptoManager.b64UrlEncode(signRaw(kpBob.private, cmd.toByteArray(Charsets.UTF_8)))
+                writeLine(s, "$cmd $rawUnlabeledSig")
                 assertEquals("ERR unauthorized", readLine(s))
             }
 
@@ -370,7 +454,7 @@ class LanVoxCryptoTest {
             runServerOnce { s ->
                 val nonce = readLine(s)!!.removePrefix("NONCE ").trim()
                 val cmd = "PUT $transferId ${payloadBytes.size} $bobId $nonce"
-                writeLine(s, "$cmd ${signWith(kpBob.private, cmd)}")
+                writeLine(s, "$cmd ${signFileReq(kpBob.private, cmd)}")
                 s.getOutputStream().write(payloadBytes)
                 s.getOutputStream().flush()
                 assertEquals("OK", readLine(s))
@@ -380,7 +464,7 @@ class LanVoxCryptoTest {
             runServerOnce { s ->
                 val nonce = readLine(s)!!.removePrefix("NONCE ").trim()
                 val cmd = "PUT $transferId ${payloadBytes.size} $charlieId $nonce"
-                writeLine(s, "$cmd ${signWith(kpCharlie.private, cmd)}")
+                writeLine(s, "$cmd ${signFileReq(kpCharlie.private, cmd)}")
                 assertEquals("ERR transfer_exists", readLine(s))
             }
 
@@ -388,7 +472,7 @@ class LanVoxCryptoTest {
             runServerOnce { s ->
                 val nonce = readLine(s)!!.removePrefix("NONCE ").trim()
                 val cmd = "GET $transferId $charlieId $nonce"
-                writeLine(s, "$cmd ${signWith(kpCharlie.private, cmd)}")
+                writeLine(s, "$cmd ${signFileReq(kpCharlie.private, cmd)}")
                 assertEquals("OK ${payloadBytes.size}", readLine(s))
                 val received = ByteArray(payloadBytes.size)
                 DataInputStream(s.getInputStream()).readFully(received)
@@ -399,7 +483,7 @@ class LanVoxCryptoTest {
             runServerOnce { s ->
                 val nonce = readLine(s)!!.removePrefix("NONCE ").trim()
                 val cmd = "RELAY_GET 10.99.99.99 $transferId $bobId $nonce"
-                writeLine(s, "$cmd ${signWith(kpBob.private, cmd)}")
+                writeLine(s, "$cmd ${signFileReq(kpBob.private, cmd)}")
                 assertEquals("ERR unknown_relay_target", readLine(s))
             }
 
@@ -431,7 +515,7 @@ class LanVoxCryptoTest {
                             assertEquals(upNonce, upReq[3])
                             val upSigOk = Signature.getInstance("SHA256withECDSA").apply {
                                 initVerify(alicePubKeyForRelay)
-                                update(upReq.dropLast(1).joinToString(" ").toByteArray(Charsets.UTF_8))
+                                update(CryptoManager.fileRequestSignatureInput(upReq.dropLast(1).joinToString(" ")))
                             }.verify(CryptoManager.b64UrlDecode(upReq[4]))
                             assertTrue(upSigOk)
                             writeLine(upSock, "OK ${relayBytes.size}")
@@ -448,7 +532,7 @@ class LanVoxCryptoTest {
                         s.connect(InetSocketAddress("127.0.0.1", server.localPort), 3000)
                         val nonce = readLine(s)!!.removePrefix("NONCE ").trim()
                         val cmd = "RELAY_GET 127.0.0.1 $relayTransferId $bobId $nonce"
-                        writeLine(s, "$cmd ${signWith(kpBob.private, cmd)}")
+                        writeLine(s, "$cmd ${signFileReq(kpBob.private, cmd)}")
                         assertEquals("OK ${relayBytes.size}", readLine(s))
                         val got = ByteArray(relayBytes.size)
                         DataInputStream(s.getInputStream()).readFully(got)
@@ -488,7 +572,6 @@ class LanVoxCryptoTest {
             val mockPeerFuture = executor.submit {
                 server.accept().use { sock ->
                     val out = sock.getOutputStream()
-                    val inp = sock.getInputStream()
                     val serverNonce = "srv_nonce_xyz"
                     writeLine(sock, "NONCE $serverNonce")
                     val reqParts = readLine(sock)!!.split(' ')
@@ -498,7 +581,7 @@ class LanVoxCryptoTest {
                     assertEquals(serverNonce, reqParts[3])
                     val sigOk = Signature.getInstance("SHA256withECDSA").apply {
                         initVerify(alicePubKey)
-                        update(reqParts.dropLast(1).joinToString(" ").toByteArray(Charsets.UTF_8))
+                        update(CryptoManager.fileRequestSignatureInput(reqParts.dropLast(1).joinToString(" ")))
                     }.verify(CryptoManager.b64UrlDecode(reqParts[4]))
                     assertTrue(sigOk)
                     val bytes = encryptedFile.readBytes()
@@ -529,6 +612,338 @@ class LanVoxCryptoTest {
         } finally {
             server.close()
             executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun testCallKeysRequireSavedPeerKeyAndAreDirectional() {
+        val ephA = CryptoManager.generateEcP256KeyPair()
+        val ephB = CryptoManager.generateEcP256KeyPair()
+        val ephSecret = CryptoManager.computeEcdhSecret(ephA.private, ephB.public)
+
+        // 1. Missing saved peer key MUST throw (no ephemeral-only fallback)
+        assertThrows(IllegalStateException::class.java) {
+            CryptoManager.deriveAudioSignalingSessionKeys(
+                context = context,
+                peerId = "node_unknown",
+                ephSecret = ephSecret,
+                ephPubA = ephA.public.encoded,
+                ephPubB = ephB.public.encoded
+            )
+        }
+        assertThrows(IllegalStateException::class.java) {
+            CryptoManager.deriveVideoStreamSessionKeys(
+                context = context,
+                peerId = "node_unknown",
+                ephSecret = ephSecret,
+                ephPubA = ephA.public.encoded,
+                ephPubB = ephB.public.encoded
+            )
+        }
+
+        // 2. Register Bob, then verify blocked key also refuses derivation
+        val kpBob = CryptoManager.generateEcP256KeyPair()
+        CryptoManager.registerPeerPublicKey(context, "node_bob", CryptoManager.b64UrlEncode(kpBob.public.encoded), false)
+        val kpBob2 = CryptoManager.generateEcP256KeyPair()
+        CryptoManager.registerPeerPublicKey(context, "node_bob", CryptoManager.b64UrlEncode(kpBob2.public.encoded), false)
+        assertTrue(CryptoManager.isPeerKeyBlocked(context, "node_bob"))
+        assertThrows(IllegalArgumentException::class.java) {
+            CryptoManager.deriveAudioSignalingSessionKeys(
+                context = context,
+                peerId = "node_bob",
+                ephSecret = ephSecret,
+                ephPubA = ephA.public.encoded,
+                ephPubB = ephB.public.encoded
+            )
+        }
+        CryptoManager.rejectPendingKey(context, "node_bob")
+
+        // 3. Valid saved key yields distinct send/recv directional keys
+        val aliceAudioKeys = CryptoManager.deriveAudioSignalingSessionKeys(
+            context = context,
+            peerId = "node_bob",
+            ephSecret = ephSecret,
+            ephPubA = ephA.public.encoded,
+            ephPubB = ephB.public.encoded
+        )
+        assertFalse(aliceAudioKeys.sendKey.encoded.contentEquals(aliceAudioKeys.recvKey.encoded))
+
+        val aliceVideoKeys = CryptoManager.deriveVideoStreamSessionKeys(
+            context = context,
+            peerId = "node_bob",
+            ephSecret = ephSecret,
+            ephPubA = ephA.public.encoded,
+            ephPubB = ephB.public.encoded
+        )
+        assertFalse(aliceVideoKeys.sendKey.encoded.contentEquals(aliceVideoKeys.recvKey.encoded))
+        assertFalse(aliceAudioKeys.sendKey.encoded.contentEquals(aliceVideoKeys.sendKey.encoded))
+    }
+
+    @Test
+    fun testAudioAndVideoCallChannelsAuthenticatePeerAndUseDirectionalKeys() {
+        val bobId = "node_bob"
+        val malloryId = "node_mallory"
+        val kpBob = CryptoManager.generateEcP256KeyPair()
+        val kpMallory = CryptoManager.generateEcP256KeyPair()
+        val alicePubKey = CryptoManager.decodeEcPublicKey(CryptoManager.getSelfPublicKeyBytes(context))
+
+        CryptoManager.registerPeerPublicKey(context, bobId, CryptoManager.b64UrlEncode(kpBob.public.encoded), false)
+        CryptoManager.registerPeerPublicKey(context, malloryId, CryptoManager.b64UrlEncode(kpMallory.public.encoded), false)
+
+        val server = ServerSocket(0)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            // --- Audio channel: 1. Intended peer Bob succeeds & derives matching directional keys ---
+            val bobAudioFuture = pool.submit<CryptoManager.DirectionalCallKeys> {
+                Socket("127.0.0.1", server.localPort).use { sock ->
+                    val writer = sock.getOutputStream().bufferedWriter()
+                    val reader = sock.getInputStream().bufferedReader()
+                    val ephBob = CryptoManager.generateEcP256KeyPair()
+                    val bobNonce = CryptoManager.generateRandomNonce()
+
+                    val aliceHs = org.json.JSONObject(reader.readLine())
+                    assertEquals("ecdh", aliceHs.getString("type"))
+                    assertEquals("node_alice", aliceHs.getString("peerId"))
+                    val aliceNonce = aliceHs.getString("nonce")
+                    val aliceEphPub = CryptoManager.b64UrlDecode(aliceHs.getString("pub"))
+
+                    writer.write(
+                        org.json.JSONObject()
+                            .put("type", "ecdh")
+                            .put("peerId", bobId)
+                            .put("pub", CryptoManager.b64UrlEncode(ephBob.public.encoded))
+                            .put("nonce", bobNonce)
+                            .toString()
+                    )
+                    writer.newLine()
+                    writer.flush()
+
+                    val aliceAuth = org.json.JSONObject(reader.readLine())
+                    assertEquals("ecdh_auth", aliceAuth.getString("type"))
+                    val bobSig = CryptoManager.b64UrlEncode(
+                        CryptoManager.signHandshakeChallenge(
+                            privateKey = kpBob.private,
+                            purpose = "AUDIO_CALL",
+                            signerId = bobId,
+                            verifierId = "node_alice",
+                            verifierNonce = aliceNonce,
+                            responderNonce = bobNonce,
+                            signerKeyMaterialB64 = CryptoManager.b64UrlEncode(ephBob.public.encoded),
+                            peerKeyMaterialB64 = CryptoManager.b64UrlEncode(aliceEphPub)
+                        )
+                    )
+                    writer.write(org.json.JSONObject().put("type", "ecdh_auth").put("sig", bobSig).toString())
+                    writer.newLine()
+                    writer.flush()
+
+                    val ephSecret = CryptoManager.computeEcdhSecret(ephBob.private, CryptoManager.decodeEcPublicKey(aliceEphPub))
+                    val idSecret = CryptoManager.computeEcdhSecret(kpBob.private, alicePubKey)
+                    val sortedSalt = java.security.MessageDigest.getInstance("SHA-256").digest(
+                        if (ephBob.public.encoded.size != aliceEphPub.size) {
+                            if (ephBob.public.encoded.size < aliceEphPub.size) ephBob.public.encoded + aliceEphPub else aliceEphPub + ephBob.public.encoded
+                        } else {
+                            var aFirst = true
+                            for (i in ephBob.public.encoded.indices) {
+                                val d = (ephBob.public.encoded[i].toInt() and 0xFF) - (aliceEphPub[i].toInt() and 0xFF)
+                                if (d != 0) {
+                                    aFirst = d < 0
+                                    break
+                                }
+                            }
+                            if (aFirst) ephBob.public.encoded + aliceEphPub else aliceEphPub + ephBob.public.encoded
+                        }
+                    )
+                    val ikm = ephSecret + idSecret
+                    CryptoManager.DirectionalCallKeys(
+                        sendKey = SecretKeySpec(CryptoManager.hkdfSha256(sortedSalt, ikm, "lanvox-e2ee-v1-audio-sig|$bobId->node_alice".toByteArray(), 32), "AES"),
+                        recvKey = SecretKeySpec(CryptoManager.hkdfSha256(sortedSalt, ikm, "lanvox-e2ee-v1-audio-sig|node_alice->$bobId".toByteArray(), 32), "AES")
+                    )
+                }
+            }
+            val aliceAudioKeys = server.accept().use { conn ->
+                AudioCallService.establishAuthenticatedAudioChannel(context, conn, expectedPeerId = bobId)
+            }
+            val bobAudioKeys = bobAudioFuture.get()
+            assertArrayEquals(aliceAudioKeys.sendKey.encoded, bobAudioKeys.recvKey.encoded)
+            assertArrayEquals(bobAudioKeys.sendKey.encoded, aliceAudioKeys.recvKey.encoded)
+            assertFalse(aliceAudioKeys.sendKey.encoded.contentEquals(aliceAudioKeys.recvKey.encoded))
+
+            val encryptedOffer = CryptoManager.encryptSignalingLine(aliceAudioKeys.sendKey, 1L, "{\"type\":\"offer\"}")
+            assertEquals(1L to "{\"type\":\"offer\"}", CryptoManager.decryptSignalingLine(bobAudioKeys.recvKey, encryptedOffer))
+            assertNull(CryptoManager.decryptSignalingLine(aliceAudioKeys.recvKey, encryptedOffer))
+
+            // --- Audio channel: 2. Unintended peer Mallory is rejected ---
+            val malloryAudioFuture = pool.submit {
+                Socket("127.0.0.1", server.localPort).use { sock ->
+                    val writer = sock.getOutputStream().bufferedWriter()
+                    val reader = sock.getInputStream().bufferedReader()
+                    val ephMal = CryptoManager.generateEcP256KeyPair()
+                    reader.readLine()
+                    writer.write(
+                        org.json.JSONObject()
+                            .put("type", "ecdh")
+                            .put("peerId", malloryId)
+                            .put("pub", CryptoManager.b64UrlEncode(ephMal.public.encoded))
+                            .put("nonce", CryptoManager.generateRandomNonce())
+                            .toString()
+                    )
+                    writer.newLine()
+                    writer.flush()
+                }
+            }
+            assertThrows(SecurityException::class.java) {
+                server.accept().use { conn ->
+                    AudioCallService.establishAuthenticatedAudioChannel(context, conn, expectedPeerId = bobId)
+                }
+            }
+            malloryAudioFuture.get()
+
+            // --- Video channel: 3. Intended peer Bob succeeds & directional frame keys match ---
+            val bobVideoFuture = pool.submit<CryptoManager.DirectionalCallKeys> {
+                Socket("127.0.0.1", server.localPort).use { sock ->
+                    val dos = DataOutputStream(sock.getOutputStream())
+                    val dis = DataInputStream(sock.getInputStream())
+                    val ephBob = CryptoManager.generateEcP256KeyPair()
+                    val bobNonce = CryptoManager.generateRandomNonce()
+
+                    dos.writeBytes("LVV2")
+                    dos.writeUTF(bobId)
+                    dos.writeShort(ephBob.public.encoded.size)
+                    dos.write(ephBob.public.encoded)
+                    dos.writeUTF(bobNonce)
+                    dos.flush()
+
+                    val magic = ByteArray(4)
+                    dis.readFully(magic)
+                    assertEquals("LVV2", String(magic, Charsets.US_ASCII))
+                    assertEquals("node_alice", dis.readUTF())
+                    val aLen = dis.readUnsignedShort()
+                    val aliceEphPub = ByteArray(aLen).also { dis.readFully(it) }
+                    val aliceNonce = dis.readUTF()
+                    dis.readUTF() // Alice auth sig
+
+                    val bobSig = CryptoManager.b64UrlEncode(
+                        CryptoManager.signHandshakeChallenge(
+                            privateKey = kpBob.private,
+                            purpose = "VIDEO_CALL",
+                            signerId = bobId,
+                            verifierId = "node_alice",
+                            verifierNonce = aliceNonce,
+                            responderNonce = bobNonce,
+                            signerKeyMaterialB64 = CryptoManager.b64UrlEncode(ephBob.public.encoded),
+                            peerKeyMaterialB64 = CryptoManager.b64UrlEncode(aliceEphPub)
+                        )
+                    )
+                    dos.writeUTF(bobSig)
+                    dos.flush()
+
+                    val ephSecret = CryptoManager.computeEcdhSecret(ephBob.private, CryptoManager.decodeEcPublicKey(aliceEphPub))
+                    val idSecret = CryptoManager.computeEcdhSecret(kpBob.private, alicePubKey)
+                    val sortedSalt = java.security.MessageDigest.getInstance("SHA-256").digest(
+                        if (ephBob.public.encoded.size != aliceEphPub.size) {
+                            if (ephBob.public.encoded.size < aliceEphPub.size) ephBob.public.encoded + aliceEphPub else aliceEphPub + ephBob.public.encoded
+                        } else {
+                            var aFirst = true
+                            for (i in ephBob.public.encoded.indices) {
+                                val d = (ephBob.public.encoded[i].toInt() and 0xFF) - (aliceEphPub[i].toInt() and 0xFF)
+                                if (d != 0) {
+                                    aFirst = d < 0
+                                    break
+                                }
+                            }
+                            if (aFirst) ephBob.public.encoded + aliceEphPub else aliceEphPub + ephBob.public.encoded
+                        }
+                    )
+                    val ikm = ephSecret + idSecret
+                    CryptoManager.DirectionalCallKeys(
+                        sendKey = SecretKeySpec(CryptoManager.hkdfSha256(sortedSalt, ikm, "lanvox-e2ee-v1-video|$bobId->node_alice".toByteArray(), 32), "AES"),
+                        recvKey = SecretKeySpec(CryptoManager.hkdfSha256(sortedSalt, ikm, "lanvox-e2ee-v1-video|node_alice->$bobId".toByteArray(), 32), "AES")
+                    )
+                }
+            }
+            val aliceVideoKeys = server.accept().use { conn ->
+                VideoCallService.establishAuthenticatedVideoChannel(context, conn, expectedPeerId = bobId)
+            }
+            val bobVideoKeys = bobVideoFuture.get()
+            assertArrayEquals(aliceVideoKeys.sendKey.encoded, bobVideoKeys.recvKey.encoded)
+            assertArrayEquals(bobVideoKeys.sendKey.encoded, aliceVideoKeys.recvKey.encoded)
+            assertFalse(aliceVideoKeys.sendKey.encoded.contentEquals(aliceVideoKeys.recvKey.encoded))
+
+            val framePlain = byteArrayOf(1, 2, 3, 4, 5)
+            val encFrame = CryptoManager.encryptVideoFrame(aliceVideoKeys.sendKey, 1L, framePlain)
+            assertArrayEquals(framePlain, CryptoManager.decryptVideoFrame(bobVideoKeys.recvKey, 1L, encFrame))
+            assertNull(CryptoManager.decryptVideoFrame(aliceVideoKeys.recvKey, 1L, encFrame))
+
+            // --- Video channel: 4. Missing saved peer key is refused immediately ---
+            val dummySocket = Socket()
+            assertThrows(SecurityException::class.java) {
+                VideoCallService.establishAuthenticatedVideoChannel(context, dummySocket, expectedPeerId = "node_unknown")
+            }
+            assertThrows(SecurityException::class.java) {
+                AudioCallService.establishAuthenticatedAudioChannel(context, dummySocket, expectedPeerId = "node_unknown")
+            }
+        } finally {
+            server.close()
+            pool.shutdownNow()
+        }
+
+        // Verify expectedIp mismatch & forged signature on Video channel with explicit sockets
+        val srv2 = ServerSocket(0)
+        val pool2 = Executors.newSingleThreadExecutor()
+        try {
+            // 4b. expectedIp mismatch rejects immediately
+            val ipMismatchClient = pool2.submit {
+                Socket("127.0.0.1", srv2.localPort).use { /* just connect */ }
+            }
+            assertThrows(SecurityException::class.java) {
+                srv2.accept().use { conn ->
+                    VideoCallService.establishAuthenticatedVideoChannel(
+                        context,
+                        conn,
+                        expectedPeerId = bobId,
+                        expectedIp = "10.0.0.99"
+                    )
+                }
+            }
+            ipMismatchClient.get()
+
+            // 4c. Forged ECDSA signature on Video channel is rejected
+            val clientFuture = pool2.submit {
+                Socket("127.0.0.1", srv2.localPort).use { sock ->
+                    val dos = DataOutputStream(sock.getOutputStream())
+                    val dis = DataInputStream(sock.getInputStream())
+                    val ephBob = CryptoManager.generateEcP256KeyPair()
+                    val bobNonce = CryptoManager.generateRandomNonce()
+
+                    dos.writeBytes("LVV2")
+                    dos.writeUTF(bobId)
+                    dos.writeShort(ephBob.public.encoded.size)
+                    dos.write(ephBob.public.encoded)
+                    dos.writeUTF(bobNonce)
+                    dos.flush()
+
+                    val magic = ByteArray(4)
+                    dis.readFully(magic)
+                    dis.readUTF()
+                    val aLen = dis.readUnsignedShort()
+                    dis.readFully(ByteArray(aLen))
+                    dis.readUTF()
+                    dis.readUTF()
+                    // Mallory impersonating Bob by signing with kpMallory.private
+                    val forgedSig = CryptoManager.b64UrlEncode(signRaw(kpMallory.private, "bad".toByteArray()))
+                    dos.writeUTF(forgedSig)
+                    dos.flush()
+                }
+            }
+            assertThrows(SecurityException::class.java) {
+                srv2.accept().use { conn ->
+                    VideoCallService.establishAuthenticatedVideoChannel(context, conn, expectedPeerId = bobId)
+                }
+            }
+            clientFuture.get()
+        } finally {
+            srv2.close()
+            pool2.shutdownNow()
         }
     }
 }

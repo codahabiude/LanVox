@@ -108,6 +108,109 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
                 peerName = null
             )
         }
+
+        internal fun establishAuthenticatedAudioChannel(
+            context: android.content.Context,
+            conn: Socket,
+            expectedPeerId: String,
+            expectedIp: String? = PeerRegistry.ipFor(expectedPeerId)
+        ): CryptoManager.DirectionalCallKeys {
+            require(expectedPeerId.isNotBlank() && expectedPeerId != PeerRegistry.selfId) {
+                "Invalid intended peer for audio call"
+            }
+            if (CryptoManager.isPeerKeyBlocked(context, expectedPeerId)) {
+                throw SecurityException("Peer identity key changed and is blocked")
+            }
+            if (!CryptoManager.hasPeerKey(context, expectedPeerId)) {
+                throw SecurityException("Missing saved identity key for $expectedPeerId")
+            }
+            val remoteIp = conn.inetAddress?.hostAddress
+            if (!expectedIp.isNullOrBlank() && remoteIp != null && remoteIp != expectedIp) {
+                throw SecurityException("Rejected audio connection from unexpected IP $remoteIp (expected $expectedIp)")
+            }
+
+            conn.soTimeout = 10_000
+            try {
+                val writer = BufferedWriter(OutputStreamWriter(conn.getOutputStream(), Charsets.UTF_8))
+                val reader = BufferedReader(InputStreamReader(conn.getInputStream(), Charsets.UTF_8))
+                val ephKp = CryptoManager.generateEcP256KeyPair()
+                val selfPub = ephKp.public.encoded
+                val myNonce = CryptoManager.generateRandomNonce()
+
+                writer.write(
+                    JSONObject()
+                        .put("type", "ecdh")
+                        .put("peerId", PeerRegistry.selfId)
+                        .put("pub", CryptoManager.b64UrlEncode(selfPub))
+                        .put("nonce", myNonce)
+                        .toString()
+                )
+                writer.newLine()
+                writer.flush()
+
+                val hsLine = reader.readLine()
+                    ?: throw IllegalStateException("Peer closed socket during audio ECDH handshake")
+                val hsJson = JSONObject(hsLine)
+                require(hsJson.optString("type") == "ecdh") { "Unexpected audio signaling handshake" }
+                val remotePeerId = hsJson.optString("peerId").trim()
+                if (remotePeerId != expectedPeerId) {
+                    throw SecurityException("Rejected audio peer $remotePeerId (expected $expectedPeerId)")
+                }
+                val remoteNonce = hsJson.optString("nonce").trim()
+                require(remoteNonce.isNotBlank() && remoteNonce != myNonce) { "Invalid peer nonce" }
+                val remotePubBytes = CryptoManager.b64UrlDecode(hsJson.getString("pub"))
+                val remoteEphPub = CryptoManager.decodeEcPublicKey(remotePubBytes)
+
+                val authSig = CryptoManager.signCallHandshake(
+                    context = context,
+                    channelPurpose = "AUDIO_CALL",
+                    verifierId = expectedPeerId,
+                    verifierNonce = remoteNonce,
+                    responderNonce = myNonce,
+                    selfEphPub = selfPub,
+                    peerEphPub = remoteEphPub.encoded
+                ) ?: throw SecurityException("Unable to sign audio call handshake")
+
+                writer.write(
+                    JSONObject()
+                        .put("type", "ecdh_auth")
+                        .put("sig", authSig)
+                        .toString()
+                )
+                writer.newLine()
+                writer.flush()
+
+                val authLine = reader.readLine()
+                    ?: throw IllegalStateException("Peer closed socket before completing audio auth")
+                val authJson = JSONObject(authLine)
+                require(authJson.optString("type") == "ecdh_auth") { "Missing audio auth confirmation" }
+                val remoteSigB64 = authJson.optString("sig").trim()
+                val verified = CryptoManager.verifyCallHandshake(
+                    context = context,
+                    channelPurpose = "AUDIO_CALL",
+                    signerId = expectedPeerId,
+                    verifierNonce = myNonce,
+                    responderNonce = remoteNonce,
+                    signerEphPub = remoteEphPub.encoded,
+                    verifierEphPub = selfPub,
+                    sigB64 = remoteSigB64
+                )
+                if (!verified) {
+                    throw SecurityException("Audio call peer authentication failed for $expectedPeerId")
+                }
+
+                val ephSecret = CryptoManager.computeEcdhSecret(ephKp.private, remoteEphPub)
+                return CryptoManager.deriveAudioSignalingSessionKeys(
+                    context = context,
+                    peerId = expectedPeerId,
+                    ephSecret = ephSecret,
+                    ephPubA = selfPub,
+                    ephPubB = remoteEphPub.encoded
+                )
+            } finally {
+                runCatching { conn.soTimeout = 0 }
+            }
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -118,7 +221,8 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var signalingSocket: Socket? = null
     @Volatile private var signalWriter: BufferedWriter? = null
-    @Volatile private var signalingSessionKey: SecretKey? = null
+    @Volatile private var sendSignalingKey: SecretKey? = null
+    @Volatile private var recvSignalingKey: SecretKey? = null
     private val outSignalSeq = AtomicLong(0L)
     private val lastInSignalSeq = AtomicLong(0L)
     private val pendingOutgoingSignals = mutableListOf<String>()
@@ -242,6 +346,25 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
         this.peerId = peerId
         this.peerName = peerName?.takeIf { it.isNotBlank() } ?: "Peer"
 
+        if (peerId.isNullOrBlank() || peerId == PeerRegistry.selfId) {
+            Log.e(TAG, "Refusing audio call: missing intended peer ID")
+            if (notifyCallBus) CallSessionBus.notifyEnded("Cannot verify peer identity")
+            stopSelf()
+            return
+        }
+        if (CryptoManager.isPeerKeyBlocked(applicationContext, peerId)) {
+            Log.e(TAG, "Refusing audio call: peer key changed and is blocked ($peerId)")
+            if (notifyCallBus) CallSessionBus.notifyEnded("Peer identity key changed — verify before calling")
+            stopSelf()
+            return
+        }
+        if (!CryptoManager.hasPeerKey(applicationContext, peerId)) {
+            Log.e(TAG, "Refusing audio call: peer $peerId has no saved identity key")
+            if (notifyCallBus) CallSessionBus.notifyEnded("Peer has no saved encryption key")
+            stopSelf()
+            return
+        }
+
         webRtcManager = WebRtcAudioCallManager(this, this)
         refreshNotification()
 
@@ -257,6 +380,7 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
     }
 
     private fun startSignalingServer() {
+        val targetPeerId = peerId ?: return
         connectJob = scope.launch {
             try {
                 val srv = ServerSocket().apply {
@@ -264,9 +388,21 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
                     bind(InetSocketAddress(Constants.AUDIO_PORT))
                 }
                 serverSocket = srv
-                Log.d(TAG, "WebRTC audio signaling server listening on port ${Constants.AUDIO_PORT}")
-                val conn = srv.accept()
-                onSignalingSocketReady(conn)
+                Log.d(TAG, "WebRTC audio signaling server listening on port ${Constants.AUDIO_PORT} for $targetPeerId")
+                repeat(10) {
+                    if (!isActive || terminating.get()) return@launch
+                    val conn = srv.accept()
+                    val accepted = try {
+                        onSignalingSocketReady(conn)
+                        true
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Rejected unauthorized audio connection from ${conn.inetAddress?.hostAddress}: ${e.message}")
+                        try { conn.close() } catch (_: Exception) {}
+                        false
+                    }
+                    if (accepted) return@launch
+                }
+                endCallInternal(notifyBus = true, sendBye = false, reason = "Peer authentication failed")
             } catch (e: Exception) {
                 if (scope.isActive && !terminating.get()) {
                     Log.e(TAG, "GO WebRTC signaling error: ${e.message}")
@@ -289,7 +425,14 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
                     conn.tcpNoDelay = true
                     conn.connect(InetSocketAddress(hostAddress, Constants.AUDIO_PORT), 3_000)
                     Log.d(TAG, "Connected to GO WebRTC signaling at $hostAddress:${Constants.AUDIO_PORT}")
-                    onSignalingSocketReady(conn)
+                    try {
+                        onSignalingSocketReady(conn)
+                    } catch (sec: SecurityException) {
+                        try { conn.close() } catch (_: Exception) {}
+                        Log.e(TAG, "Audio peer authentication failed: ${sec.message}")
+                        endCallInternal(notifyBus = true, sendBye = false, reason = "Peer authentication failed")
+                        return@launch
+                    }
                     return@launch
                 } catch (e: Exception) {
                     Log.d(TAG, "WebRTC signaling connect attempt ${attempt + 1} failed: ${e.message}")
@@ -302,54 +445,30 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
     }
 
     private fun onSignalingSocketReady(conn: Socket) {
+        val targetPeerId = peerId ?: throw IllegalStateException("Missing target peer ID")
         conn.tcpNoDelay = true
         conn.keepAlive = true
+        val keys = establishAuthenticatedAudioChannel(
+            context = applicationContext,
+            conn = conn,
+            expectedPeerId = targetPeerId
+        )
         signalingSocket = conn
 
         val writer = BufferedWriter(OutputStreamWriter(conn.getOutputStream(), Charsets.UTF_8))
         val reader = BufferedReader(InputStreamReader(conn.getInputStream(), Charsets.UTF_8))
 
-        val sessionKey = try {
-            conn.soTimeout = 10_000
-            val ephKp = CryptoManager.generateEcP256KeyPair()
-            val selfPub = ephKp.public.encoded
-            writer.write(
-                JSONObject()
-                    .put("type", "ecdh")
-                    .put("pub", CryptoManager.b64UrlEncode(selfPub))
-                    .toString()
-            )
-            writer.newLine()
-            writer.flush()
-
-            val hsLine = reader.readLine()
-                ?: throw IllegalStateException("Peer closed socket during audio ECDH handshake")
-            val hsJson = JSONObject(hsLine)
-            require(hsJson.optString("type") == "ecdh") { "Unexpected audio signaling handshake" }
-            val remotePubBytes = CryptoManager.b64UrlDecode(hsJson.getString("pub"))
-            val remoteEphPub = CryptoManager.decodeEcPublicKey(remotePubBytes)
-            val ephSecret = CryptoManager.computeEcdhSecret(ephKp.private, remoteEphPub)
-            CryptoManager.deriveAudioSignalingSessionKey(
-                context = applicationContext,
-                peerId = peerId,
-                ephSecret = ephSecret,
-                ephPubA = selfPub,
-                ephPubB = remoteEphPub.encoded
-            )
-        } finally {
-            runCatching { conn.soTimeout = 0 }
-        }
-
         outSignalSeq.set(0L)
         lastInSignalSeq.set(0L)
-        signalingSessionKey = sessionKey
+        sendSignalingKey = keys.sendKey
+        recvSignalingKey = keys.recvKey
 
         synchronized(signalWriteLock) {
             signalWriter = writer
             if (pendingOutgoingSignals.isNotEmpty()) {
                 pendingOutgoingSignals.forEach { msg ->
                     val encLine = CryptoManager.encryptSignalingLine(
-                        sessionKey,
+                        keys.sendKey,
                         outSignalSeq.incrementAndGet(),
                         msg
                     )
@@ -389,7 +508,7 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
 
     private fun handleSignalingMessage(rawLine: String) {
         try {
-            val key = signalingSessionKey ?: return
+            val key = recvSignalingKey ?: return
             val (seq, rawJson) = CryptoManager.decryptSignalingLine(key, rawLine) ?: run {
                 Log.w(TAG, "Dropped unencrypted or tampered signaling payload")
                 return
@@ -435,7 +554,7 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
             try {
                 synchronized(signalWriteLock) {
                     val writer = signalWriter
-                    val key = signalingSessionKey
+                    val key = sendSignalingKey
                     if (writer == null || key == null) {
                         pendingOutgoingSignals.add(serialized)
                     } else {
@@ -546,8 +665,9 @@ class AudioCallService : Service(), WebRtcAudioCallManager.Listener {
             pendingOutgoingSignals.clear()
             w
         }
-        val keySnapshot = signalingSessionKey
-        signalingSessionKey = null
+        val keySnapshot = sendSignalingKey
+        sendSignalingKey = null
+        recvSignalingKey = null
         val sockSnapshot = signalingSocket
         val srvSnapshot = serverSocket
         signalingSocket = null

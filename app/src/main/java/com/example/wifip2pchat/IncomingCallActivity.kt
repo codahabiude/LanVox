@@ -162,8 +162,9 @@ class IncomingCallActivity : AppCompatActivity() {
     private fun acceptCall() {
         pulseRing.clearAnimation()
 
-        if (!peerId.isNullOrBlank() && CryptoManager.isPeerKeyBlocked(this, peerId)) {
-            Log.w(TAG, "Cannot accept call from $peerId: peer key is blocked")
+        val pid = peerId
+        if (pid.isNullOrBlank() || !CryptoManager.hasPeerKey(this, pid) || CryptoManager.isPeerKeyBlocked(this, pid)) {
+            Log.w(TAG, "Cannot accept call from $pid: peer key missing or blocked")
             sendControl(Constants.MSG_TYPE_CALL_REJECT + callType)
             CallListenerService.onIncomingCallHandled()
             CallRingtoneManager.stopRinging()

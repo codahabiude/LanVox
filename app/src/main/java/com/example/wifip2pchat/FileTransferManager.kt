@@ -229,20 +229,13 @@ object FileTransferManager {
                     writeHeaderLine(output, "ERR unauthorized")
                     return
                 }
-                val peerPubKey = CryptoManager.getPeerPublicKey(appContext, senderId)
-                if (peerPubKey == null) {
+                if (!CryptoManager.hasPeerKey(appContext, senderId)) {
                     writeHeaderLine(output, "ERR unknown_sender")
                     return
                 }
 
                 val signTarget = parts.dropLast(1).joinToString(" ")
-                val sigBytes = runCatching { CryptoManager.b64UrlDecode(sigB64) }.getOrNull()
-                val isValidSig = sigBytes != null && runCatching {
-                    val sig = java.security.Signature.getInstance("SHA256withECDSA")
-                    sig.initVerify(peerPubKey)
-                    sig.update(signTarget.toByteArray(Charsets.UTF_8))
-                    sig.verify(sigBytes)
-                }.getOrDefault(false)
+                val isValidSig = CryptoManager.verifyFileRequestSignature(appContext, senderId, signTarget, sigB64)
                 if (!isValidSig) {
                     writeHeaderLine(output, "ERR unauthorized")
                     return
@@ -297,7 +290,7 @@ object FileTransferManager {
                                 }
                                 val upNonce = upNonceLine.removePrefix("NONCE ").trim()
                                 val upBase = "GET $transferId ${PeerRegistry.selfId} $upNonce"
-                                val upSig = CryptoManager.signDataWithIdentity(appContext, upBase.toByteArray(Charsets.UTF_8))
+                                val upSig = CryptoManager.signFileRequest(appContext, upBase)
                                 if (upSig.isNullOrBlank()) {
                                     writeHeaderLine(output, "ERR upstream_sign_failed")
                                     return
@@ -610,7 +603,7 @@ object FileTransferManager {
 
     internal fun buildSignedCommand(context: Context, commandPrefix: String, nonce: String): String? {
         val base = "$commandPrefix ${PeerRegistry.selfId} $nonce"
-        val sig = CryptoManager.signDataWithIdentity(context, base.toByteArray(Charsets.UTF_8)) ?: return null
+        val sig = CryptoManager.signFileRequest(context, base) ?: return null
         return "$base $sig"
     }
 

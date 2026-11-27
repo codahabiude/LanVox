@@ -199,8 +199,9 @@ class AudioCallActivity : AppCompatActivity(), CallSessionBus.Listener {
     }
 
     private fun startAudioCall() {
-        if (!peerId.isNullOrBlank() && CryptoManager.isPeerKeyBlocked(this, peerId)) {
-            tvCallStatus.text = "Call blocked: Peer identity key changed"
+        val pid = peerId
+        if (pid.isNullOrBlank() || !CryptoManager.hasPeerKey(this, pid) || CryptoManager.isPeerKeyBlocked(this, pid)) {
+            tvCallStatus.text = "Call blocked: peer key missing or changed"
             finish()
             return
         }
