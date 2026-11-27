@@ -1869,37 +1869,57 @@ class MainActivity : AppCompatActivity(), WiFiDirectManager.WiFiDirectListener {
             return
         }
         val senderId = env.senderId
+        if (env.payload == Constants.PAYLOAD_HELLO_REQ) {
+            CallListenerService.sendControl(CryptoManager.buildChallengePayload(), senderId)
+            return
+        }
+        if (env.payload.startsWith(Constants.MSG_TYPE_CHALLENGE)) {
+            val nonce = env.payload.removePrefix(Constants.MSG_TYPE_CHALLENGE).trim()
+            if (nonce.isNotBlank()) {
+                val pubB64 = CryptoManager.getSelfPublicKeyB64(applicationContext)
+                val localIp = DeviceIdentity.resolveLocalIp()
+                CallListenerService.sendControl(
+                    CryptoManager.buildSignedHelloPayload(applicationContext, localIp, pubB64, nonce),
+                    senderId
+                )
+            }
+            return
+        }
+        if (env.payload.startsWith(Constants.MSG_TYPE_KEYX_CHALLENGE)) {
+            val nonce = env.payload.removePrefix(Constants.MSG_TYPE_KEYX_CHALLENGE).trim()
+            if (nonce.isNotBlank()) {
+                CallListenerService.sendControl(
+                    CryptoManager.buildSignedKeyxPayload(applicationContext, nonce),
+                    senderId
+                )
+            }
+            return
+        }
         if (CryptoManager.isHelloPayload(env.payload)) {
-            val (ip, pubB64, sigBytes) = CryptoManager.parseSignedHelloPayload(env.payload)
-            if (!pubB64.isNullOrBlank() && sigBytes != null) {
-                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubB64)) }.getOrNull()
-                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, senderId, pubB64, sigBytes)) {
-                    CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64, isFromThirdPartyBroadcast = false)
-                    PeerRegistry.upsert(
-                        PeerRegistry.Peer(
-                            id = senderId,
-                            name = env.senderName,
-                            isGroupOwner = false,
-                            ipAddress = ip,
-                            publicKeyB64 = pubB64
-                        )
+            val verified = CryptoManager.verifyAndAcceptSignedHello(applicationContext, senderId, env.payload)
+            if (verified != null) {
+                val activePub = CryptoManager.getPeerPublicKeyB64(applicationContext, senderId) ?: verified.pubKeyB64
+                PeerRegistry.upsert(
+                    PeerRegistry.Peer(
+                        id = senderId,
+                        name = env.senderName,
+                        isGroupOwner = false,
+                        ipAddress = verified.ip,
+                        publicKeyB64 = activePub
                     )
-                } else {
-                    Log.w(TAG, "Invalid identity signature in HELLO from $senderId — rejecting")
-                }
+                )
+            } else {
+                Log.w(TAG, "Challenge-response failed in HELLO from $senderId — rejecting")
             }
             return
         }
         if (env.payload.startsWith(Constants.MSG_TYPE_KEYX)) {
-            val (pubB64, sigBytes) = CryptoManager.parseSignedKeyxPayload(env.payload)
-            if (pubB64.isNotBlank() && sigBytes != null) {
-                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubB64)) }.getOrNull()
-                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, senderId, pubB64, sigBytes)) {
-                    CryptoManager.registerPeerPublicKey(applicationContext, senderId, pubB64, isFromThirdPartyBroadcast = false)
-                    PeerRegistry.updatePublicKey(senderId, pubB64)
-                } else {
-                    Log.w(TAG, "Invalid identity signature in KEYX from $senderId — rejecting")
-                }
+            val verified = CryptoManager.verifyAndAcceptSignedKeyx(applicationContext, senderId, env.payload)
+            if (verified != null) {
+                val activePub = CryptoManager.getPeerPublicKeyB64(applicationContext, senderId) ?: verified.pubKeyB64
+                PeerRegistry.updatePublicKey(senderId, activePub)
+            } else {
+                Log.w(TAG, "Challenge-response failed in KEYX from $senderId — rejecting")
             }
             return
         }

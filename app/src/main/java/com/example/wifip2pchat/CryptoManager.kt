@@ -94,6 +94,14 @@ object CryptoManager {
     private val peerChatKeys = ConcurrentHashMap<String, SecretKey>()
     private val attachmentKeys = ConcurrentHashMap<String, SecretKey>()
 
+    private const val CHALLENGE_TTL_MS = 5 * 60 * 1000L
+    private const val MAX_ISSUED_CHALLENGES = 256
+    private val issuedChallenges = ConcurrentHashMap<String, Long>()
+
+    private const val MAX_SEEN_GROUP_MSG_IDS = 2048
+    private val seenGroupMsgLock = Any()
+    private val seenGroupMsgIds = LinkedHashSet<String>()
+
     // ======================== Initialization & KeyStore Vault ========================
 
     fun ensureInitialized(context: Context) {
@@ -126,6 +134,10 @@ object CryptoManager {
             peerPublicKeys.clear()
             peerPubB64Map.clear()
             peerChatKeys.clear()
+            issuedChallenges.clear()
+            synchronized(seenGroupMsgLock) {
+                seenGroupMsgIds.clear()
+            }
         }
     }
 
@@ -212,27 +224,69 @@ object CryptoManager {
         return digest.take(6).joinToString(":") { "%02X".format(it) }
     }
 
+    data class ParsedSignedHello(
+        val ip: String?,
+        val pubKeyB64: String?,
+        val nonce: String?,
+        val sigBytes: ByteArray?
+    )
+
+    data class ParsedSignedKeyx(
+        val pubKeyB64: String,
+        val nonce: String?,
+        val sigBytes: ByteArray?
+    )
+
+    data class VerifiedHelloResult(
+        val ip: String?,
+        val pubKeyB64: String
+    )
+
+    data class VerifiedKeyxResult(
+        val pubKeyB64: String,
+        val registrationResult: KeyRegistrationResult
+    )
+
     fun isHelloPayload(payload: String): Boolean =
         payload == Constants.PAYLOAD_HELLO ||
             payload.startsWith("${Constants.PAYLOAD_HELLO}:") ||
             payload.startsWith("${Constants.PAYLOAD_HELLO}|KEY:")
 
-    fun signIdentity(privateKey: PrivateKey, peerId: String, pubKeyB64: String): ByteArray {
-        val data = "$peerId|$pubKeyB64".toByteArray(Charsets.UTF_8)
-        val sig = java.security.Signature.getInstance("SHA256withECDSA")
-        sig.initSign(privateKey)
-        sig.update(data)
-        return sig.sign()
+    fun generateRandomNonce(): String {
+        val bytes = ByteArray(16)
+        secureRandom.nextBytes(bytes)
+        return b64UrlEncode(bytes)
     }
 
-    fun verifyIdentitySignature(publicKey: PublicKey, peerId: String, pubKeyB64: String, signatureBytes: ByteArray): Boolean {
-        return runCatching {
-            val data = "$peerId|$pubKeyB64".toByteArray(Charsets.UTF_8)
-            val sig = java.security.Signature.getInstance("SHA256withECDSA")
-            sig.initVerify(publicKey)
-            sig.update(data)
-            sig.verify(signatureBytes)
-        }.getOrDefault(false)
+    private fun pruneExpiredChallenges() {
+        val now = System.currentTimeMillis()
+        issuedChallenges.entries.removeIf { now - it.value > CHALLENGE_TTL_MS }
+        if (issuedChallenges.size > MAX_ISSUED_CHALLENGES) {
+            val oldest = issuedChallenges.entries.sortedBy { it.value }.take(issuedChallenges.size - MAX_ISSUED_CHALLENGES)
+            oldest.forEach { issuedChallenges.remove(it.key) }
+        }
+    }
+
+    fun issueChallengeNonce(): String {
+        pruneExpiredChallenges()
+        val nonce = generateRandomNonce()
+        issuedChallenges[nonce] = System.currentTimeMillis()
+        return nonce
+    }
+
+    fun buildChallengePayload(): String =
+        "${Constants.MSG_TYPE_CHALLENGE}${issueChallengeNonce()}"
+
+    fun buildKeyxChallengePayload(): String =
+        "${Constants.MSG_TYPE_KEYX_CHALLENGE}${issueChallengeNonce()}"
+
+    fun signDataWithIdentity(context: Context, data: ByteArray): String? {
+        ensureInitialized(context)
+        val priv = identityKeyPair?.private ?: return null
+        val sig = java.security.Signature.getInstance("SHA256withECDSA")
+        sig.initSign(priv)
+        sig.update(data)
+        return b64UrlEncode(sig.sign())
     }
 
     fun signChallenge(privateKey: PrivateKey, nonce: String, peerId: String, pubKeyB64: String): ByteArray {
@@ -253,23 +307,41 @@ object CryptoManager {
         }.getOrDefault(false)
     }
 
-    fun buildSignedHelloPayload(context: Context, localIp: String?, pubKeyB64: String, nonce: String = "nonce_${System.currentTimeMillis()}" ): String {
+    fun verifyAndConsumeChallenge(
+        publicKey: PublicKey,
+        nonce: String?,
+        peerId: String?,
+        pubKeyB64: String?,
+        signatureBytes: ByteArray?
+    ): Boolean {
+        if (nonce.isNullOrBlank() || peerId.isNullOrBlank() || pubKeyB64.isNullOrBlank() || signatureBytes == null || signatureBytes.isEmpty()) {
+            return false
+        }
+        val issuedAt = issuedChallenges.remove(nonce) ?: return false
+        if (System.currentTimeMillis() - issuedAt > CHALLENGE_TTL_MS) {
+            return false
+        }
+        return verifyChallengeSignature(publicKey, nonce, peerId, pubKeyB64, signatureBytes)
+    }
+
+    fun buildSignedHelloPayload(context: Context, localIp: String?, pubKeyB64: String, challengeNonce: String): String {
         ensureInitialized(context)
         val priv = identityKeyPair?.private
         val selfId = PeerRegistry.selfId
-        val sig = if (priv != null) signChallenge(priv, nonce, selfId, pubKeyB64) else ByteArray(0)
+        val sig = if (priv != null && challengeNonce.isNotBlank()) signChallenge(priv, challengeNonce, selfId, pubKeyB64) else ByteArray(0)
         val sigB64 = if (sig.isNotEmpty()) b64UrlEncode(sig) else ""
         val base = if (!localIp.isNullOrBlank()) "${Constants.PAYLOAD_HELLO}:$localIp" else Constants.PAYLOAD_HELLO
-        return if (sigB64.isNotBlank()) "$base|KEY:$pubKeyB64|NONCE:$nonce|SIG:$sigB64" else "$base|KEY:$pubKeyB64|NONCE:$nonce"
+        return "$base|KEY:$pubKeyB64|NONCE:$challengeNonce|SIG:$sigB64"
     }
 
-    fun parseSignedHelloPayload(payload: String): Triple<String?, String?, ByteArray?> {
+    fun parseSignedHelloPayload(payload: String): ParsedSignedHello {
         val sigIdx = payload.indexOf("|SIG:")
         val sigB64 = if (sigIdx >= 0) payload.substring(sigIdx + 5).trim().takeIf { it.isNotBlank() } else null
-        val remainder = if (sigIdx >= 0) payload.substring(0, sigIdx) else payload
+        val rem1 = if (sigIdx >= 0) payload.substring(0, sigIdx) else payload
 
-        val nonceIdx = remainder.indexOf("|NONCE:")
-        val rem2 = if (nonceIdx >= 0) remainder.substring(0, nonceIdx) else remainder
+        val nonceIdx = rem1.indexOf("|NONCE:")
+        val nonce = if (nonceIdx >= 0) rem1.substring(nonceIdx + 7).trim().takeIf { it.isNotBlank() } else null
+        val rem2 = if (nonceIdx >= 0) rem1.substring(0, nonceIdx) else rem1
 
         val keyIdx = rem2.indexOf("|KEY:")
         val pubB64 = if (keyIdx >= 0) rem2.substring(keyIdx + 5).trim().takeIf { it.isNotBlank() } else null
@@ -279,30 +351,71 @@ object CryptoManager {
         } else {
             null
         }
-        val sigBytes = sigB64?.let { b64UrlDecode(it) }
-        return Triple(ip, pubB64, sigBytes)
+        val sigBytes = sigB64?.let { runCatching { b64UrlDecode(it) }.getOrNull() }
+        return ParsedSignedHello(ip, pubB64, nonce, sigBytes)
     }
 
-    fun buildSignedKeyxPayload(context: Context, nonce: String = "nonce_${System.currentTimeMillis()}"): String {
+    fun buildSignedKeyxPayload(context: Context, challengeNonce: String): String {
         ensureInitialized(context)
         val selfPubB64 = getSelfPublicKeyB64(context)
         val priv = identityKeyPair?.private
         val selfId = PeerRegistry.selfId
-        val sig = if (priv != null) signChallenge(priv, nonce, selfId, selfPubB64) else ByteArray(0)
+        val sig = if (priv != null && challengeNonce.isNotBlank()) signChallenge(priv, challengeNonce, selfId, selfPubB64) else ByteArray(0)
         val sigB64 = if (sig.isNotEmpty()) b64UrlEncode(sig) else ""
-        return if (sigB64.isNotBlank()) "${Constants.MSG_TYPE_KEYX}$selfPubB64|NONCE:$nonce|SIG:$sigB64" else "${Constants.MSG_TYPE_KEYX}$selfPubB64|NONCE:$nonce"
+        return "${Constants.MSG_TYPE_KEYX}$selfPubB64|NONCE:$challengeNonce|SIG:$sigB64"
     }
 
-    fun parseSignedKeyxPayload(payload: String): Pair<String, ByteArray?> {
+    fun parseSignedKeyxPayload(payload: String): ParsedSignedKeyx {
         val body = payload.removePrefix(Constants.MSG_TYPE_KEYX)
-        val parts = body.split("|SIG:", limit = 2)
-        val left = parts[0]
-        val sigB64 = if (parts.size == 2) parts[1].trim() else ""
-        val sigBytes = if (sigB64.isNotBlank()) b64UrlDecode(sigB64) else null
+        val sigIdx = body.indexOf("|SIG:")
+        val sigB64 = if (sigIdx >= 0) body.substring(sigIdx + 5).trim().takeIf { it.isNotBlank() } else null
+        val rem1 = if (sigIdx >= 0) body.substring(0, sigIdx) else body
 
-        val nonceIdx = left.indexOf("|NONCE:")
-        val pubB64 = if (nonceIdx >= 0) left.substring(0, nonceIdx).trim() else left.trim()
-        return pubB64 to sigBytes
+        val nonceIdx = rem1.indexOf("|NONCE:")
+        val nonce = if (nonceIdx >= 0) rem1.substring(nonceIdx + 7).trim().takeIf { it.isNotBlank() } else null
+        val pubB64 = (if (nonceIdx >= 0) rem1.substring(0, nonceIdx) else rem1).trim()
+        val sigBytes = sigB64?.let { runCatching { b64UrlDecode(it) }.getOrNull() }
+        return ParsedSignedKeyx(pubB64, nonce, sigBytes)
+    }
+
+    fun verifyAndAcceptSignedHello(
+        context: Context,
+        senderId: String,
+        payload: String
+    ): VerifiedHelloResult? {
+        if (senderId.isBlank() || senderId == "unknown" || senderId == PeerRegistry.selfId) return null
+        val parsed = parseSignedHelloPayload(payload)
+        val pubB64 = parsed.pubKeyB64?.takeIf { it.isNotBlank() } ?: return null
+        val nonce = parsed.nonce?.takeIf { it.isNotBlank() } ?: return null
+        val sigBytes = parsed.sigBytes ?: return null
+        val pubKey = runCatching { decodeEcPublicKey(b64UrlDecode(pubB64)) }.getOrNull() ?: return null
+        if (!verifyAndConsumeChallenge(pubKey, nonce, senderId, pubB64, sigBytes)) {
+            Log.w(TAG, "Challenge-response verification failed in HELLO from $senderId — rejecting")
+            return null
+        }
+        val regRes = registerPeerPublicKey(context, senderId, pubB64, isFromThirdPartyBroadcast = false)
+        if (regRes == KeyRegistrationResult.INVALID) return null
+        return VerifiedHelloResult(parsed.ip, pubB64)
+    }
+
+    fun verifyAndAcceptSignedKeyx(
+        context: Context,
+        senderId: String,
+        payload: String
+    ): VerifiedKeyxResult? {
+        if (senderId.isBlank() || senderId == "unknown" || senderId == PeerRegistry.selfId) return null
+        val parsed = parseSignedKeyxPayload(payload)
+        val pubB64 = parsed.pubKeyB64.takeIf { it.isNotBlank() } ?: return null
+        val nonce = parsed.nonce?.takeIf { it.isNotBlank() } ?: return null
+        val sigBytes = parsed.sigBytes ?: return null
+        val pubKey = runCatching { decodeEcPublicKey(b64UrlDecode(pubB64)) }.getOrNull() ?: return null
+        if (!verifyAndConsumeChallenge(pubKey, nonce, senderId, pubB64, sigBytes)) {
+            Log.w(TAG, "Challenge-response verification failed in KEYX from $senderId — rejecting")
+            return null
+        }
+        val regRes = registerPeerPublicKey(context, senderId, pubB64, isFromThirdPartyBroadcast = false)
+        if (regRes == KeyRegistrationResult.INVALID) return null
+        return VerifiedKeyxResult(pubB64, regRes)
     }
 
     // ======================== Peer Key Registry & Safety Numbers ========================
@@ -547,8 +660,22 @@ object CryptoManager {
         plaintext: String
     ): String? {
         ensureInitialized(context)
-        val uniqueTargets = targetPeerIds.filter { it.isNotBlank() && it != senderId && !isPeerKeyBlocked(context, it) }.distinct()
-        if (uniqueTargets.isEmpty()) return null
+        val selfKp = identityKeyPair ?: return null
+        val peerKeys = targetPeerIds
+            .filter { it.isNotBlank() && it != senderId && !isPeerKeyBlocked(context, it) }
+            .distinct()
+            .mapNotNull { pid -> getPeerPublicKey(context, pid)?.let { pid to it } }
+            .toMap()
+        return encryptForBroadcastWithIdentity(senderId, selfKp, peerKeys, plaintext)
+    }
+
+    internal fun encryptForBroadcastWithIdentity(
+        senderId: String,
+        senderKeyPair: KeyPair,
+        targetPeerKeys: Map<String, PublicKey>,
+        plaintext: String
+    ): String? {
+        if (targetPeerKeys.isEmpty()) return null
 
         val msgKeyBytes = ByteArray(32).also { secureRandom.nextBytes(it) }
         val msgKey = SecretKeySpec(msgKeyBytes, "AES")
@@ -557,19 +684,22 @@ object CryptoManager {
 
         val msgId = java.util.UUID.randomUUID().toString()
         val msgCtB64 = b64UrlEncode(msgCt)
-        val priv = identityKeyPair?.private
         val signData = "$senderId|${Constants.RECIPIENT_BROADCAST}|$msgId|$msgCtB64".toByteArray(Charsets.UTF_8)
-        val sig = if (priv != null) {
-            val s = java.security.Signature.getInstance("SHA256withECDSA")
-            s.initSign(priv)
-            s.update(signData)
-            s.sign()
-        } else ByteArray(0)
+        val sig = java.security.Signature.getInstance("SHA256withECDSA").apply {
+            initSign(senderKeyPair.private)
+            update(signData)
+        }.sign()
         val sigB64 = b64UrlEncode(sig)
 
         val wrappedEntries = mutableListOf<String>()
-        for (pid in uniqueTargets) {
-            val peerChatKey = getOrDeriveChatKey(context, pid) ?: continue
+        for ((pid, peerPub) in targetPeerKeys) {
+            if (pid.isBlank() || pid == senderId) continue
+            val peerChatKey = derivePairwiseKey(
+                selfPrivateKey = senderKeyPair.private,
+                selfPublicBytes = senderKeyPair.public.encoded,
+                peerPublicKey = peerPub,
+                info = INFO_CHAT
+            )
             val wrapAad = "$senderId|$pid|wrap".toByteArray(Charsets.UTF_8)
             val (wIv, wCt) = aesGcmEncrypt(peerChatKey, msgKeyBytes, wrapAad)
             val encodedPid = b64UrlEncode(pid.toByteArray(Charsets.UTF_8))
@@ -591,6 +721,23 @@ object CryptoManager {
         }
     }
 
+    private fun isGroupMsgIdSeen(replayKey: String): Boolean = synchronized(seenGroupMsgLock) {
+        seenGroupMsgIds.contains(replayKey)
+    }
+
+    private fun markGroupMsgIdSeen(replayKey: String): Boolean = synchronized(seenGroupMsgLock) {
+        if (seenGroupMsgIds.contains(replayKey)) return@synchronized false
+        seenGroupMsgIds.add(replayKey)
+        if (seenGroupMsgIds.size > MAX_SEEN_GROUP_MSG_IDS) {
+            val it = seenGroupMsgIds.iterator()
+            if (it.hasNext()) {
+                it.next()
+                it.remove()
+            }
+        }
+        true
+    }
+
     fun decryptBroadcast(
         context: Context,
         senderId: String,
@@ -610,9 +757,16 @@ object CryptoManager {
         val msgId = parts[2]
         val sigB64 = parts[3]
         val entriesStr = parts[4]
+        if (msgId.isBlank()) return null
+
+        val replayKey = "$senderId|$selfId|$msgId"
+        if (isGroupMsgIdSeen(replayKey)) {
+            Log.w(TAG, "Rejected replayed group message msgId=$msgId from $senderId")
+            return null
+        }
 
         // Verify signature over senderId | broadcast | msgId | msgCt
-        val sigBytes = b64UrlDecode(sigB64)
+        val sigBytes = runCatching { b64UrlDecode(sigB64) }.getOrNull() ?: return null
         val signData = "$senderId|${Constants.RECIPIENT_BROADCAST}|$msgId|$msgCtB64".toByteArray(Charsets.UTF_8)
         val validSig = runCatching {
             val sig = java.security.Signature.getInstance("SHA256withECDSA")
@@ -641,7 +795,12 @@ object CryptoManager {
             val msgIv = b64UrlDecode(msgIvB64)
             val msgCt = b64UrlDecode(msgCtB64)
             val aadMsg = "$senderId|${Constants.RECIPIENT_BROADCAST}".toByteArray(Charsets.UTF_8)
-            String(aesGcmDecrypt(msgKey, msgIv, msgCt, aadMsg), Charsets.UTF_8)
+            val plaintext = String(aesGcmDecrypt(msgKey, msgIv, msgCt, aadMsg), Charsets.UTF_8)
+            if (!markGroupMsgIdSeen(replayKey)) {
+                Log.w(TAG, "Rejected duplicate concurrent group message msgId=$msgId from $senderId")
+                return null
+            }
+            plaintext
         }.onFailure {
             Log.w(TAG, "Failed to decrypt group payload from $senderId: ${it.message}")
         }.getOrNull()

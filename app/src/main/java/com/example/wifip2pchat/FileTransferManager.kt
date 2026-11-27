@@ -100,8 +100,12 @@ object FileTransferManager {
         val localFile: File
     )
 
+    private const val MAX_RELAY_STORAGE_BYTES = 512L * 1024L * 1024L
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val stagedFiles = ConcurrentHashMap<String, File>()
+    private val putOwners = ConcurrentHashMap<String, String>()
+    @Volatile internal var filePortOverrideForTest: Int? = null
 
     @Volatile
     private var serverSocket: ServerSocket? = null
@@ -182,48 +186,71 @@ object FileTransferManager {
         serverSocket = null
     }
 
-    private fun handleServerClient(appContext: Context, socket: Socket) {
+    internal fun handleServerClient(appContext: Context, socket: Socket) {
         socket.use { s ->
             try {
                 s.soTimeout = SOCKET_TIMEOUT_MS
                 s.tcpNoDelay = true
                 val input = s.getInputStream()
                 val output = s.getOutputStream()
+
+                // Issue a fresh single-use nonce for this socket request
+                val serverNonce = CryptoManager.generateRandomNonce()
+                writeHeaderLine(output, "NONCE $serverNonce")
+
                 val header = readHeaderLine(input) ?: return
                 val remoteIp = s.inetAddress?.hostAddress
-                val parts = header.trim().split(' ')
+                val parts = header.trim().split(' ').filter { it.isNotEmpty() }
                 val cmd = parts.firstOrNull()
 
-                // Authenticate incoming transfer request: GET/PUT/RELAY_GET <args...> <senderId> <sigB64>
-                val senderId = parts.getOrNull(parts.size - 2)
-                val sigB64 = parts.getOrNull(parts.size - 1)
-
-                // In tests or direct unauthenticated client test scenarios where 4 or more parts are provided:
-                if (parts.size >= 4 && !senderId.isNullOrBlank() && !sigB64.isNullOrBlank()) {
-                    val signTarget = parts.subList(0, parts.size - 1).joinToString(" ")
-                    val peerPubKey = CryptoManager.getPeerPublicKey(appContext, senderId)
-                    val isBlocked = CryptoManager.isPeerKeyBlocked(appContext, senderId)
-                    val sigBytes = runCatching { CryptoManager.b64UrlDecode(sigB64) }.getOrNull()
-                    val isValidSig = if (peerPubKey != null && !isBlocked && sigBytes != null) {
-                        runCatching {
-                            val sig = java.security.Signature.getInstance("SHA256withECDSA")
-                            sig.initVerify(peerPubKey)
-                            sig.update(signTarget.toByteArray(Charsets.UTF_8))
-                            sig.verify(sigBytes)
-                        }.getOrDefault(false)
-                    } else {
-                        // Allow test stub bypass if master key / test environment
-                        true
-                    }
-                    if (!isValidSig) {
-                        writeHeaderLine(output, "ERR unauthorized")
+                val expectedPartCount = when (cmd) {
+                    "GET" -> 5       // GET <transferId> <senderId> <nonce> <sigB64>
+                    "PUT" -> 6       // PUT <transferId> <sizeBytes> <senderId> <nonce> <sigB64>
+                    "RELAY_GET" -> 6 // RELAY_GET <targetIp> <transferId> <senderId> <nonce> <sigB64>
+                    else -> {
+                        writeHeaderLine(output, "ERR unknown_cmd")
                         return
                     }
+                }
+                if (parts.size != expectedPartCount) {
+                    writeHeaderLine(output, "ERR unauthorized")
+                    return
+                }
+
+                val sigB64 = parts[parts.size - 1]
+                val reqNonce = parts[parts.size - 2]
+                val senderId = parts[parts.size - 3]
+
+                if (reqNonce != serverNonce) {
+                    writeHeaderLine(output, "ERR bad_nonce")
+                    return
+                }
+                if (senderId.isBlank() || CryptoManager.isPeerKeyBlocked(appContext, senderId)) {
+                    writeHeaderLine(output, "ERR unauthorized")
+                    return
+                }
+                val peerPubKey = CryptoManager.getPeerPublicKey(appContext, senderId)
+                if (peerPubKey == null) {
+                    writeHeaderLine(output, "ERR unknown_sender")
+                    return
+                }
+
+                val signTarget = parts.dropLast(1).joinToString(" ")
+                val sigBytes = runCatching { CryptoManager.b64UrlDecode(sigB64) }.getOrNull()
+                val isValidSig = sigBytes != null && runCatching {
+                    val sig = java.security.Signature.getInstance("SHA256withECDSA")
+                    sig.initVerify(peerPubKey)
+                    sig.update(signTarget.toByteArray(Charsets.UTF_8))
+                    sig.verify(sigBytes)
+                }.getOrDefault(false)
+                if (!isValidSig) {
+                    writeHeaderLine(output, "ERR unauthorized")
+                    return
                 }
 
                 when (cmd) {
                     "GET" -> {
-                        val transferId = parts.getOrNull(1).orEmpty()
+                        val transferId = parts[1]
                         val file = stagedFiles[transferId] ?: findPersistedAttachment(appContext, transferId)
                         if (file != null && file.exists() && file.isFile) {
                             val len = file.length()
@@ -240,20 +267,42 @@ object FileTransferManager {
                         }
                     }
                     "RELAY_GET" -> {
-                        val targetIp = parts.getOrNull(1).orEmpty()
-                        val transferId = parts.getOrNull(2).orEmpty()
+                        val targetIp = parts[1]
+                        val transferId = parts[2]
                         if (targetIp.isBlank() || transferId.isBlank()) {
                             writeHeaderLine(output, "ERR invalid_relay")
                             return
                         }
+                        val targetPeer = PeerRegistry.snapshot().firstOrNull { peer ->
+                            peer.ipAddress == targetIp &&
+                                CryptoManager.hasPeerKey(appContext, peer.id) &&
+                                !CryptoManager.isPeerKeyBlocked(appContext, peer.id)
+                        }
+                        if (targetPeer == null) {
+                            writeHeaderLine(output, "ERR unknown_relay_target")
+                            return
+                        }
                         try {
+                            val targetPort = filePortOverrideForTest ?: Constants.FILE_PORT
                             Socket().use { upstream ->
                                 upstream.soTimeout = SOCKET_TIMEOUT_MS
                                 upstream.tcpNoDelay = true
-                                upstream.connect(InetSocketAddress(targetIp, Constants.FILE_PORT), CONNECT_TIMEOUT_MS)
+                                upstream.connect(InetSocketAddress(targetIp, targetPort), CONNECT_TIMEOUT_MS)
                                 val upOut = upstream.getOutputStream()
                                 val upIn = upstream.getInputStream()
-                                writeHeaderLine(upOut, "GET $transferId")
+                                val upNonceLine = readHeaderLine(upIn)?.trim().orEmpty()
+                                if (!upNonceLine.startsWith("NONCE ")) {
+                                    writeHeaderLine(output, "ERR upstream_no_nonce")
+                                    return
+                                }
+                                val upNonce = upNonceLine.removePrefix("NONCE ").trim()
+                                val upBase = "GET $transferId ${PeerRegistry.selfId} $upNonce"
+                                val upSig = CryptoManager.signDataWithIdentity(appContext, upBase.toByteArray(Charsets.UTF_8))
+                                if (upSig.isNullOrBlank()) {
+                                    writeHeaderLine(output, "ERR upstream_sign_failed")
+                                    return
+                                }
+                                writeHeaderLine(upOut, "$upBase $upSig")
                                 val upHeader = readHeaderLine(upIn)?.trim().orEmpty()
                                 if (!upHeader.startsWith("OK ")) {
                                     writeHeaderLine(output, upHeader.ifBlank { "ERR upstream_failed" })
@@ -273,21 +322,38 @@ object FileTransferManager {
                         }
                     }
                     "PUT" -> {
-                        val transferId = parts.getOrNull(1).orEmpty()
-                        val expectedSize = parts.getOrNull(2)?.toLongOrNull() ?: -1L
+                        val transferId = parts[1]
+                        val expectedSize = parts[2].toLongOrNull() ?: -1L
                         if (transferId.isBlank() || expectedSize <= 0L || expectedSize > Constants.MAX_FILE_TRANSFER_BYTES) {
                             writeHeaderLine(output, "ERR invalid_put")
                             return
                         }
+                        val existingOwner = putOwners[transferId]
+                        if (stagedFiles.containsKey(transferId) ||
+                            findPersistedAttachment(appContext, transferId) != null ||
+                            (existingOwner != null && existingOwner != senderId)
+                        ) {
+                            writeHeaderLine(output, "ERR transfer_exists")
+                            return
+                        }
                         val relayDir = File(appContext.cacheDir, "file_relay").apply { mkdirs() }
+                        val usedBytes = relayDir.listFiles()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
+                        if (usedBytes + expectedSize > MAX_RELAY_STORAGE_BYTES) {
+                            writeHeaderLine(output, "ERR storage_full")
+                            return
+                        }
                         val tempFile = File(relayDir, "${sanitizeFileName(transferId)}.tmp")
                         val destFile = File(relayDir, "${sanitizeFileName(transferId)}.bin")
+                        if (destFile.exists()) {
+                            writeHeaderLine(output, "ERR transfer_exists")
+                            return
+                        }
                         val received = FileOutputStream(tempFile).use { fos ->
                             copyExactBytes(input, fos, expectedSize)
                         }
                         if (received == expectedSize) {
-                            if (destFile.exists()) destFile.delete()
                             tempFile.renameTo(destFile)
+                            putOwners[transferId] = senderId
                             stagedFiles[transferId] = destFile
                             writeHeaderLine(output, "OK")
                         } else {
@@ -295,7 +361,6 @@ object FileTransferManager {
                             writeHeaderLine(output, "ERR truncated")
                         }
                     }
-                    else -> writeHeaderLine(output, "ERR unknown_cmd")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "File server client error: ${e.message}")
@@ -491,6 +556,7 @@ object FileTransferManager {
         // 1. Direct peer-to-peer GET from senderHost (no central host!)
         if (!directHost.isNullOrBlank()) {
             fetchViaTcp(
+                context = context,
                 connectHost = directHost,
                 command = "GET ${offer.transferId}",
                 destFile = destFile,
@@ -509,6 +575,7 @@ object FileTransferManager {
         if (!fallbackHost.isNullOrBlank() && fallbackHost != directHost) {
             if (!directHost.isNullOrBlank()) {
                 fetchViaTcp(
+                    context = context,
                     connectHost = fallbackHost,
                     command = "RELAY_GET $directHost ${offer.transferId}",
                     destFile = destFile,
@@ -523,6 +590,7 @@ object FileTransferManager {
                 }
             }
             fetchViaTcp(
+                context = context,
                 connectHost = fallbackHost,
                 command = "GET ${offer.transferId}",
                 destFile = destFile,
@@ -540,7 +608,44 @@ object FileTransferManager {
         null
     }
 
-    private suspend fun fetchViaTcp(
+    internal fun buildSignedCommand(context: Context, commandPrefix: String, nonce: String): String? {
+        val base = "$commandPrefix ${PeerRegistry.selfId} $nonce"
+        val sig = CryptoManager.signDataWithIdentity(context, base.toByteArray(Charsets.UTF_8)) ?: return null
+        return "$base $sig"
+    }
+
+    internal suspend fun uploadFileViaPut(
+        context: Context,
+        host: String,
+        port: Int = Constants.FILE_PORT,
+        transferId: String,
+        file: File
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (!file.exists() || file.length() <= 0L) return@withContext false
+        runCatching {
+            Socket().use { socket ->
+                socket.soTimeout = SOCKET_TIMEOUT_MS
+                socket.tcpNoDelay = true
+                socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+                val input = socket.getInputStream()
+                val output = socket.getOutputStream()
+                val nonceLine = readHeaderLine(input)?.trim().orEmpty()
+                if (!nonceLine.startsWith("NONCE ")) return@withContext false
+                val nonce = nonceLine.removePrefix("NONCE ").trim()
+                val signed = buildSignedCommand(context, "PUT $transferId ${file.length()}", nonce)
+                    ?: return@withContext false
+                writeHeaderLine(output, signed)
+                FileInputStream(file).use { fis ->
+                    copyExactBytes(fis, output, file.length())
+                }
+                output.flush()
+                readHeaderLine(input)?.trim() == "OK"
+            }
+        }.getOrDefault(false)
+    }
+
+    internal suspend fun fetchViaTcp(
+        context: Context,
         connectHost: String,
         command: String,
         destFile: File,
@@ -548,7 +653,8 @@ object FileTransferManager {
         dir: File,
         attempts: Int,
         senderId: String? = null,
-        senderName: String? = null
+        senderName: String? = null,
+        port: Int = filePortOverrideForTest ?: Constants.FILE_PORT
     ): File? {
         repeat(attempts) { attempt ->
             val tmp = File(dir, "${destFile.name}.tmp")
@@ -556,10 +662,17 @@ object FileTransferManager {
                 Socket().use { socket ->
                     socket.soTimeout = SOCKET_TIMEOUT_MS
                     socket.tcpNoDelay = true
-                    socket.connect(InetSocketAddress(connectHost, Constants.FILE_PORT), CONNECT_TIMEOUT_MS)
+                    socket.connect(InetSocketAddress(connectHost, port), CONNECT_TIMEOUT_MS)
                     val output = socket.getOutputStream()
                     val input = socket.getInputStream()
-                    writeHeaderLine(output, command)
+                    val nonceLine = readHeaderLine(input)?.trim().orEmpty()
+                    if (!nonceLine.startsWith("NONCE ")) {
+                        Log.w(TAG, "$command on $connectHost attempt ${attempt + 1} missing NONCE: $nonceLine")
+                        return@use
+                    }
+                    val serverNonce = nonceLine.removePrefix("NONCE ").trim()
+                    val signedCmd = buildSignedCommand(context, command, serverNonce) ?: return null
+                    writeHeaderLine(output, signedCmd)
                     val header = readHeaderLine(input)?.trim().orEmpty()
                     if (!header.startsWith("OK ")) {
                         Log.w(TAG, "$command on $connectHost attempt ${attempt + 1} header=$header")

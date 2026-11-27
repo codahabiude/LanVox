@@ -299,9 +299,8 @@ class ChatServerService : Service() {
 
         pendingIncoming[socket.hashCode()] = conn
         try {
-            if (sendHelloImmediately) {
-                sendHello(conn)
-            }
+            // Issue a fresh random challenge nonce on every connection so the peer proves private key possession.
+            sendChallenge(conn)
             val reader = BufferedReader(InputStreamReader(socket.getInputStream(), "UTF-8"))
             var line: String?
             while (reader.readLine().also { line = it } != null) {
@@ -314,26 +313,39 @@ class ChatServerService : Service() {
         }
     }
 
-    private fun sendHello(conn: PeerConn, force: Boolean = false) {
-        if (!force && !conn.sentHello.compareAndSet(false, true)) return
-        if (force) conn.sentHello.set(true)
+    private fun sendChallenge(conn: PeerConn) {
+        val chalPayload = CryptoManager.buildChallengePayload()
+        val line = Envelope.build(
+            senderId = PeerRegistry.selfId,
+            senderName = PeerRegistry.selfName,
+            recipientId = conn.peerId ?: Constants.RECIPIENT_BROADCAST,
+            payload = chalPayload
+        ) + "\n"
+        try {
+            conn.writeLine(line)
+        } catch (e: Exception) {
+            Log.w(TAG, "CHALLENGE write failed: ${e.message}")
+        }
+    }
+
+    private fun sendSignedHelloResponse(conn: PeerConn, targetId: String, challengeNonce: String) {
         val localIp = conn.socket.localAddress?.hostAddress
             ?: DeviceIdentity.resolveLocalIp(conn.hostIp)
         if (!localIp.isNullOrBlank()) {
             PeerRegistry.selfIpAddress = localIp
         }
         val selfPubB64 = CryptoManager.getSelfPublicKeyB64(applicationContext)
-        val helloPayload = CryptoManager.buildSignedHelloPayload(applicationContext, localIp, selfPubB64)
+        val helloPayload = CryptoManager.buildSignedHelloPayload(applicationContext, localIp, selfPubB64, challengeNonce)
         val line = Envelope.build(
             senderId = PeerRegistry.selfId,
             senderName = PeerRegistry.selfName,
-            recipientId = conn.peerId ?: "GO",
+            recipientId = targetId.ifBlank { "GO" },
             payload = helloPayload
         ) + "\n"
         try {
             conn.writeLine(line)
         } catch (e: Exception) {
-            Log.w(TAG, "HELLO write failed: ${e.message}")
+            Log.w(TAG, "HELLO response write failed: ${e.message}")
         }
     }
 
@@ -351,37 +363,72 @@ class ChatServerService : Service() {
             return
         }
 
-        if (CryptoManager.isHelloPayload(env.payload)) {
-            val (advertisedIp, pubKeyB64, sigBytes) = CryptoManager.parseSignedHelloPayload(env.payload)
-            if (!pubKeyB64.isNullOrBlank() && sigBytes != null) {
-                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubKeyB64)) }.getOrNull()
-                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, env.senderId, pubKeyB64, sigBytes)) {
-                    CryptoManager.registerPeerPublicKey(applicationContext, env.senderId, pubKeyB64, isFromThirdPartyBroadcast = false)
-                    registerPeer(conn, env.senderId, env.senderName, advertisedIp ?: conn.hostIp, pubKeyB64)
-                } else {
-                    Log.w(TAG, "Invalid identity signature in HELLO from ${env.senderId} — rejecting")
+        if (env.payload == Constants.PAYLOAD_HELLO_REQ) {
+            sendChallenge(conn)
+            return
+        }
+
+        if (env.payload.startsWith(Constants.MSG_TYPE_CHALLENGE)) {
+            val nonce = env.payload.removePrefix(Constants.MSG_TYPE_CHALLENGE).trim()
+            if (nonce.isNotBlank()) {
+                sendSignedHelloResponse(conn, env.senderId, nonce)
+            }
+            return
+        }
+
+        val isForSelf = env.recipientId == PeerRegistry.selfId ||
+            env.recipientId == Constants.RECIPIENT_BROADCAST ||
+            (env.recipientId == "GO" && PeerRegistry.isSelfGroupOwner)
+
+        if (env.payload.startsWith(Constants.MSG_TYPE_KEYX_CHALLENGE)) {
+            if (!isForSelf && env.recipientId.isNotBlank()) {
+                forwardToRecipient(env, origin = conn)
+                return
+            }
+            val nonce = env.payload.removePrefix(Constants.MSG_TYPE_KEYX_CHALLENGE).trim()
+            if (nonce.isNotBlank()) {
+                val keyxPayload = CryptoManager.buildSignedKeyxPayload(applicationContext, nonce)
+                val line = Envelope.build(
+                    senderId = PeerRegistry.selfId,
+                    senderName = PeerRegistry.selfName,
+                    recipientId = env.senderId,
+                    payload = keyxPayload
+                ) + "\n"
+                try {
+                    conn.writeLine(line)
+                } catch (e: Exception) {
+                    Log.w(TAG, "KEYX response write failed: ${e.message}")
                 }
             }
             return
         }
 
+        if (CryptoManager.isHelloPayload(env.payload)) {
+            val verified = CryptoManager.verifyAndAcceptSignedHello(applicationContext, env.senderId, env.payload)
+            if (verified != null) {
+                registerPeer(conn, env.senderId, env.senderName, verified.ip ?: conn.hostIp, verified.pubKeyB64)
+            } else {
+                Log.w(TAG, "Challenge-response failed in HELLO from ${env.senderId} — rejecting")
+            }
+            return
+        }
+
         if (env.payload.startsWith(Constants.MSG_TYPE_KEYX)) {
-            val body = env.payload.removePrefix(Constants.MSG_TYPE_KEYX)
-            val parts = body.split("|SIG:", limit = 2)
-            val pubKeyB64 = parts[0].trim()
-            val sigB64 = if (parts.size == 2) parts[1].trim() else ""
-            if (pubKeyB64.isNotBlank() && sigB64.isNotBlank()) {
-                val pubKey = runCatching { CryptoManager.decodeEcPublicKey(CryptoManager.b64UrlDecode(pubKeyB64)) }.getOrNull()
-                val sigBytes = CryptoManager.b64UrlDecode(sigB64)
-                if (pubKey != null && CryptoManager.verifyIdentitySignature(pubKey, env.senderId, pubKeyB64, sigBytes)) {
-                    val res = CryptoManager.registerPeerPublicKey(applicationContext, env.senderId, pubKeyB64, isFromThirdPartyBroadcast = false)
-                    PeerRegistry.updatePublicKey(env.senderId, pubKeyB64)
-                    if (res == CryptoManager.KeyRegistrationResult.ADDED || res == CryptoManager.KeyRegistrationResult.CHANGED) {
-                        broadcastPeerList()
-                    }
-                } else {
-                    Log.w(TAG, "Invalid identity signature in KEYX from ${env.senderId}")
+            if (!isForSelf && env.recipientId.isNotBlank()) {
+                forwardToRecipient(env, origin = conn)
+                return
+            }
+            val verified = CryptoManager.verifyAndAcceptSignedKeyx(applicationContext, env.senderId, env.payload)
+            if (verified != null) {
+                val activePub = CryptoManager.getPeerPublicKeyB64(applicationContext, env.senderId) ?: verified.pubKeyB64
+                PeerRegistry.updatePublicKey(env.senderId, activePub)
+                if (verified.registrationResult == CryptoManager.KeyRegistrationResult.ADDED ||
+                    verified.registrationResult == CryptoManager.KeyRegistrationResult.CHANGED
+                ) {
+                    broadcastPeerList()
                 }
+            } else {
+                Log.w(TAG, "Challenge-response failed in KEYX from ${env.senderId} — rejecting")
             }
             return
         }
@@ -445,12 +492,8 @@ class ChatServerService : Service() {
 
         val isNicknameUpdate = existing === conn
         peers[peerId] = conn
-        // Answer initial HELLO once so both sides know each other's ID, name, IP, and public key
-        if (!isNicknameUpdate) {
-            sendHello(conn)
-        }
 
-        val resolvedPub = pubKeyB64 ?: CryptoManager.getPeerPublicKeyB64(applicationContext, peerId)
+        val resolvedPub = CryptoManager.getPeerPublicKeyB64(applicationContext, peerId) ?: pubKeyB64
         PeerRegistry.upsert(
             PeerRegistry.Peer(
                 id = peerId,
@@ -590,8 +633,8 @@ class ChatServerService : Service() {
         val last = keyxCooldown[peerId] ?: 0L
         if (now - last < 3_000L) return
         keyxCooldown[peerId] = now
-        val keyxPayload = CryptoManager.buildSignedKeyxPayload(applicationContext)
-        sendToInternal(peerId, keyxPayload)
+        val chalPayload = CryptoManager.buildKeyxChallengePayload()
+        sendToInternal(peerId, chalPayload)
     }
 
     private fun notifyMeshPeersChanged() {
@@ -617,6 +660,9 @@ class ChatServerService : Service() {
 
     private fun isWireControlPlaintext(payload: String): Boolean =
         payload.startsWith(Constants.MSG_TYPE_KEYX) ||
+            payload.startsWith(Constants.MSG_TYPE_CHALLENGE) ||
+            payload.startsWith(Constants.MSG_TYPE_KEYX_CHALLENGE) ||
+            payload == Constants.PAYLOAD_HELLO_REQ ||
             CryptoManager.isHelloPayload(payload) ||
             payload == Constants.PAYLOAD_BYE ||
             payload.startsWith(Constants.PAYLOAD_PEERS) ||
@@ -718,8 +764,17 @@ class ChatServerService : Service() {
     private fun reannounceSelfInternal() {
         scope.launch {
             peers.values.forEach { c ->
-                if (c.peerId != null && !c.socket.isClosed) {
-                    sendHello(c, force = true)
+                val pid = c.peerId
+                if (pid != null && !c.socket.isClosed) {
+                    val reqLine = Envelope.build(
+                        senderId = PeerRegistry.selfId,
+                        senderName = PeerRegistry.selfName,
+                        recipientId = pid,
+                        payload = Constants.PAYLOAD_HELLO_REQ
+                    ) + "\n"
+                    try {
+                        c.writeLine(reqLine)
+                    } catch (_: Exception) {}
                 }
             }
             broadcastPeerList()
